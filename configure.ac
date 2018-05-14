@@ -394,6 +394,7 @@ AC_CONFIG_FILES([
 	tests/zfs-tests/tests/functional/truncate/Makefile
 	tests/zfs-tests/tests/functional/upgrade/Makefile
 	tests/zfs-tests/tests/functional/user_namespace/Makefile
+	tests/zfs-tests/tests/functional/ugid_maps/Makefile
 	tests/zfs-tests/tests/functional/userquota/Makefile
 	tests/zfs-tests/tests/functional/vdev_zaps/Makefile
 	tests/zfs-tests/tests/functional/write_dirs/Makefile
