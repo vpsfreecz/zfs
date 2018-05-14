@@ -168,6 +168,10 @@ tests = ['tmpfile_001_pos', 'tmpfile_002_pos', 'tmpfile_003_pos',
     'tmpfile_stat_mode']
 tags = ['functional', 'tmpfile']
 
+[tests/functional/ugid_maps:Linux]
+tests = ['ugid_maps_001', 'ugid_maps_002', 'ugid_maps_003', 'ugid_maps_004']
+tags = ['functional', 'cli_root']
+
 [tests/functional/upgrade:Linux]
 tests = ['upgrade_projectquota_001_pos']
 tags = ['functional', 'upgrade']
