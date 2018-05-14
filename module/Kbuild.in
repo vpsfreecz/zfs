@@ -456,6 +456,7 @@ ZFS_OBJS_OS := \
 	zfs_ioctl_os.o \
 	zfs_racct.o \
 	zfs_sysfs.o \
+	zfs_ugid_map.o \
 	zfs_uio.o \
 	zfs_vfsops.o \
 	zfs_vnops_os.o \

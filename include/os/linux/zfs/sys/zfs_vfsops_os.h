@@ -37,6 +37,7 @@
 #include <sys/dsl_dataset.h>
 #include <sys/zfs_ioctl.h>
 #include <sys/objlist.h>
+#include <sys/zfs_ugid_map.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -134,6 +135,8 @@ struct zfsvfs {
 	avl_tree_t	*z_hold_trees;	/* znode hold trees */
 	kmutex_t	*z_hold_locks;	/* znode hold locks */
 	taskqid_t	z_drain_task;	/* task id for the unlink drain task */
+	struct zfs_ugid_map    *z_uid_map;
+	struct zfs_ugid_map    *z_gid_map;
 };
 
 #define	ZFS_TEARDOWN_INIT(zfsvfs)		\
