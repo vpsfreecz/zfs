@@ -111,6 +111,7 @@ COMMON_H = \
 	$(top_srcdir)/include/sys/zfs_stat.h \
 	$(top_srcdir)/include/sys/zfs_sysfs.h \
 	$(top_srcdir)/include/sys/zfs_znode.h \
+	$(top_srcdir)/include/sys/zfs_ugid_map.h \
 	$(top_srcdir)/include/sys/zil.h \
 	$(top_srcdir)/include/sys/zil_impl.h \
 	$(top_srcdir)/include/sys/zio_checksum.h \

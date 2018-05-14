@@ -896,18 +896,12 @@ tags = ['functional', 'threadsappend']
 tests = ['tmpfile_001_pos', 'tmpfile_002_pos', 'tmpfile_003_pos']
 tags = ['functional', 'tmpfile']
 
-[tests/functional/trim]
-tests = ['autotrim_integrity', 'autotrim_config', 'autotrim_trim_integrity',
-    'trim_integrity', 'trim_config']
-tags = ['functional', 'trim']
+[tests/functional/ugid_maps:Linux]
+tests = ['ugid_maps_001', 'ugid_maps_002', 'ugid_maps_003', 'ugid_maps_004']
+tags = ['functional', 'cli_root']
 
-[tests/functional/truncate]
-tests = ['truncate_001_pos', 'truncate_002_pos', 'truncate_timestamps']
-tags = ['functional', 'truncate']
-
-[tests/functional/upgrade]
-tests = ['upgrade_userobj_001_pos', 'upgrade_projectquota_001_pos',
-    'upgrade_readonly_pool']
+[tests/functional/upgrade:Linux]
+tests = ['upgrade_projectquota_001_pos']
 tags = ['functional', 'upgrade']
 
 [tests/functional/user_namespace]
