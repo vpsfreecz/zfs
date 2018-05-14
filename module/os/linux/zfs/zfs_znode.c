@@ -509,6 +509,7 @@ zfs_inode_update(znode_t *zp)
 
 	dmu_object_size_from_db(sa_get_db(zp->z_sa_hdl), &blksize, &i_blocks);
 
+
 	spin_lock(&ip->i_lock);
 	ip->i_blocks = i_blocks;
 	i_size_write(ip, zp->z_size);
@@ -595,8 +596,10 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	ip->i_generation = (uint32_t)tmp_gen;
 	ip->i_blkbits = SPA_MINBLOCKSHIFT;
 	set_nlink(ip, (uint32_t)links);
-	zfs_uid_write(ip, z_uid);
-	zfs_gid_write(ip, z_gid);
+
+	zfs_uid_write(ip, zfs_ugid_map_ns_to_host(zfsvfs->z_uid_map, z_uid));
+	zfs_gid_write(ip, zfs_ugid_map_ns_to_host(zfsvfs->z_gid_map, z_gid));
+
 	zfs_set_inode_flags(zp, ip);
 
 	/* Cache the xattr parent id */
@@ -676,6 +679,7 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 	uint64_t	crtime[2], atime[2], mtime[2], ctime[2];
 	uint64_t	mode, size, links, parent, pflags;
 	uint64_t	projid = ZFS_DEFAULT_PROJID;
+	uint64_t        offset_uid, offset_gid;
 	uint64_t	rdev = 0;
 	zfsvfs_t	*zfsvfs = ZTOZSB(dzp);
 	dmu_buf_t	*db;
@@ -797,6 +801,9 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 			pflags |= ZFS_PROJINHERIT;
 	}
 
+	offset_uid = zfs_ugid_map_host_to_ns(zfsvfs->z_uid_map, acl_ids->z_fuid);
+	offset_gid = zfs_ugid_map_host_to_ns(zfsvfs->z_gid_map, acl_ids->z_fgid);
+
 	/*
 	 * No execs denied will be determined when zfs_mode_compute() is called.
 	 */
@@ -856,9 +863,9 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_GEN(zfsvfs),
 		    NULL, &gen, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_UID(zfsvfs),
-		    NULL, &acl_ids->z_fuid, 8);
+		    NULL, &offset_uid, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_GID(zfsvfs),
-		    NULL, &acl_ids->z_fgid, 8);
+		    NULL, &offset_gid, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_PARENT(zfsvfs),
 		    NULL, &parent, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_FLAGS(zfsvfs),
@@ -892,9 +899,9 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_FLAGS(zfsvfs),
 		    NULL, &pflags, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_UID(zfsvfs), NULL,
-		    &acl_ids->z_fuid, 8);
+		    &offset_uid, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_GID(zfsvfs), NULL,
-		    &acl_ids->z_fgid, 8);
+		    &offset_gid, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_PAD(zfsvfs), NULL, pad,
 		    sizeof (uint64_t) * 4);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_ZNODE_ACL(zfsvfs), NULL,
@@ -1267,8 +1274,9 @@ zfs_rezget(znode_t *zp)
 
 	zp->z_projid = projid;
 	zp->z_mode = ZTOI(zp)->i_mode = mode;
-	zfs_uid_write(ZTOI(zp), z_uid);
-	zfs_gid_write(ZTOI(zp), z_gid);
+
+	zfs_uid_write(ZTOI(zp), zfs_ugid_map_ns_to_host(zfsvfs->z_uid_map, z_uid));
+	zfs_gid_write(ZTOI(zp), zfs_ugid_map_ns_to_host(zfsvfs->z_gid_map, z_gid));
 
 	ZFS_TIME_DECODE(&ZTOI(zp)->i_atime, atime);
 	ZFS_TIME_DECODE(&ZTOI(zp)->i_mtime, mtime);
