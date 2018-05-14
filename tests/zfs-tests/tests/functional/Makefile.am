@@ -76,6 +76,7 @@ SUBDIRS = \
 	threadsappend \
 	trim \
 	truncate \
+	ugid_maps \
 	upgrade \
 	user_namespace \
 	userquota \

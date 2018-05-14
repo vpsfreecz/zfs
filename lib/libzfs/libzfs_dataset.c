@@ -60,6 +60,7 @@
 #include <sys/spa.h>
 #include <sys/zap.h>
 #include <sys/dsl_crypt.h>
+#include <sys/zfs_ugid_map.h>
 #include <libzfs.h>
 #include <libzutil.h>
 
@@ -991,6 +992,45 @@ zfs_which_resv_prop(zfs_handle_t *zhp, zfs_prop_t *resv_prop)
 	return (0);
 }
 
+static int
+zfs_ugid_map_validate_str(char *strval)
+{
+	int pos = 0, i = 0, entries = 0, matches;
+	int64_t ns_id, host_id, cnt;
+
+	if (strcmp(strval, "none") == 0)
+		return 0;
+
+	while (1) {
+		matches = sscanf(strval + pos, "%ld:%ld:%ld%n",
+				&ns_id, &host_id, &cnt, &i);
+		pos += i;
+
+		if (matches == 0) {
+			if (entries > 0)
+				break;
+			else
+				return 1;
+		} else if (matches != 3) {
+			return 1;
+		}
+
+		if (ns_id < 0 || host_id < 0 || cnt < 1)
+			return 1;
+		else if (strval[pos] == ',')
+			pos += 1;
+		else if (strval[pos] == '\0')
+			return 0;
+		else
+			return 1;
+
+		if (++entries == ZFS_UGID_MAP_SIZE)
+			return 1;
+	}
+
+	return 0;
+}
+
 /*
  * Given an nvlist of properties to set, validates that they are correct, and
  * parses any numeric properties (index, boolean, etc) if they are specified as
@@ -1523,6 +1563,31 @@ badlabel:
 		case ZFS_PROP_NORMALIZE:
 			chosen_normal = (int)intval;
 			break;
+
+		case ZFS_PROP_UIDMAP:
+		case ZFS_PROP_GIDMAP:
+		{
+			if (zfs_ugid_map_validate_str(strval) != 0) {
+				zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+				    "'%s' is not in the expected format"),
+				    propname);
+				(void) zfs_error(hdl, EZFS_BADPROP, errbuf);
+				goto error;
+			}
+
+			if (zhp == NULL)
+				break;
+
+			if (zfs_prop_get_int(zhp, ZFS_PROP_MOUNTED)) {
+				zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+				    "'%s' cannot be changed while the file "
+				    "system is mounted"), propname);
+				(void) zfs_error(hdl, EZFS_BADPROP, errbuf);
+				goto error;
+			}
+
+			break;
+		}
 
 		default:
 			break;
@@ -3060,6 +3125,9 @@ zfs_prop_get(zfs_handle_t *zhp, zfs_prop_t prop, char *propbuf, size_t proplen,
 		}
 		zcp_check(zhp, prop, val, NULL);
 		break;
+
+	//case ZFS_PROP_UIDMAP: // TODO retrieve property
+	//case ZFS_PROP_GIDMAP:
 
 	default:
 		switch (zfs_prop_get_type(prop)) {
