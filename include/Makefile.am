@@ -141,6 +141,7 @@ COMMON_H = \
 	sys/zfs_stat.h \
 	sys/zfs_sysfs.h \
 	sys/zfs_vfsops.h \
+	sys/zfs_ugid_map.h \
 	sys/zfs_vnops.h \
 	sys/zfs_znode.h \
 	sys/zil.h \

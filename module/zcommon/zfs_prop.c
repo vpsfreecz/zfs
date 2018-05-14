@@ -621,6 +621,12 @@ zfs_prop_init(void)
 	    "redact_snaps", NULL, PROP_READONLY,
 	    ZFS_TYPE_DATASET | ZFS_TYPE_BOOKMARK, "<snapshot>[,...]",
 	    "RSNAPS", sfeatures);
+	zprop_register_string(ZFS_PROP_UIDMAP, "uidmap",
+	    "none", PROP_INHERIT, ZFS_TYPE_FILESYSTEM,
+	    "<map> | none", "UIDMAP", sfeatures);
+	zprop_register_string(ZFS_PROP_GIDMAP, "gidmap",
+	    "none", PROP_INHERIT, ZFS_TYPE_FILESYSTEM,
+	    "<map> | none", "GIDMAP", sfeatures);
 
 	/* readonly number properties */
 	zprop_register_number(ZFS_PROP_USED, "used", 0, PROP_READONLY,
