@@ -39,7 +39,9 @@
 .Sh SYNOPSIS
 .Nm
 .Cm share
-.Fl a | Ar filesystem
+.Fl a |
+.Op Fl r
+.Ar filesystem
 .Nm
 .Cm unshare
 .Fl a | Ar filesystem Ns | Ns Ar mountpoint
@@ -48,13 +50,19 @@
 .It Xo
 .Nm
 .Cm share
-.Fl a | Ar filesystem
+.Fl a |
+.Op Fl r
+.Ar filesystem
 .Xc
 Shares available ZFS file systems.
 .Bl -tag -width "-a"
 .It Fl a
 Share all available ZFS file systems.
 Invoked automatically as part of the boot process.
+.It Fl r
+Share
+.Ar filesystem
+and all its descendant filesystems recursively.
 .It Ar filesystem
 Share the specified filesystem according to the
 .Sy sharenfs
