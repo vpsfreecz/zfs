@@ -4209,7 +4209,7 @@ arc_evict_state(arc_state_t *state, uint64_t spa, int64_t bytes,
 		 * Request that 10% of the LRUs be scanned by the superblock
 		 * shrinker.
 		 */
-		if (type == ARC_BUFC_DATA && aggsum_compare(
+		if (type == ARC_BUFC_METADATA && aggsum_compare(
 		    &arc_sums.arcstat_dnode_size, arc_dnode_size_limit) > 0) {
 			arc_prune_async((aggsum_upper_bound(
 			    &arc_sums.arcstat_dnode_size) -
