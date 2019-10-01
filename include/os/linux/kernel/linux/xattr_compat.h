@@ -28,6 +28,7 @@
 
 #include <linux/posix_acl_xattr.h>
 #include <sys/zfs_ugid_map.h>
+#include <linux/user_namespace.h>
 
 /*
  * 2.6.35 API change,
