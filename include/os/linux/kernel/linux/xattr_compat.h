@@ -27,6 +27,7 @@
 #define	_ZFS_XATTR_H
 
 #include <linux/posix_acl_xattr.h>
+#include <linux/user_namespace.h>
 
 /*
  * 2.6.35 API change,
