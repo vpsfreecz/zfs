@@ -1213,6 +1213,7 @@ typedef struct ddt_histogram {
 #define	ZFS_DEV		"/dev/zfs"
 
 #define	ZFS_SUPER_MAGIC	0x2fc12fc1
+#define	ZFS_SHACK_MAGIC	0x13372fc1
 
 /* general zvol path */
 #define	ZVOL_DIR		"/dev/zvol/"
