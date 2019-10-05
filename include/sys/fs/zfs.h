@@ -1154,6 +1154,7 @@ typedef struct ddt_histogram {
 #define	ZFS_SHARETAB	"/etc/dfs/sharetab"
 
 #define	ZFS_SUPER_MAGIC	0x2fc12fc1
+#define	ZFS_SHACK_MAGIC	0x13372fc1
 
 #define	ZVOL_MAJOR		230
 #define	ZVOL_MINOR_BITS		4
