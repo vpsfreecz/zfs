@@ -22,6 +22,7 @@ SUBDIRS = \
 	nvlist_to_lua \
 	randwritecomp \
 	readmmap \
+	renameat2 \
 	rename_dir \
 	rm_lnkcnt_zero_file \
 	stride_dd \
