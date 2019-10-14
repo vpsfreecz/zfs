@@ -749,16 +749,16 @@ tags = ['functional', 'pyzfs']
 
 [tests/functional/quota]
 tests = ['quota_001_pos', 'quota_002_pos', 'quota_003_pos',
-         'quota_004_pos', 'quota_005_pos', 'quota_006_neg']
+ 'quota_004_pos', 'quota_005_pos', 'quota_006_neg']
 tags = ['functional', 'quota']
 
 [tests/functional/redacted_send]
 tests = ['redacted_compressed', 'redacted_contents', 'redacted_deleted',
-    'redacted_disabled_feature', 'redacted_embedded', 'redacted_holes',
-    'redacted_incrementals', 'redacted_largeblocks', 'redacted_many_clones',
-    'redacted_mixed_recsize', 'redacted_mounts', 'redacted_negative',
-    'redacted_origin', 'redacted_props', 'redacted_resume', 'redacted_size',
-    'redacted_volume']
+'redacted_disabled_feature', 'redacted_embedded', 'redacted_holes',
+'redacted_incrementals', 'redacted_largeblocks', 'redacted_many_clones',
+'redacted_mixed_recsize', 'redacted_mounts', 'redacted_negative',
+'redacted_origin', 'redacted_props', 'redacted_resume', 'redacted_size',
+'redacted_volume']
 tags = ['functional', 'redacted_send']
 
 [tests/functional/raidz]
@@ -767,35 +767,35 @@ tags = ['functional', 'raidz']
 
 [tests/functional/redundancy]
 tests = ['redundancy_001_pos', 'redundancy_002_pos', 'redundancy_003_pos',
-    'redundancy_004_neg']
+'redundancy_004_neg']
 tags = ['functional', 'redundancy']
 
 [tests/functional/refquota]
 tests = ['refquota_001_pos', 'refquota_002_pos', 'refquota_003_pos',
-    'refquota_004_pos', 'refquota_005_pos', 'refquota_006_neg',
-    'refquota_007_neg', 'refquota_008_neg']
+'refquota_004_pos', 'refquota_005_pos', 'refquota_006_neg',
+'refquota_007_neg', 'refquota_008_neg']
 tags = ['functional', 'refquota']
 
 [tests/functional/refreserv]
 tests = ['refreserv_001_pos', 'refreserv_002_pos', 'refreserv_003_pos',
-    'refreserv_004_pos', 'refreserv_005_pos', 'refreserv_multi_raidz',
-    'refreserv_raidz']
+'refreserv_004_pos', 'refreserv_005_pos', 'refreserv_multi_raidz',
+'refreserv_raidz']
 tags = ['functional', 'refreserv']
 
 [tests/functional/removal]
 pre =
 tests = ['removal_all_vdev', 'removal_cancel', 'removal_check_space',
-    'removal_condense_export', 'removal_multiple_indirection',
-    'removal_nopwrite', 'removal_remap_deadlists',
-    'removal_resume_export', 'removal_sanity', 'removal_with_add',
-    'removal_with_create_fs', 'removal_with_dedup',
-    'removal_with_errors', 'removal_with_export',
-    'removal_with_ganging', 'removal_with_faulted',
-    'removal_with_remove', 'removal_with_scrub', 'removal_with_send',
-    'removal_with_send_recv', 'removal_with_snapshot',
-    'removal_with_write', 'removal_with_zdb', 'remove_expanded',
-    'remove_mirror', 'remove_mirror_sanity', 'remove_raidz',
-    'remove_indirect']
+'removal_condense_export', 'removal_multiple_indirection',
+'removal_nopwrite', 'removal_remap_deadlists',
+'removal_resume_export', 'removal_sanity', 'removal_with_add',
+'removal_with_create_fs', 'removal_with_dedup',
+'removal_with_errors', 'removal_with_export',
+'removal_with_ganging', 'removal_with_faulted',
+'removal_with_remove', 'removal_with_scrub', 'removal_with_send',
+'removal_with_send_recv', 'removal_with_snapshot',
+'removal_with_write', 'removal_with_zdb', 'remove_expanded',
+'remove_mirror', 'remove_mirror_sanity', 'remove_raidz',
+'remove_indirect']
 tags = ['functional', 'removal']
 
 [tests/functional/rename_dirs]
@@ -808,13 +808,13 @@ tags = ['functional', 'replacement']
 
 [tests/functional/reservation]
 tests = ['reservation_001_pos', 'reservation_002_pos', 'reservation_003_pos',
-    'reservation_004_pos', 'reservation_005_pos', 'reservation_006_pos',
-    'reservation_007_pos', 'reservation_008_pos', 'reservation_009_pos',
-    'reservation_010_pos', 'reservation_011_pos', 'reservation_012_pos',
-    'reservation_013_pos', 'reservation_014_pos', 'reservation_015_pos',
-    'reservation_016_pos', 'reservation_017_pos', 'reservation_018_pos',
-    'reservation_019_pos', 'reservation_020_pos', 'reservation_021_neg',
-    'reservation_022_pos']
+'reservation_004_pos', 'reservation_005_pos', 'reservation_006_pos',
+'reservation_007_pos', 'reservation_008_pos', 'reservation_009_pos',
+'reservation_010_pos', 'reservation_011_pos', 'reservation_012_pos',
+'reservation_013_pos', 'reservation_014_pos', 'reservation_015_pos',
+'reservation_016_pos', 'reservation_017_pos', 'reservation_018_pos',
+'reservation_019_pos', 'reservation_020_pos', 'reservation_021_neg',
+'reservation_022_pos']
 tags = ['functional', 'reservation']
 
 [tests/functional/rootpool]
@@ -823,21 +823,28 @@ tags = ['functional', 'rootpool']
 
 [tests/functional/rsend]
 tests = ['rsend_001_pos', 'rsend_002_pos', 'rsend_003_pos', 'rsend_004_pos',
-    'rsend_005_pos', 'rsend_006_pos', 'rsend_007_pos', 'rsend_008_pos',
-    'rsend_009_pos', 'rsend_010_pos', 'rsend_011_pos', 'rsend_012_pos',
-    'rsend_013_pos', 'rsend_014_pos',
-    'rsend_019_pos', 'rsend_020_pos',
-    'rsend_021_pos', 'rsend_022_pos', 'rsend_024_pos',
-    'send-c_verify_ratio', 'send-c_verify_contents', 'send-c_props',
-    'send-c_incremental', 'send-c_volume', 'send-c_zstreamdump',
-    'send-c_lz4_disabled', 'send-c_recv_lz4_disabled',
-    'send-c_mixed_compression', 'send-c_stream_size_estimate', 'send-cD',
-    'send-c_embedded_blocks', 'send-c_resume', 'send-cpL_varied_recsize',
-    'send-c_recv_dedup', 'send_encrypted_files', 'send_encrypted_hierarchy',
-    'send_encrypted_props', 'send_encrypted_truncated_files',
-    'send_freeobjects', 'send_realloc_dnode_size', 'send_realloc_files',
-    'send_realloc_encrypted_files', 'send_spill_block', 'send_holds',
-    'send_hole_birth', 'send_mixed_raw', 'send-wDR_encrypted_zvol']
+'rsend_005_pos', 'rsend_006_pos', 'rsend_007_pos', 'rsend_008_pos',
+'rsend_009_pos', 'rsend_010_pos', 'rsend_011_pos', 'rsend_012_pos',
+'rsend_013_pos', 'rsend_014_pos',
+'rsend_019_pos', 'rsend_020_pos',
+'rsend_021_pos', 'rsend_022_pos', 'rsend_024_pos',
+'send-c_verify_ratio', 'send-c_verify_contents', 'send-c_props',
+'send-c_incremental', 'send-c_volume', 'send-c_zstreamdump',
+'send-c_lz4_disabled', 'send-c_recv_lz4_disabled',
+'send-c_mixed_compression', 'send-c_stream_size_estimate', 'send-cD',
+'send-c_embedded_blocks', 'send-c_resume', 'send-cpL_varied_recsize',
+'send-c_recv_dedup', 'send_encrypted_files', 'send_encrypted_hierarchy',
+'send_encrypted_props', 'send_encrypted_truncated_files',
+'send_freeobjects', 'send_realloc_dnode_size', 'send_realloc_files',
+'send_realloc_encrypted_files', 'send_spill_block', 'send_holds',
+'send_hole_birth', 'send_mixed_raw', 'send-wDR_encrypted_zvol']
+
+[tests/functional/renameat2:Linux]
+tests = ['renameat2_noreplace', 'renameat2_exchange', 'renameat2_whiteout']
+tags = ['functional', 'renameat2']
+
+[tests/functional/rsend:Linux]
+tests = ['send_realloc_dnode_size', 'send_encrypted_files']
 tags = ['functional', 'rsend']
 
 [tests/functional/scrub_mirror]
