@@ -726,7 +726,11 @@ tags = ['functional', 'poolversion']
 tests = ['privilege_001_pos', 'privilege_002_pos']
 tags = ['functional', 'privilege']
 
-[tests/functional/procfs]
+[tests/functional/overlayfs:Linux]
+tests = ['overlayfs_basic', 'overlayfs_layered']
+tags = ['functional', 'overlayfs']
+
+[tests/functional/procfs:Linux]
 tests = ['procfs_list_basic', 'procfs_list_concurrent_readers',
     'procfs_list_stale_read', 'pool_state']
 tags = ['functional', 'procfs']
