@@ -127,6 +127,10 @@ tags = ['functional', 'mmp']
 tests = ['umount_unlinked_drain']
 tags = ['functional', 'mount']
 
+[tests/functional/overlayfs:Linux]
+tests = ['overlayfs_basic', 'overlayfs_layered']
+tags = ['functional', 'overlayfs']
+
 [tests/functional/pam:Linux]
 tests = ['pam_basic', 'pam_nounmount']
 tags = ['functional', 'pam']
