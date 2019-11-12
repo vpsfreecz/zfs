@@ -1511,6 +1511,8 @@ zfs_statvfs(struct dentry *dentry, struct kstatfs *statp)
 		magic_hack = true;
 	if (strcmp(current->comm, "lxd") == 0)
 		magic_hack = true;
+	if (strcmp(current->comm, "podman") == 0)
+		magic_hack = true;
 	if (magic_hack) {
 		printk(KERN_INFO "ZFS magic faked to %s\n", current->comm);
 		statp->f_type = ZFS_SHACK_MAGIC;
