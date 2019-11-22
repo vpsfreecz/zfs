@@ -653,6 +653,7 @@ zpl_fallocate(struct inode *ip, int mode, loff_t offset, loff_t len)
 }
 #endif /* HAVE_INODE_FALLOCATE */
 
+#if 0
 static int
 #ifdef HAVE_D_REVALIDATE_NAMEIDATA
 zpl_revalidate(struct dentry *dentry, struct nameidata *nd)
@@ -705,6 +706,7 @@ zpl_revalidate(struct dentry *dentry, unsigned int flags)
 
 	return (1);
 }
+#endif
 
 const struct inode_operations zpl_inode_operations = {
 	.setattr	= zpl_setattr,
@@ -819,6 +821,8 @@ const struct inode_operations zpl_special_inode_operations = {
 #endif /* CONFIG_FS_POSIX_ACL */
 };
 
+#if 0
 dentry_operations_t zpl_dentry_operations = {
 	.d_revalidate	= zpl_revalidate,
 };
+#endif
