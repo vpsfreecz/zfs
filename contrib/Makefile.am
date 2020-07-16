@@ -1,6 +1,6 @@
 SUBDIRS = bash_completion.d pyzfs zcp
 if BUILD_LINUX
-SUBDIRS += bpftrace dracut initramfs
+SUBDIRS += bpftrace dracut
 endif
 if PAM_ZFS_ENABLED
 SUBDIRS += pam_zfs_key
