@@ -102,15 +102,6 @@ AC_CONFIG_FILES([
 	contrib/pyzfs/Makefile
 	contrib/pyzfs/setup.py
 	contrib/zcp/Makefile
-	etc/Makefile
-	etc/default/Makefile
-	etc/init.d/Makefile
-	etc/modules-load.d/Makefile
-	etc/sudoers.d/Makefile
-	etc/systemd/Makefile
-	etc/systemd/system-generators/Makefile
-	etc/systemd/system/Makefile
-	etc/zfs/Makefile
 	include/Makefile
 	include/os/Makefile
 	include/os/freebsd/Makefile
