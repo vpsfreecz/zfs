@@ -66,8 +66,15 @@ free_memory_reason_t last_free_reason;
 uint64_t
 arc_default_max(uint64_t min, uint64_t allmem)
 {
-	/* Default to 1/2 of all memory. */
-	return (MAX(allmem / 2, min));
+	unsigned long acmax;
+
+	/* set max to 3/4 of all memory, or all but 1GB, whichever is more */
+	if (allmem >= 1 << 30)
+		acmax = allmem - (1 << 30);
+	else
+		acmax = arc_c_min;
+	acmax = MAX(allmem * 3 / 4, acmax);
+	return acmax;
 }
 
 #ifdef _KERNEL
