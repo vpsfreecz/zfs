@@ -143,6 +143,51 @@ arc_available_memory(void)
 	return (lowest);
 }
 
+/*
+ * Determine the amount of memory eligible for eviction contained in the
+ * ARC. All clean data reported by the ghost lists can always be safely
+ * evicted. Due to arc_c_min, the same does not hold for all clean data
+ * contained by the regular mru and mfu lists.
+ *
+ * In the case of the regular mru and mfu lists, we need to report as
+ * much clean data as possible, such that evicting that same reported
+ * data will not bring arc_size below arc_c_min. Thus, in certain
+ * circumstances, the total amount of clean data in the mru and mfu
+ * lists might not actually be evictable.
+ *
+ * The following two distinct cases are accounted for:
+ *
+ * 1. The sum of the amount of dirty data contained by both the mru and
+ *    mfu lists, plus the ARC's other accounting (e.g. the anon list),
+ *    is greater than or equal to arc_c_min.
+ *    (i.e. amount of dirty data >= arc_c_min)
+ *
+ *    This is the easy case; all clean data contained by the mru and mfu
+ *    lists is evictable. Evicting all clean data can only drop arc_size
+ *    to the amount of dirty data, which is greater than arc_c_min.
+ *
+ * 2. The sum of the amount of dirty data contained by both the mru and
+ *    mfu lists, plus the ARC's other accounting (e.g. the anon list),
+ *    is less than arc_c_min.
+ *    (i.e. arc_c_min > amount of dirty data)
+ *
+ *    2.1. arc_size is greater than or equal arc_c_min.
+ *         (i.e. arc_size >= arc_c_min > amount of dirty data)
+ *
+ *         In this case, not all clean data from the regular mru and mfu
+ *         lists is actually evictable; we must leave enough clean data
+ *         to keep arc_size above arc_c_min. Thus, the maximum amount of
+ *         evictable data from the two lists combined, is exactly the
+ *         difference between arc_size and arc_c_min.
+ *
+ *    2.2. arc_size is less than arc_c_min
+ *         (i.e. arc_c_min > arc_size > amount of dirty data)
+ *
+ *         In this case, none of the data contained in the mru and mfu
+ *         lists is evictable, even if it's clean. Since arc_size is
+ *         already below arc_c_min, evicting any more would only
+ *         increase this negative difference.
+ */
 static uint64_t
 arc_evictable_memory(void)
 {
@@ -194,12 +239,12 @@ arc_shrinker_scan(struct shrinker *shrink, struct shrink_control *sc)
 		return (SHRINK_STOP);
 
 	/* Reclaim in progress */
-	if (mutex_tryenter(&arc_adjust_lock) == 0) {
+	if (mutex_tryenter(&arc_evict_lock) == 0) {
 		ARCSTAT_INCR(arcstat_need_free, ptob(sc->nr_to_scan));
 		return (0);
 	}
 
-	mutex_exit(&arc_adjust_lock);
+	mutex_exit(&arc_evict_lock);
 
 	/*
 	 * Evict the requested number of pages by shrinking arc_c the
@@ -216,14 +261,14 @@ arc_shrinker_scan(struct shrinker *shrink, struct shrink_control *sc)
 		 * ensure that arc_c doesn't shrink faster than the adjust
 		 * thread can keep up, we wait for eviction here.
 		 */
-		mutex_enter(&arc_adjust_lock);
+		mutex_enter(&arc_evict_lock);
 		if (arc_is_overflowing()) {
-			arc_adjust_needed = B_TRUE;
-			zthr_wakeup(arc_adjust_zthr);
-			(void) cv_wait(&arc_adjust_waiters_cv,
-			    &arc_adjust_lock);
+			arc_evict_needed = B_TRUE;
+			zthr_wakeup(arc_evict_zthr);
+			(void) cv_wait(&arc_evict_waiters_cv,
+			    &arc_evict_lock);
 		}
-		mutex_exit(&arc_adjust_lock);
+		mutex_exit(&arc_evict_lock);
 
 		if (current_is_kswapd())
 			arc_kmem_reap_soon();
@@ -232,7 +277,7 @@ arc_shrinker_scan(struct shrinker *shrink, struct shrink_control *sc)
 		/*
 		 * We've shrunk what we can, wake up threads.
 		 */
-		cv_broadcast(&arc_adjust_waiters_cv);
+		cv_broadcast(&arc_evict_waiters_cv);
 	} else
 		pages = SHRINK_STOP;
 
