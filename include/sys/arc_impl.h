@@ -823,7 +823,6 @@ typedef struct arc_stats {
 	kstat_named_t arcstat_l2_rebuild_log_blks;
 	kstat_named_t arcstat_memory_throttle_count;
 	kstat_named_t arcstat_memory_direct_count;
-	kstat_named_t arcstat_memory_indirect_count;
 	kstat_named_t arcstat_memory_all_bytes;
 	kstat_named_t arcstat_memory_free_bytes;
 	kstat_named_t arcstat_memory_available_bytes;
@@ -846,15 +845,11 @@ typedef struct arc_stats {
 	kstat_named_t arcstat_cached_only_in_progress;
 } arc_stats_t;
 
-typedef enum free_memory_reason_t {
-	FMR_UNKNOWN,
-	FMR_NEEDFREE,
-	FMR_LOTSFREE,
-	FMR_SWAPFS_MINFREE,
-	FMR_PAGES_PP_MAXIMUM,
-	FMR_HEAP_ARENA,
-	FMR_ZIO_ARENA,
-} free_memory_reason_t;
+typedef struct arc_evict_waiter {
+	list_node_t aew_node;
+	kcondvar_t aew_cv;
+	uint64_t aew_count;
+} arc_evict_waiter_t;
 
 #define	ARCSTAT(stat)	(arc_stats.stat.value.ui64)
 
@@ -896,6 +891,7 @@ extern void arc_reduce_target_size(int64_t to_free);
 extern boolean_t arc_reclaim_needed(void);
 extern void arc_kmem_reap_soon(void);
 extern boolean_t arc_is_overflowing(void);
+extern int zfs_arc_shrinker_limit;
 
 extern void arc_lowmem_init(void);
 extern void arc_lowmem_fini(void);
@@ -904,6 +900,7 @@ extern int arc_memory_throttle(spa_t *spa, uint64_t reserve, uint64_t txg);
 extern uint64_t arc_free_memory(void);
 extern int64_t arc_available_memory(void);
 extern void arc_tuning_update(boolean_t);
+extern void arc_wait_for_eviction(uint64_t);
 
 extern int param_set_arc_long(ZFS_MODULE_PARAM_ARGS);
 extern int param_set_arc_int(ZFS_MODULE_PARAM_ARGS);

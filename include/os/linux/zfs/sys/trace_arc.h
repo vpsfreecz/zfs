@@ -378,6 +378,7 @@ DEFINE_DTRACE_PROBE2(l2arc__write);
 DEFINE_DTRACE_PROBE2(l2arc__iodone);
 DEFINE_DTRACE_PROBE4(arc__miss);
 DEFINE_DTRACE_PROBE4(l2arc__evict);
+DEFINE_DTRACE_PROBE4(arc__wait__for__eviction);
 
 #endif /* HAVE_DECLARE_EVENT_CLASS */
 #endif /* _KERNEL */
