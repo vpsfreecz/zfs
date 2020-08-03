@@ -172,6 +172,11 @@
  *	return (error);			// done, report error
  */
 
+#define	VOP_LATENCY_10MS	10000000
+#define	VOP_LATENCY_100MS	100000000
+#define	VOP_LATENCY_1S		1000000000
+#define	VOP_LATENCY_10S		10000000000
+
 /*
  * Virus scanning is unsupported.  It would be possible to add a hook
  * here to performance the required virus scan.  This could be done
@@ -441,6 +446,11 @@ zfs_read(struct inode *ip, uio_t *uio, int ioflag, cred_t *cr)
 	int error = 0;
 	boolean_t frsync = B_FALSE;
 
+	zone_t	*zonep = curzone;
+	zone_vfs_kstat_t *zvp = zonep->zone_vfs_stats;
+	hrtime_t start = 0, lat;
+	int64_t nread = 0;
+
 	znode_t *zp = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
 	ZFS_ENTER(zfsvfs);
@@ -466,6 +476,12 @@ zfs_read(struct inode *ip, uio_t *uio, int ioflag, cred_t *cr)
 		ZFS_EXIT(zfsvfs);
 		return (0);
 	}
+
+	start = gethrtime();
+
+	mutex_enter(&zonep->zone_vfs_lock);
+	kstat_runq_enter(&zonep->zone_vfs_rwstats);
+	mutex_exit(&zonep->zone_vfs_lock);
 
 #ifdef FRSYNC
 	/*
@@ -554,11 +570,39 @@ zfs_read(struct inode *ip, uio_t *uio, int ioflag, cred_t *cr)
 		n -= nbytes;
 	}
 
-	int64_t nread = start_resid - n;
+	nread = start_resid - n;
 	dataset_kstats_update_read_kstats(&zfsvfs->z_kstat, nread);
 	task_io_account_read(nread);
 out:
 	zfs_rangelock_exit(lr);
+
+	if (start != 0) {
+		mutex_enter(&zonep->zone_vfs_lock);
+		zonep->zone_vfs_rwstats.reads++;
+		zonep->zone_vfs_rwstats.nread += nread;
+		kstat_runq_exit(&zonep->zone_vfs_rwstats);
+		mutex_exit(&zonep->zone_vfs_lock);
+
+		lat = gethrtime() - start;
+
+		if (lat >= VOP_LATENCY_10MS) {
+			if (lat < VOP_LATENCY_100MS)
+				atomic_inc_64(&zvp->zv_10ms_ops.value.ui64);
+			else if (lat < VOP_LATENCY_1S) {
+				atomic_inc_64(&zvp->zv_10ms_ops.value.ui64);
+				atomic_inc_64(&zvp->zv_100ms_ops.value.ui64);
+			} else if (lat < VOP_LATENCY_10S) {
+				atomic_inc_64(&zvp->zv_10ms_ops.value.ui64);
+				atomic_inc_64(&zvp->zv_100ms_ops.value.ui64);
+				atomic_inc_64(&zvp->zv_1s_ops.value.ui64);
+			} else {
+				atomic_inc_64(&zvp->zv_10ms_ops.value.ui64);
+				atomic_inc_64(&zvp->zv_100ms_ops.value.ui64);
+				atomic_inc_64(&zvp->zv_1s_ops.value.ui64);
+				atomic_inc_64(&zvp->zv_10s_ops.value.ui64);
+			}
+		}
+	}
 
 	ZFS_EXIT(zfsvfs);
 	return (error);
@@ -589,6 +633,16 @@ zfs_write(struct inode *ip, uio_t *uio, int ioflag, cred_t *cr)
 {
 	int error = 0;
 	ssize_t start_resid = uio->uio_resid;
+
+	zone_t	*zonep = curzone;
+	zone_vfs_kstat_t *zvp = zonep->zone_vfs_stats;
+	hrtime_t start = 0, lat;
+
+	start = gethrtime();
+
+	mutex_enter(&zonep->zone_vfs_lock);
+	kstat_waitq_enter(&zonep->zone_vfs_rwstats);
+	mutex_exit(&zonep->zone_vfs_lock);
 
 	/*
 	 * Fasttrack empty write
@@ -978,6 +1032,34 @@ zfs_write(struct inode *ip, uio_t *uio, int ioflag, cred_t *cr)
 	dataset_kstats_update_write_kstats(&zfsvfs->z_kstat, nwritten);
 	task_io_account_write(nwritten);
 
+
+	if (start != 0) {
+		mutex_enter(&zonep->zone_vfs_lock);
+		zonep->zone_vfs_rwstats.writes++;
+		zonep->zone_vfs_rwstats.nwritten += nwritten;
+		kstat_waitq_exit(&zonep->zone_vfs_rwstats);
+		mutex_exit(&zonep->zone_vfs_lock);
+
+		lat = gethrtime() - start;
+
+		if (lat >= VOP_LATENCY_10MS) {
+			if (lat < VOP_LATENCY_100MS)
+				atomic_inc_64(&zvp->zv_10ms_ops.value.ui64);
+			else if (lat < VOP_LATENCY_1S) {
+				atomic_inc_64(&zvp->zv_10ms_ops.value.ui64);
+				atomic_inc_64(&zvp->zv_100ms_ops.value.ui64);
+			} else if (lat < VOP_LATENCY_10S) {
+				atomic_inc_64(&zvp->zv_10ms_ops.value.ui64);
+				atomic_inc_64(&zvp->zv_100ms_ops.value.ui64);
+				atomic_inc_64(&zvp->zv_1s_ops.value.ui64);
+			} else {
+				atomic_inc_64(&zvp->zv_10ms_ops.value.ui64);
+				atomic_inc_64(&zvp->zv_100ms_ops.value.ui64);
+				atomic_inc_64(&zvp->zv_1s_ops.value.ui64);
+				atomic_inc_64(&zvp->zv_10s_ops.value.ui64);
+			}
+		}
+	}
 	ZFS_EXIT(zfsvfs);
 	return (0);
 }
