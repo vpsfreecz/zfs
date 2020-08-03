@@ -28,12 +28,13 @@
 #include <linux/proc_fs.h>
 #include <linux/sched.h>
 
+extern struct proc_dir_entry *proc_spl;
 extern struct proc_dir_entry *proc_spl_kstat;
 
 int spl_proc_init(void);
 void spl_proc_fini(void);
 
-static inline boolean_t
+static inline bool
 zfs_proc_is_caller(struct task_struct *t)
 {
 	return (t->group_leader == current->group_leader);

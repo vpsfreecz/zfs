@@ -476,6 +476,7 @@ struct zio {
 	hrtime_t	io_timestamp;	/* submitted at */
 	hrtime_t	io_queued_timestamp;
 	hrtime_t	io_target_timestamp;
+	hrtime_t	io_dispatched;	/* time I/O was dispatched to disk */
 	hrtime_t	io_delta;	/* vdev queue service delta */
 	hrtime_t	io_delay;	/* Device access time (disk or */
 					/* file). */
@@ -512,6 +513,7 @@ struct zio {
 	zio_cksum_report_t *io_cksum_report;
 	uint64_t	io_ena;
 
+	zoneid_t	io_zoneid;	/* zone which originated this I/O */
 	/* Taskq dispatching state */
 	taskq_ent_t	io_tqent;
 };
