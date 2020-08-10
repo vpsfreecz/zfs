@@ -85,8 +85,15 @@ static struct notifier_block arc_hotplug_callback_mem_nb;
 uint64_t
 arc_default_max(uint64_t min, uint64_t allmem)
 {
-	/* Default to 1/2 of all memory. */
-	return (MAX(allmem / 2, min));
+	unsigned long acmax;
+
+	/* set max to 3/4 of all memory, or all but 64GB, whichever is more */
+	if (allmem >= 1L << 33)
+		acmax = allmem - (1L << 36);
+	else
+		acmax = arc_c_min;
+	acmax = MAX(allmem * 3 / 4, acmax);
+	return acmax;
 }
 
 #ifdef _KERNEL
