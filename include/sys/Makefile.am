@@ -119,6 +119,7 @@ COMMON_H = \
 	zfs_ugid_map.h \
 	zfs_vfsops.h \
 	zfs_znode.h \
+	zfs_zone.h \
 	zil.h \
 	zil_impl.h \
 	zio_checksum.h \
