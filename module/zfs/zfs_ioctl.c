@@ -168,6 +168,7 @@
 #include <sys/zfs_quota.h>
 #include <sys/zfs_vfsops.h>
 #include <sys/zfs_znode.h>
+#include <sys/zfs_zone.h>
 #include <sys/zap.h>
 #include <sys/spa.h>
 #include <sys/spa_impl.h>
@@ -419,6 +420,7 @@ zfs_dozonecheck_impl(const char *dataset, uint64_t zoned, cred_t *cr)
 		if (!writable)
 			return (SET_ERROR(EPERM));
 	}
+
 	return (0);
 }
 
@@ -7573,6 +7575,7 @@ zfs_kmod_init(void)
 
 	spa_init(SPA_MODE_READ | SPA_MODE_WRITE);
 	zfs_init();
+	zfs_zone_init();
 
 	zfs_ioctl_init();
 
@@ -7614,6 +7617,7 @@ zfs_kmod_fini(void)
 		kmem_free(zs, sizeof (zfsdev_state_t));
 	}
 
+	zfs_zone_fini();
 	zfs_ereport_taskq_fini();	/* run before zfs_fini() on Linux */
 	zfs_fini();
 	spa_fini();
