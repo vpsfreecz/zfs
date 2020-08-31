@@ -24,6 +24,7 @@ SUBDIRS = \
 	readmmap \
 	renameat2 \
 	rename_dir \
+	rollback_threaded \
 	rm_lnkcnt_zero_file \
 	stride_dd \
 	threadsappend
