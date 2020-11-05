@@ -27,6 +27,7 @@
 #ifdef CONFIG_COMPAT
 #include <linux/compat.h>
 #endif
+#include <linux/splice.h>
 #include <sys/file.h>
 #include <sys/dmu_objset.h>
 #include <sys/zfs_znode.h>
@@ -1016,6 +1017,103 @@ zpl_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 #endif /* CONFIG_COMPAT */
 
 
+static ssize_t zpl_file_splice_read(struct file *in, loff_t *ppos,
+                                struct pipe_inode_info *pipe, size_t len,
+                                unsigned int flags)
+{
+	cred_t *cr = CRED();
+	struct inode *ip = in->f_mapping->host;
+	struct iov_iter to;
+	struct page **pages;
+	unsigned int nr_pages;
+	unsigned int mask;
+	size_t offset, base, copied = 0;
+	ssize_t res;
+	int i;
+
+	if (pipe_full(pipe->head, pipe->tail, pipe->max_usage))
+		return -EAGAIN;
+
+	/*
+	 * Try to keep page boundaries matching to source pagecache ones -
+	 * it probably won't be much help, but...
+	 */
+	offset = *ppos & ~PAGE_MASK;
+
+	iov_iter_pipe(&to, READ, pipe, len + offset);
+
+	res = iov_iter_get_pages_alloc(&to, &pages, len + offset, &base);
+	if (res <= 0)
+		return -ENOMEM;
+
+	nr_pages = DIV_ROUND_UP(res + base, PAGE_SIZE);
+
+	mask = pipe->ring_size - 1;
+	pipe->bufs[to.head & mask].offset = offset;
+	pipe->bufs[to.head & mask].len -= offset;
+
+	for (i = 0; i < nr_pages; i++) {
+		struct iovec vec;
+		size_t this_len = min_t(size_t, len, PAGE_SIZE - offset);
+		vec.iov_base = page_address(pages[i]) + offset;
+		vec.iov_len = this_len;
+		len -= this_len;
+		res = zpl_read_common_iovec(ip, &vec, this_len, 1, ppos,
+		    UIO_SYSSPACE, flags, cr, offset);
+		if (res < 0)
+			goto out;
+		else
+			copied += res;
+		offset = 0;
+	}
+
+	return copied;
+out:
+	for (i = 0; i < nr_pages; i++)
+		put_page(pages[i]);
+	kvfree(pages);
+	iov_iter_advance(&to, copied);  /* truncates and discards */
+	return res;
+}
+
+static int zpl_write_pipe_buf(struct pipe_inode_info *pipe, struct pipe_buffer *buf,
+                         struct splice_desc *sd)
+{
+	int ret;
+	void *data;
+	loff_t tmp = sd->pos;
+
+	data = kmap(buf->page);
+	file_start_write(sd->u.file);
+	ret = __kernel_write(sd->u.file, data + buf->offset, sd->len, &tmp);
+	file_end_write(sd->u.file);
+	kunmap(buf->page);
+
+	return ret;
+}
+
+static ssize_t zpl_file_splice_write(struct pipe_inode_info *pipe,
+                                        struct file *out, loff_t *ppos,
+                                        size_t len, unsigned int flags)
+{
+       ssize_t ret;
+
+	struct splice_desc sd = {
+		.total_len = len,
+		.flags = flags,
+		.pos = *ppos,
+		.u.file = out,
+	};
+
+	pipe_lock(pipe);
+	ret = __splice_from_pipe(pipe, &sd, zpl_write_pipe_buf);
+	pipe_unlock(pipe);
+	if (ret > 0)
+		*ppos += ret;
+
+	return ret;
+}
+
 const struct address_space_operations zpl_address_space_operations = {
 	.readpages	= zpl_readpages,
 	.readpage	= zpl_readpage,
@@ -1051,6 +1149,8 @@ const struct file_operations zpl_file_operations = {
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= zpl_compat_ioctl,
 #endif
+	.splice_write	= zpl_file_splice_write,
+	.splice_read	= zpl_file_splice_read,
 };
 
 const struct file_operations zpl_dir_file_operations = {
