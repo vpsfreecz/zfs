@@ -48,6 +48,7 @@ extern "C" {
 #endif
 
 #define	ZNODE_OS_FIELDS			\
+	cred_t		*z_mapped_cred;	\
 	struct inode	z_inode;
 
 

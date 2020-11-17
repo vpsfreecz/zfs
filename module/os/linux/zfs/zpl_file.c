@@ -579,10 +579,11 @@ zpl_mmap(struct file *filp, struct vm_area_struct *vma)
 	znode_t *zp = ITOZ(ip);
 	int error;
 	fstrans_cookie_t cookie;
+	cred_t *cr = CRED();
 
 	cookie = spl_fstrans_mark();
 	error = -zfs_map(ip, vma->vm_pgoff, (caddr_t *)vma->vm_start,
-	    (size_t)(vma->vm_end - vma->vm_start), vma->vm_flags);
+	    (size_t)(vma->vm_end - vma->vm_start), vma->vm_flags, cr);
 	spl_fstrans_unmark(cookie);
 	if (error)
 		return (error);

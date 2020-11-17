@@ -130,6 +130,7 @@ zfs_znode_cache_constructor(void *buf, void *arg, int kmflags)
 
 	zfs_rangelock_init(&zp->z_rangelock, zfs_rangelock_cb, zp);
 
+	zp->z_mapped_cred = NULL;
 	zp->z_dirlocks = NULL;
 	zp->z_acl_cached = NULL;
 	zp->z_xattr_cached = NULL;
@@ -150,6 +151,8 @@ zfs_znode_cache_destructor(void *buf, void *arg)
 	mutex_destroy(&zp->z_acl_lock);
 	rw_destroy(&zp->z_xattr_lock);
 	zfs_rangelock_fini(&zp->z_rangelock);
+	if (zp->z_mapped_cred)
+		crfree(zp->z_mapped_cred);
 
 	ASSERT(zp->z_dirlocks == NULL);
 	ASSERT(zp->z_acl_cached == NULL);

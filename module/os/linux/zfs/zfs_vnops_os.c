@@ -3603,9 +3603,12 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc)
 	sa_bulk_attr_t	bulk[3];
 	int		cnt = 0;
 	struct address_space *mapping;
+	cred_t   *cr = CRED();
 
 	ZFS_ENTER(zfsvfs);
 	ZFS_VERIFY_ZP(zp);
+	crhold(cr);
+	override_creds(zp->z_mapped_cred);
 
 	ASSERT(PageLocked(pp));
 
@@ -3617,6 +3620,8 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc)
 	/* Page is beyond end of file */
 	if (pgoff >= offset) {
 		unlock_page(pp);
+		revert_creds(cr);
+		crfree(cr);
 		ZFS_EXIT(zfsvfs);
 		return (0);
 	}
@@ -3677,6 +3682,8 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc)
 	if (unlikely((mapping != pp->mapping) || !PageDirty(pp))) {
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
+		revert_creds(cr);
+		crfree(cr);
 		ZFS_EXIT(zfsvfs);
 		return (0);
 	}
@@ -3691,6 +3698,8 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc)
 				wait_on_page_bit(pp, PG_writeback);
 		}
 
+		revert_creds(cr);
+		crfree(cr);
 		ZFS_EXIT(zfsvfs);
 		return (0);
 	}
@@ -3699,6 +3708,8 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc)
 	if (!clear_page_dirty_for_io(pp)) {
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
+		revert_creds(cr);
+		crfree(cr);
 		ZFS_EXIT(zfsvfs);
 		return (0);
 	}
@@ -3726,6 +3737,8 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc)
 		ClearPageError(pp);
 		end_page_writeback(pp);
 		zfs_rangelock_exit(lr);
+		revert_creds(cr);
+		crfree(cr);
 		ZFS_EXIT(zfsvfs);
 		return (err);
 	}
@@ -3763,6 +3776,8 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc)
 		zil_commit(zfsvfs->z_log, zp->z_id);
 	}
 
+	revert_creds(cr);
+	crfree(cr);
 	ZFS_EXIT(zfsvfs);
 	return (err);
 }
@@ -3949,6 +3964,7 @@ zfs_getpage(struct inode *ip, struct page *pl[], int nr_pages)
 	znode_t	 *zp  = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
 	int	 err;
+	cred_t   *cr = CRED();
 
 	if (pl == NULL)
 		return (0);
@@ -3956,7 +3972,11 @@ zfs_getpage(struct inode *ip, struct page *pl[], int nr_pages)
 	ZFS_ENTER(zfsvfs);
 	ZFS_VERIFY_ZP(zp);
 
+	crhold(cr);
+	override_creds(zp->z_mapped_cred);
 	err = zfs_fillpage(ip, pl, nr_pages);
+	revert_creds(cr);
+	crfree(cr);
 
 	ZFS_EXIT(zfsvfs);
 	return (err);
@@ -3977,7 +3997,7 @@ zfs_getpage(struct inode *ip, struct page *pl[], int nr_pages)
 /*ARGSUSED*/
 int
 zfs_map(struct inode *ip, offset_t off, caddr_t *addrp, size_t len,
-    unsigned long vm_flags)
+    unsigned long vm_flags, cred_t *cr)
 {
 	znode_t  *zp = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
@@ -4001,6 +4021,9 @@ zfs_map(struct inode *ip, offset_t off, caddr_t *addrp, size_t len,
 		ZFS_EXIT(zfsvfs);
 		return (SET_ERROR(ENXIO));
 	}
+
+	crhold(cr);
+	zp->z_mapped_cred = cr;
 
 	ZFS_EXIT(zfsvfs);
 	return (0);
