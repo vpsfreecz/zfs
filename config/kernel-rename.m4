@@ -61,14 +61,16 @@ AC_DEFUN([ZFS_AC_KERNEL_RENAME], [
 			AC_MSG_RESULT(yes)
 			AC_DEFINE(HAVE_RENAME_WANTS_FLAGS, 1,
 				[iops->rename() wants flags])
-	],[
-		AC_MSG_CHECKING([whether iops->rename2() exists])
-		ZFS_LINUX_TEST_RESULT([inode_operations_rename2], [
-			AC_MSG_RESULT(yes)
-			AC_DEFINE(HAVE_RENAME2, 1, [iops->rename2() exists])
 		],[
 			AC_MSG_RESULT(no)
+
+			AC_MSG_CHECKING([whether iops->rename2() exists])
+			ZFS_LINUX_TEST_RESULT([inode_operations_rename2], [
+				AC_MSG_RESULT(yes)
+				AC_DEFINE(HAVE_RENAME2, 1, [iops->rename2() exists])
+			],[
+				AC_MSG_RESULT(no)
+			])
 		])
 	])
 ])
-
