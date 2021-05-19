@@ -109,6 +109,9 @@ arc_all_memory(void)
 #endif /* CONFIG_HIGHMEM */
 }
 
+unsigned long zfs_arc_swapcache_ignore_bytes = (1L << 33); // 8 GB
+ZFS_MODULE_PARAM(zfs_arc, zfs_arc_, swapcache_ignore_bytes, UINT, ZMOD_RW,
+	"Consider swapcache above this limit a free memory");
 /*
  * Return the amount of memory that is considered free.  In user space
  * which is primarily used for testing we pretend that free memory ranges
@@ -122,8 +125,14 @@ arc_free_memory(void)
 	si_meminfo(&si);
 	return (ptob(si.freeram - si.freehigh));
 #else
+	uint64_t swapcache = ptob(total_swapcache_pages());
+	uint64_t sc_free = 0;
+
+	if (swapcache > zfs_arc_swapcache_ignore_bytes)
+		sc_free = swapcache - zfs_arc_swapcache_ignore_bytes;
+
 	return (ptob(nr_free_pages() +
-	    nr_inactive_file_pages()));
+	    nr_inactive_file_pages()) + sc_free);
 #endif /* CONFIG_HIGHMEM */
 }
 
