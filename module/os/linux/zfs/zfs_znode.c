@@ -1631,49 +1631,50 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 
 	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, off, len);
 
+	zfs_rangelock_exit(lr);
+
+	if (!zp->z_is_mapped)
+		return (error);
+
 	/*
 	 * Zero partial page cache entries.  This must be done under a
 	 * range lock in order to keep the ARC and page cache in sync.
 	 */
-	if (zp->z_is_mapped) {
-		loff_t first_page, last_page, page_len;
-		loff_t first_page_offset, last_page_offset;
+	loff_t first_page, last_page, page_len;
+	loff_t first_page_offset, last_page_offset;
 
-		/* first possible full page in hole */
-		first_page = (off + PAGE_SIZE - 1) >> PAGE_SHIFT;
-		/* last page of hole */
-		last_page = (off + len) >> PAGE_SHIFT;
+	/* first possible full page in hole */
+	first_page = (off + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	/* last page of hole */
+	last_page = (off + len) >> PAGE_SHIFT;
 
-		/* offset of first_page */
-		first_page_offset = first_page << PAGE_SHIFT;
-		/* offset of last_page */
-		last_page_offset = last_page << PAGE_SHIFT;
+	/* offset of first_page */
+	first_page_offset = first_page << PAGE_SHIFT;
+	/* offset of last_page */
+	last_page_offset = last_page << PAGE_SHIFT;
 
-		/* truncate whole pages */
-		if (last_page_offset > first_page_offset) {
-			truncate_inode_pages_range(ZTOI(zp)->i_mapping,
-			    first_page_offset, last_page_offset - 1);
-		}
-
-		/* truncate sub-page ranges */
-		if (first_page > last_page) {
-			/* entire punched area within a single page */
-			zfs_zero_partial_page(zp, off, len);
-		} else {
-			/* beginning of punched area at the end of a page */
-			page_len  = first_page_offset - off;
-			if (page_len > 0)
-				zfs_zero_partial_page(zp, off, page_len);
-
-			/* end of punched area at the beginning of a page */
-			page_len = off + len - last_page_offset;
-			if (page_len > 0)
-				zfs_zero_partial_page(zp, last_page_offset,
-				    page_len);
-		}
+	/* truncate whole pages */
+	if (last_page_offset > first_page_offset) {
+		truncate_inode_pages_range(ZTOI(zp)->i_mapping,
+		    first_page_offset, last_page_offset - 1);
 	}
-	zfs_rangelock_exit(lr);
 
+	/* truncate sub-page ranges */
+	if (first_page > last_page) {
+		/* entire punched area within a single page */
+		zfs_zero_partial_page(zp, off, len);
+	} else {
+		/* beginning of punched area at the end of a page */
+		page_len  = first_page_offset - off;
+		if (page_len > 0)
+			zfs_zero_partial_page(zp, off, page_len);
+
+		/* end of punched area at the beginning of a page */
+		page_len = off + len - last_page_offset;
+		if (page_len > 0)
+			zfs_zero_partial_page(zp, last_page_offset,
+			    page_len);
+	}
 	return (error);
 }
 
