@@ -75,6 +75,7 @@ SUBDIRS = \
 	snapshot \
 	snapused \
 	sparse \
+	stat \
 	suid \
 	threadsappend \
 	trim \
