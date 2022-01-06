@@ -27,6 +27,7 @@
 #define	_ZFS_XATTR_H
 
 #include <linux/posix_acl_xattr.h>
+#include <sys/zfs_ugid_map.h>
 
 /*
  * 2.6.35 API change,
@@ -133,6 +134,25 @@ static inline int
 zpl_acl_to_xattr(struct posix_acl *acl, void *value, int size)
 {
 	return (posix_acl_to_xattr(kcred->user_ns, acl, value, size));
+}
+
+static inline struct posix_acl *
+zpl_acl_from_xattr_map(struct zfs_ugid_map *uid_map,
+		struct zfs_ugid_map *gid_map,
+		const void *value, int size)
+{
+	return zfs_ugid_map_acl_from_xattr(
+		uid_map,
+		gid_map,
+		posix_acl_from_xattr(kcred->user_ns, value, size));
+}
+
+static inline int
+zpl_acl_to_xattr_map(struct zfs_ugid_map *uid_map,
+		struct zfs_ugid_map *gid_map,
+		struct posix_acl *acl, void *value, int size)
+{
+	return (zfs_ugid_map_acl_to_xattr(uid_map, gid_map, acl, value, size));
 }
 
 #endif /* _ZFS_XATTR_H */
