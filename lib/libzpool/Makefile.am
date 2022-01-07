@@ -93,8 +93,9 @@ KERNEL_C = \
 	hkdf.c \
 	fm.c \
 	gzip.c \
-	lzjb.c \
 	lz4.c \
+	lz4_zfs.c \
+	lzjb.c \
 	metaslab.c \
 	mmp.c \
 	multilist.c \
