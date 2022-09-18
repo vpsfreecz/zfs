@@ -111,7 +111,7 @@
 static __attribute__((noreturn)) void txg_sync_thread(void *arg);
 static __attribute__((noreturn)) void txg_quiesce_thread(void *arg);
 
-uint_t zfs_txg_timeout = 5;	/* max seconds worth of delta per txg */
+uint_t zfs_txg_timeout = 15;	/* max seconds worth of delta per txg */
 
 /*
  * Prepare the txg subsystem.
