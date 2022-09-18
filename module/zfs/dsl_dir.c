@@ -1262,6 +1262,7 @@ dsl_dir_tempreserve_impl(dsl_dir_t *dd, uint64_t asize, boolean_t netfree,
 	uint64_t quota;
 	struct tempreserve *tr;
 	int retval;
+	uint64_t ext_quota;
 	uint64_t ref_rsrv;
 
 top_of_function:
@@ -1333,12 +1334,20 @@ top_of_function:
 	}
 
 	/*
-	 * If they are requesting more space, and our current estimate
-	 * is over quota, they get to try again unless the actual
-	 * on-disk is over quota and there are no pending changes (which
-	 * may free up space for us).
+         * Let's enable overshooting the quota
+         * to prevent txgs being closed early
+         * allow overshoot of 1 GB or ~3% of target quota, whichever is greater
 	 */
-	if (used_on_disk + est_inflight >= quota) {
+	ext_quota = MAX((quota >> 5), (1L << 30));
+	if (quota == UINT64_MAX)
+	        ext_quota = 0;
+
+	if (used_on_disk >= quota) {
+		/* Quota exceeded */
+		mutex_exit(&dd->dd_lock);
+		DMU_TX_STAT_BUMP(dmu_tx_quota);
+		return (retval);
+	} else if (used_on_disk + est_inflight >= quota + ext_quota) {
 		if (est_inflight > 0 || used_on_disk < quota ||
 		    (retval == ENOSPC && used_on_disk < quota + deferred))
 			retval = ERESTART;
