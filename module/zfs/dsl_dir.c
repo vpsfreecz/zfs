@@ -1346,7 +1346,7 @@ top_of_function:
 		/* Quota exceeded */
 		mutex_exit(&dd->dd_lock);
 		DMU_TX_STAT_BUMP(dmu_tx_quota);
-		return (retval);
+		return (SET_ERROR(retval));
 	} else if (used_on_disk + est_inflight >= quota + ext_quota) {
 		if (est_inflight > 0 || used_on_disk < quota ||
 		    (retval == ENOSPC && used_on_disk < quota + deferred))
