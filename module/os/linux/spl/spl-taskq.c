@@ -46,7 +46,7 @@ module_param(spl_taskq_thread_priority, int, 0644);
 MODULE_PARM_DESC(spl_taskq_thread_priority,
 	"Allow non-default priority for taskq threads");
 
-int spl_taskq_thread_sequential = 4;
+int spl_taskq_thread_sequential = 64;
 module_param(spl_taskq_thread_sequential, int, 0644);
 MODULE_PARM_DESC(spl_taskq_thread_sequential,
 	"Create new taskq threads after N sequential tasks");
