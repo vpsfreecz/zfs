@@ -40,7 +40,6 @@
 #include <sys/rrwlock.h>
 #include <sys/dsl_synctask.h>
 #include <sys/mmp.h>
-#include <sys/aggsum.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -59,7 +58,6 @@ struct dsl_deadlist;
 
 extern unsigned long zfs_dirty_data_max;
 extern unsigned long zfs_dirty_data_max_max;
-extern unsigned long zfs_wrlog_data_max;
 extern int zfs_dirty_data_sync_percent;
 extern int zfs_dirty_data_max_percent;
 extern int zfs_dirty_data_max_max_percent;
@@ -121,9 +119,6 @@ typedef struct dsl_pool {
 	uint64_t dp_mos_compressed_delta;
 	uint64_t dp_mos_uncompressed_delta;
 
-	aggsum_t dp_wrlog_pertxg[TXG_SIZE];
-	aggsum_t dp_wrlog_total;
-
 	/*
 	 * Time of most recently scheduled (furthest in the future)
 	 * wakeup for delayed transactions.
@@ -163,8 +158,6 @@ int dsl_pool_sync_context(dsl_pool_t *dp);
 uint64_t dsl_pool_adjustedsize(dsl_pool_t *dp, zfs_space_check_t slop_policy);
 uint64_t dsl_pool_unreserved_space(dsl_pool_t *dp,
     zfs_space_check_t slop_policy);
-void dsl_pool_wrlog_count(dsl_pool_t *dp, int64_t size, uint64_t txg);
-boolean_t dsl_pool_wrlog_over_max(dsl_pool_t *dp);
 void dsl_pool_dirty_space(dsl_pool_t *dp, int64_t space, dmu_tx_t *tx);
 void dsl_pool_undirty_space(dsl_pool_t *dp, int64_t space, uint64_t txg);
 void dsl_free(dsl_pool_t *dp, uint64_t txg, const blkptr_t *bpp);

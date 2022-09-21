@@ -639,7 +639,6 @@ zfs_log_write(zilog_t *zilog, dmu_tx_t *tx, int txtype,
 	itx_wr_state_t write_state;
 	uintptr_t fsync_cnt;
 	uint64_t gen = 0;
-	ssize_t size = resid;
 
 	if (zil_replaying(zilog, tx) || zp->z_unlinked ||
 	    zfs_xattr_owner_unlinked(zp)) {
@@ -724,10 +723,6 @@ zfs_log_write(zilog_t *zilog, dmu_tx_t *tx, int txtype,
 
 		off += len;
 		resid -= len;
-	}
-
-	if (write_state == WR_COPIED || write_state == WR_NEED_COPY) {
-		dsl_pool_wrlog_count(zilog->zl_dmu_pool, size, tx->tx_txg);
 	}
 }
 
