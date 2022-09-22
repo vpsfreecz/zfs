@@ -4304,20 +4304,9 @@ dsl_dataset_check_quota(dsl_dataset_t *ds, boolean_t check_quota,
 		mutex_exit(&ds->ds_lock);
 		return (0);
 	}
-	/*
-	 * If they are requesting more space, and our current estimate
-	 * is over quota, they get to try again unless the actual
-	 * on-disk is over quota and there are no pending changes (which
-	 * may free up space for us).
-	 */
-	if (dsl_dataset_phys(ds)->ds_referenced_bytes + inflight >=
-	    ds->ds_quota) {
-		if (inflight > 0 ||
-		    dsl_dataset_phys(ds)->ds_referenced_bytes < ds->ds_quota)
-			error = SET_ERROR(ERESTART);
-		else
-			error = SET_ERROR(EDQUOT);
-	}
+
+	if (dsl_dataset_phys(ds)->ds_referenced_bytes >= ds->ds_quota)
+		error = SET_ERROR(EDQUOT);
 	mutex_exit(&ds->ds_lock);
 
 	return (error);
