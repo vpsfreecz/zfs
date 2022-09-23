@@ -138,7 +138,7 @@ unsigned long zfs_smoothing_scale = 100000;
 /*
  * This determines the number of threads used by the dp_sync_taskq.
  */
-int zfs_sync_taskq_batch_pct = 75;
+int zfs_sync_taskq_batch_pct = 40;
 
 /*
  * These tunables determine the behavior of how zil_itxg_clean() is
