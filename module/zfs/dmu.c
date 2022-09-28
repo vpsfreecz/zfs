@@ -70,7 +70,7 @@ int zfs_nopwrite_enabled = 1;
  * will wait until the next TXG.
  * A value of zero will disable this throttle.
  */
-unsigned long zfs_per_txg_dirty_frees_percent = 5;
+static unsigned long zfs_per_txg_dirty_frees_percent = 30;
 
 /*
  * Enable/disable forcing txg sync when dirty in dmu_offset_next.
