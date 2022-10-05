@@ -84,8 +84,8 @@ static struct notifier_block arc_hotplug_callback_mem_nb;
 uint64_t
 arc_default_max(uint64_t min, uint64_t allmem)
 {
-	/* Default to 1/2 of all memory. */
-	return (MAX(allmem / 2, min));
+	/* Default to 1/4 of all memory */
+	return MAX(allmem / 4, min);
 }
 
 #ifdef _KERNEL
@@ -424,7 +424,7 @@ arc_hotplug_callback(struct notifier_block *self, unsigned long action,
 
 #ifdef __LP64__
 	if (zfs_dirty_data_max_max == 0)
-		zfs_dirty_data_max_max = MIN(4ULL * 1024 * 1024 * 1024,
+		zfs_dirty_data_max_max = MIN(128ULL * 1024 * 1024 * 1024,
 		    allmem * zfs_dirty_data_max_max_percent / 100);
 #else
 	if (zfs_dirty_data_max_max == 0)
