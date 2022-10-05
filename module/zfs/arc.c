@@ -7683,7 +7683,7 @@ arc_init(void)
 	 */
 #ifdef __LP64__
 	if (zfs_dirty_data_max_max == 0)
-		zfs_dirty_data_max_max = MIN(4ULL * 1024 * 1024 * 1024,
+		zfs_dirty_data_max_max = MIN(128ULL * 1024 * 1024 * 1024,
 		    allmem * zfs_dirty_data_max_max_percent / 100);
 #else
 	if (zfs_dirty_data_max_max == 0)
