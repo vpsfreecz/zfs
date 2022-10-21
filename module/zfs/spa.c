@@ -168,10 +168,10 @@ static int spa_load_impl(spa_t *spa, spa_import_type_t type,
     const char **ereport);
 static void spa_vdev_resilver_done(spa_t *spa);
 
-static uint_t	zio_taskq_batch_pct = 80;	  /* 1 thread per cpu in pset */
+static uint_t	zio_taskq_batch_pct = 50;	  /* 1 thread per cpu in pset */
 static uint_t	zio_taskq_batch_tpq;		  /* threads per taskq */
 static const boolean_t	zio_taskq_sysdc = B_TRUE; /* use SDC scheduling class */
-static const uint_t	zio_taskq_basedc = 80;	  /* base duty cycle */
+static const uint_t	zio_taskq_basedc = 50;	  /* base duty cycle */
 
 static const boolean_t spa_create_process = B_TRUE; /* no process => no sysdc */
 
