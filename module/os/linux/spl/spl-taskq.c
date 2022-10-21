@@ -31,6 +31,8 @@
 #ifdef HAVE_CPU_HOTPLUG
 #include <linux/cpuhotplug.h>
 #endif
+#include <linux/topology.h>
+#include <linux/kthread.h>
 
 int spl_taskq_thread_bind = 0;
 module_param(spl_taskq_thread_bind, int, 0644);
@@ -71,6 +73,34 @@ static int spl_taskq_cpuhp_state;
 LIST_HEAD(tq_list);
 struct rw_semaphore tq_list_sem;
 static uint_t taskq_tsd;
+
+int zfs_numa_node_id(void)
+{
+	return numa_node_id();
+}
+EXPORT_SYMBOL(zfs_numa_node_id);
+
+int zfs_numa_nodes(void)
+{
+	int ret = 0, nid;
+	for_each_online_node(nid)
+		ret++;
+	return ret;
+}
+EXPORT_SYMBOL(zfs_numa_nodes);
+
+int zfs_nth_node(int i)
+{
+	int nid = 0, j = 0;
+
+	for_each_node_with_cpus(nid) {
+		if (j++ == i) {
+			break;
+		}
+	}
+	return i;
+}
+EXPORT_SYMBOL(zfs_nth_node);
 
 static int
 task_km_flags(uint_t flags)
@@ -1010,8 +1040,12 @@ taskq_thread_create(taskq_t *tq)
 	tqt->tqt_tq = tq;
 	tqt->tqt_id = TASKQID_INVALID;
 
-	tqt->tqt_thread = spl_kthread_create(taskq_thread, tqt,
-	    "%s", tq->tq_name);
+	if (tq->tq_nid != INT_MAX)
+		tqt->tqt_thread = spl_kthread_create_on_node(taskq_thread, tqt,
+		    tq->tq_nid, "%s", tq->tq_name);
+	else
+		tqt->tqt_thread = spl_kthread_create(taskq_thread, tqt,
+		    "%s", tq->tq_name);
 	if (tqt->tqt_thread == NULL) {
 		kmem_free(tqt, sizeof (taskq_thread_t));
 		return (NULL);
@@ -1031,7 +1065,10 @@ taskq_thread_create(taskq_t *tq)
 }
 
 taskq_t *
-taskq_create(const char *name, int threads_arg, pri_t pri,
+taskq_create_impl(const char *name, int threads_arg, int nid, pri_t pri,
+    int minalloc, int maxalloc, uint_t flags);
+taskq_t *
+taskq_create_impl(const char *name, int threads_arg, int nid, pri_t pri,
     int minalloc, int maxalloc, uint_t flags)
 {
 	taskq_t *tq;
@@ -1070,6 +1107,7 @@ taskq_create(const char *name, int threads_arg, pri_t pri,
 	}
 #endif
 
+	tq->tq_nid = nid;
 	spin_lock_init(&tq->tq_lock);
 	INIT_LIST_HEAD(&tq->tq_thread_list);
 	INIT_LIST_HEAD(&tq->tq_active_list);
@@ -1137,7 +1175,24 @@ taskq_create(const char *name, int threads_arg, pri_t pri,
 
 	return (tq);
 }
+
+taskq_t *
+taskq_create(const char *name, int threads_arg, pri_t pri,
+    int minalloc, int maxalloc, uint_t flags)
+{
+	return taskq_create_impl(name, threads_arg, INT_MAX, pri,
+	    minalloc, maxalloc, flags);
+}
 EXPORT_SYMBOL(taskq_create);
+
+taskq_t *
+taskq_create_on_node(const char *name, int threads_arg, int nid, pri_t pri,
+    int minalloc, int maxalloc, uint_t flags)
+{
+	return taskq_create_impl(name, threads_arg, nid, pri,
+	    minalloc, maxalloc, flags);
+}
+EXPORT_SYMBOL(taskq_create_on_node);
 
 void
 taskq_destroy(taskq_t *tq)
