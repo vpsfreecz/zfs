@@ -104,6 +104,7 @@ typedef struct taskq {
 	/* list node for the cpu hotplug callback */
 	struct hlist_node	tq_hp_cb_node;
 	boolean_t		tq_hp_support;
+	int			tq_nid;
 } taskq_t;
 
 typedef struct taskq_ent {
@@ -149,6 +150,7 @@ extern void taskq_dispatch_ent(taskq_t *, task_func_t, void *, uint_t,
 extern int taskq_empty_ent(taskq_ent_t *);
 extern void taskq_init_ent(taskq_ent_t *);
 extern taskq_t *taskq_create(const char *, int, pri_t, int, int, uint_t);
+extern taskq_t *taskq_create_on_node(const char *, int, int, pri_t, int, int, uint_t);
 extern void taskq_destroy(taskq_t *);
 extern void taskq_wait_id(taskq_t *, taskqid_t);
 extern void taskq_wait_outstanding(taskq_t *, taskqid_t);
@@ -157,6 +159,8 @@ extern int taskq_cancel_id(taskq_t *, taskqid_t);
 extern int taskq_member(taskq_t *, kthread_t *);
 extern taskq_t *taskq_of_curthread(void);
 
+#define	taskq_create_proc_on_node(name, nthreads, nid, pri, min, max, proc, flags) \
+    taskq_create_on_node(name, nthreads, nid, pri, min, max, flags)
 #define	taskq_create_proc(name, nthreads, pri, min, max, proc, flags) \
     taskq_create(name, nthreads, pri, min, max, flags)
 #define	taskq_create_sysdc(name, nthreads, min, max, proc, dc, flags) \
@@ -165,5 +169,9 @@ extern taskq_t *taskq_of_curthread(void);
 
 int spl_taskq_init(void);
 void spl_taskq_fini(void);
+
+extern int zfs_numa_node_id(void);
+extern int zfs_numa_nodes(void);
+extern int zfs_nth_node(int i);
 
 #endif  /* _SPL_TASKQ_H */

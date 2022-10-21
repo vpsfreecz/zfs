@@ -493,9 +493,16 @@ typedef struct taskq {
 extern taskq_t *system_taskq;
 extern taskq_t *system_delay_taskq;
 
+extern int zfs_numa_node_id(void);
+extern int zfs_numa_nodes(void);
+extern int zfs_nth_node(int i);
+
 extern taskq_t	*taskq_create(const char *, int, pri_t, int, int, uint_t);
+extern taskq_t	*taskq_create_on_node(const char *, int, int, pri_t, int, int, uint_t);
 #define	taskq_create_proc(a, b, c, d, e, p, f) \
 	    (taskq_create(a, b, c, d, e, f))
+#define	taskq_create_proc_on_node(a, b, c, n, d, e, p, f) \
+	    (taskq_create_on_node(a, b, c, n, d, e, f))
 #define	taskq_create_sysdc(a, b, d, e, p, dc, f) \
 	    ((void) sizeof (dc), taskq_create(a, b, maxclsyspri, d, e, f))
 extern taskqid_t taskq_dispatch(taskq_t *, task_func_t, void *, uint_t);

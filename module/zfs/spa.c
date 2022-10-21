@@ -170,8 +170,9 @@ static void spa_vdev_resilver_done(spa_t *spa);
 
 static uint_t	zio_taskq_batch_pct = 50;	  /* 1 thread per cpu in pset */
 static uint_t	zio_taskq_batch_tpq;		  /* threads per taskq */
+static uint_t	zio_taskq_numa_mode = B_TRUE;  /* per-NUMA node taskqs for zio taskqs */
 static const boolean_t	zio_taskq_sysdc = B_TRUE; /* use SDC scheduling class */
-static const uint_t	zio_taskq_basedc = 50;	  /* base duty cycle */
+static const uint_t	zio_taskq_basedc = 80;	  /* base duty cycle */
 
 static const boolean_t spa_create_process = B_TRUE; /* no process => no sysdc */
 
@@ -997,13 +998,16 @@ spa_taskqs_init(spa_t *spa, zio_type_t t, zio_taskq_type_t q)
 		break;
 
 	case ZTI_MODE_SCALE:
-		flags |= TASKQ_THREADS_CPU_PCT;
 		/*
 		 * We want more taskqs to reduce lock contention, but we want
 		 * less for better request ordering and CPU utilization.
 		 */
 		cpus = MAX(1, boot_ncpus * zio_taskq_batch_pct / 100);
-		if (zio_taskq_batch_tpq > 0) {
+		if (zio_taskq_numa_mode) {
+			count = zfs_numa_nodes();
+			value =  MAX(cpus / MAX(count, 1), zio_taskq_batch_tpq);
+		} else if (zio_taskq_batch_tpq > 0) {
+			flags |= TASKQ_THREADS_CPU_PCT;
 			count = MAX(1, (cpus + zio_taskq_batch_tpq / 2) /
 			    zio_taskq_batch_tpq);
 		} else {
@@ -1024,6 +1028,7 @@ spa_taskqs_init(spa_t *spa, zio_type_t t, zio_taskq_type_t q)
 			 * 128     10      8%      10      100
 			 * 256     14      6%      15      210
 			 */
+			flags |= TASKQ_THREADS_CPU_PCT;
 			count = 1 + cpus / 6;
 			while (count * count > cpus)
 				count--;
@@ -1091,7 +1096,7 @@ spa_taskqs_init(spa_t *spa, zio_type_t t, zio_taskq_type_t q)
 #error "unknown OS"
 #endif
 			}
-			tq = taskq_create_proc(name, value, pri, 50,
+			tq = taskq_create_proc_on_node(name, value, zfs_nth_node(i), pri, 50,
 			    INT_MAX, spa->spa_proc, flags);
 		}
 
@@ -1137,7 +1142,10 @@ spa_taskq_dispatch_ent(spa_t *spa, zio_type_t t, zio_taskq_type_t q,
 	if (tqs->stqs_count == 1) {
 		tq = tqs->stqs_taskq[0];
 	} else {
-		tq = tqs->stqs_taskq[((uint64_t)gethrtime()) % tqs->stqs_count];
+		if (zio_taskq_numa_mode)
+			tq = tqs->stqs_taskq[zfs_numa_node_id()];
+		else
+			tq = tqs->stqs_taskq[((uint64_t)gethrtime()) % tqs->stqs_count];
 	}
 
 	taskq_dispatch_ent(tq, func, arg, flags, ent);
@@ -10059,6 +10067,9 @@ ZFS_MODULE_PARAM(zfs_spa, spa_, load_verify_data, INT, ZMOD_RW,
 
 ZFS_MODULE_PARAM(zfs_spa, spa_, load_print_vdev_tree, INT, ZMOD_RW,
 	"Print vdev tree to zfs_dbgmsg during pool import");
+
+ZFS_MODULE_PARAM(zfs_zio, zio_, taskq_numa_mode, INT, ZMOD_RD,
+	"NUMA number of zio taskqs");
 
 ZFS_MODULE_PARAM(zfs_zio, zio_, taskq_batch_pct, UINT, ZMOD_RD,
 	"Percentage of CPUs to run an IO worker thread");
