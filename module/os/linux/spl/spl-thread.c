@@ -133,17 +133,18 @@ EXPORT_SYMBOL(__thread_create);
  * to return -ENOMEM.
  */
 struct task_struct *
-spl_kthread_create(int (*func)(void *), void *data, const char namefmt[], ...)
+spl_kthread_create_impl(int (*func)(void *), void *data, char *name, bool numa_bind, int nid);
+
+struct task_struct *
+spl_kthread_create_impl(int (*func)(void *), void *data, char *name, bool numa_bind, int nid)
 {
 	struct task_struct *tsk;
-	va_list args;
-	char name[TASK_COMM_LEN];
-
-	va_start(args, namefmt);
-	vsnprintf(name, sizeof (name), namefmt, args);
-	va_end(args);
 	do {
-		tsk = kthread_create(func, data, "%s", name);
+		if (numa_bind)
+			tsk = kthread_create_on_node(func, data, nid, "%s", name);
+		else
+			tsk = kthread_create(func, data, "%s", name);
+
 		if (IS_ERR(tsk)) {
 			if (signal_pending(current)) {
 				clear_thread_flag(TIF_SIGPENDING);
@@ -157,7 +158,31 @@ spl_kthread_create(int (*func)(void *), void *data, const char namefmt[], ...)
 		}
 	} while (1);
 }
+struct task_struct *
+spl_kthread_create(int (*func)(void *), void *data, const char namefmt[], ...)
+{
+	va_list args;
+	char name[TASK_COMM_LEN];
+
+	va_start(args, namefmt);
+	vsnprintf(name, sizeof (name), namefmt, args);
+	va_end(args);
+	return spl_kthread_create_impl(func, data, name, 0, 0);
+}
 EXPORT_SYMBOL(spl_kthread_create);
+struct task_struct *
+spl_kthread_create_on_node(int (*func)(void *), void *data, int nid, const char namefmt[], ...)
+{
+	va_list args;
+	char name[TASK_COMM_LEN];
+
+	va_start(args, namefmt);
+	vsnprintf(name, sizeof (name), namefmt, args);
+	va_end(args);
+
+	return spl_kthread_create_impl(func, data, name, 1, nid);
+}
+EXPORT_SYMBOL(spl_kthread_create_on_node);
 
 /*
  * The "why" argument indicates the allowable side-effects of the call:
