@@ -64,6 +64,8 @@ extern kthread_t *__thread_create(caddr_t stk, size_t  stksize,
     int state, pri_t pri);
 extern struct task_struct *spl_kthread_create(int (*func)(void *),
     void *data, const char namefmt[], ...);
+extern struct task_struct *spl_kthread_create_on_node(int (*func)(void *),
+    void *data, int nid, const char namefmt[], ...);
 
 static inline __attribute__((noreturn)) void
 spl_thread_exit(void)

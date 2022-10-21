@@ -38,6 +38,21 @@ static pthread_key_t taskq_tsd;
 
 #define	TASKQ_ACTIVE	0x00010000
 
+int zfs_numa_node_id(void)
+{
+	return 0;
+}
+
+int zfs_numa_nodes(void)
+{
+	return 1;
+}
+
+int zfs_nth_node(int nid)
+{
+	return 0;
+}
+
 static taskq_ent_t *
 task_alloc(taskq_t *tq, int tqflags)
 {
@@ -299,6 +314,13 @@ taskq_create(const char *name, int nthreads, pri_t pri,
 		    taskq_thread, tq, 0, &p0, TS_RUN, pri)) != NULL);
 
 	return (tq);
+}
+taskq_t *
+taskq_create_on_node(const char *name, int nthreads, int nid, pri_t pri,
+    int minalloc, int maxalloc, uint_t flags)
+{
+	return taskq_create(name, nthreads, pri,
+	    minalloc, maxalloc, flags);
 }
 
 void
