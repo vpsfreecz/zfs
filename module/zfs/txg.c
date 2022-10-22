@@ -112,6 +112,7 @@ static __attribute__((noreturn)) void txg_sync_thread(void *arg);
 static __attribute__((noreturn)) void txg_quiesce_thread(void *arg);
 
 uint_t zfs_txg_timeout = 15;	/* max seconds worth of delta per txg */
+uint_t zfs_txg_wait_sync_wakeup = 1; /* wake up txg_sync to close txg early */
 
 /*
  * Prepare the txg subsystem.
@@ -719,7 +720,8 @@ txg_wait_synced_impl(dsl_pool_t *dp, uint64_t txg, boolean_t wait_sig)
 		    "tx_synced=%llu waiting=%llu dp=%px\n",
 		    (u_longlong_t)tx->tx_synced_txg,
 		    (u_longlong_t)tx->tx_sync_txg_waiting, dp);
-		cv_broadcast(&tx->tx_sync_more_cv);
+		if (zfs_txg_wait_sync_wakeup)
+			cv_broadcast(&tx->tx_sync_more_cv);
 		if (wait_sig) {
 			/*
 			 * Condition wait here but stop if the thread receives a
@@ -1075,3 +1077,5 @@ EXPORT_SYMBOL(txg_sync_waiting);
 
 ZFS_MODULE_PARAM(zfs_txg, zfs_txg_, timeout, UINT, ZMOD_RW,
 	"Max seconds worth of delta per txg");
+ZFS_MODULE_PARAM(zfs_txg, zfs_txg_, wait_sync_wakeup, UINT, ZMOD_RW,
+	"Wake up txg_sync to close txg early");
