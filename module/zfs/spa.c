@@ -167,7 +167,7 @@ static boolean_t spa_has_active_shared_spare(spa_t *spa);
 static int spa_load_impl(spa_t *spa, spa_import_type_t type, char **ereport);
 static void spa_vdev_resilver_done(spa_t *spa);
 
-uint_t		zio_taskq_batch_pct = 50;
+uint_t		zio_taskq_batch_pct = 100;
 uint_t		zio_taskq_batch_tpq;		/* threads per taskq */
 int		zio_taskq_numa_mode = B_TRUE;  /* per-NUMA node taskqs for zio taskqs */
 boolean_t	zio_taskq_sysdc = B_TRUE;	/* use SDC scheduling class */

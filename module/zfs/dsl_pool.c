@@ -144,7 +144,7 @@ unsigned long zfs_delay_scale = 1000 * 1000 * 1000 / 2000;
 /*
  * This determines the number of threads used by the dp_sync_taskq.
  */
-int zfs_sync_taskq_batch_pct = 40;
+int zfs_sync_taskq_batch_pct = 50;
 
 /*
  * These tunables determine the behavior of how zil_itxg_clean() is

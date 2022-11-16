@@ -819,7 +819,7 @@ spl_init(void)
 	int rc = 0;
 
 	if (!spl_ncpus)
-		spl_ncpus = boot_ncpus;
+		spl_ncpus = boot_ncpus * 45 / 100;
 
 	bzero(&p0, sizeof (proc_t));
 	spl_random_init();
