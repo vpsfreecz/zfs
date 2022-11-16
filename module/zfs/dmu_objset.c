@@ -624,7 +624,7 @@ dmu_objset_open_impl(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
 	mutex_init(&os->os_userused_lock, NULL, MUTEX_DEFAULT, NULL);
 	mutex_init(&os->os_obj_lock, NULL, MUTEX_DEFAULT, NULL);
 	mutex_init(&os->os_user_ptr_lock, NULL, MUTEX_DEFAULT, NULL);
-	os->os_obj_next_percpu_len = boot_ncpus;
+	os->os_obj_next_percpu_len = spl_ncpus;
 	os->os_obj_next_percpu = kmem_zalloc(os->os_obj_next_percpu_len *
 	    sizeof (os->os_obj_next_percpu[0]), KM_SLEEP);
 

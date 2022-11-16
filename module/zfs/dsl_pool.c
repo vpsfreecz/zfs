@@ -234,10 +234,10 @@ dsl_pool_open_impl(spa_t *spa, uint64_t txg)
 	}
 
 	dp->dp_zrele_taskq = taskq_create("z_zrele", 100, defclsyspri,
-	    boot_ncpus * 8, INT_MAX, TASKQ_PREPOPULATE | TASKQ_DYNAMIC |
+	    spl_ncpus * 8, INT_MAX, TASKQ_PREPOPULATE | TASKQ_DYNAMIC |
 	    TASKQ_THREADS_CPU_PCT);
 	dp->dp_unlinked_drain_taskq = taskq_create("z_unlinked_drain",
-	    100, defclsyspri, boot_ncpus, INT_MAX,
+	    100, defclsyspri, spl_ncpus, INT_MAX,
 	    TASKQ_PREPOPULATE | TASKQ_DYNAMIC | TASKQ_THREADS_CPU_PCT);
 
 	return (dp);

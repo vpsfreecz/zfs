@@ -810,10 +810,16 @@ spl_kvmem_fini(void)
 	spl_kmem_fini();
 }
 
+uint_t spl_ncpus = 0;
+EXPORT_SYMBOL(spl_ncpus);
+
 static int __init
 spl_init(void)
 {
 	int rc = 0;
+
+	if (!spl_ncpus)
+		spl_ncpus = boot_ncpus;
 
 	bzero(&p0, sizeof (proc_t));
 	spl_random_init();

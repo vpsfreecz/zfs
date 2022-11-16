@@ -34,6 +34,8 @@
 #include <sys/rwlock.h>
 #include <sys/wait.h>
 
+extern uint_t spl_ncpus;
+
 #define	TASKQ_NAMELEN		31
 
 #define	TASKQ_PREPOPULATE	0x00000001

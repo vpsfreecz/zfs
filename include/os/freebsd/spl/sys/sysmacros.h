@@ -82,6 +82,7 @@ extern "C" {
 #define	CPU_SEQID curcpu
 #define	CPU_SEQID_UNSTABLE curcpu
 #define	is_system_labeled()		0
+
 /*
  * Convert a single byte to/from binary-coded decimal (BCD).
  */

@@ -38,7 +38,6 @@ int spl_taskq_thread_bind = 0;
 module_param(spl_taskq_thread_bind, int, 0644);
 MODULE_PARM_DESC(spl_taskq_thread_bind, "Bind taskq thread to CPU by default");
 
-
 int spl_taskq_thread_dynamic = 1;
 module_param(spl_taskq_thread_dynamic, int, 0444);
 MODULE_PARM_DESC(spl_taskq_thread_dynamic, "Allow dynamic taskq threads");
@@ -1433,13 +1432,13 @@ spl_taskq_init(void)
 	    "fs/spl_taskq:online", spl_taskq_expand, spl_taskq_prepare_down);
 #endif
 
-	system_taskq = taskq_create("spl_system_taskq", MAX(boot_ncpus, 64),
-	    maxclsyspri, boot_ncpus, INT_MAX, TASKQ_PREPOPULATE|TASKQ_DYNAMIC);
+	system_taskq = taskq_create("spl_system_taskq", MAX(spl_ncpus, 64),
+	    maxclsyspri, spl_ncpus, INT_MAX, TASKQ_PREPOPULATE|TASKQ_DYNAMIC);
 	if (system_taskq == NULL)
 		return (1);
 
-	system_delay_taskq = taskq_create("spl_delay_taskq", MAX(boot_ncpus, 4),
-	    maxclsyspri, boot_ncpus, INT_MAX, TASKQ_PREPOPULATE|TASKQ_DYNAMIC);
+	system_delay_taskq = taskq_create("spl_delay_taskq", MAX(spl_ncpus, 4),
+	    maxclsyspri, spl_ncpus, INT_MAX, TASKQ_PREPOPULATE|TASKQ_DYNAMIC);
 	if (system_delay_taskq == NULL) {
 #ifdef HAVE_CPU_HOTPLUG
 		cpuhp_remove_multi_state(spl_taskq_cpuhp_state);
@@ -1449,7 +1448,7 @@ spl_taskq_init(void)
 	}
 
 	dynamic_taskq = taskq_create("spl_dynamic_taskq", 1,
-	    maxclsyspri, boot_ncpus, INT_MAX, TASKQ_PREPOPULATE);
+	    maxclsyspri, spl_ncpus, INT_MAX, TASKQ_PREPOPULATE);
 	if (dynamic_taskq == NULL) {
 #ifdef HAVE_CPU_HOTPLUG
 		cpuhp_remove_multi_state(spl_taskq_cpuhp_state);

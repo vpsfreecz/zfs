@@ -747,7 +747,7 @@ extern int __init
 zstd_init(void)
 {
 	/* Set pool size by using maximum sane thread count * 4 */
-	pool_count = (boot_ncpus * 4);
+	pool_count = (spl_ncpus * 4);
 	zstd_meminit();
 
 	/* Initialize kstat */

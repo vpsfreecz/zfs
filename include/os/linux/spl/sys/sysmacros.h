@@ -33,7 +33,6 @@
 #include <sys/signal.h>
 #include <asm/page.h>
 
-
 #ifndef _KERNEL
 #define	_KERNEL				__KERNEL__
 #endif
@@ -71,10 +70,10 @@
 #define	DEV_BSIZE			512
 #define	DEV_BSHIFT			9 /* log2(DEV_BSIZE) */
 
+#define	boot_ncpus			num_online_cpus()
 #define	proc_pageout			NULL
 #define	curproc				current
 #define	max_ncpus			num_possible_cpus()
-#define	boot_ncpus			num_online_cpus()
 #define	CPU_SEQID			smp_processor_id()
 #define	CPU_SEQID_UNSTABLE		raw_smp_processor_id()
 #define	is_system_labeled()		0

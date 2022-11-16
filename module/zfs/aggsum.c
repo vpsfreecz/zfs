@@ -72,7 +72,7 @@
  * suited for write-many read-rarely operations.
  *
  * Note that the aggsums do not expand if more CPUs are hot-added. In that
- * case, we will have less fanout than boot_ncpus, but we don't want to always
+ * case, we will have less fanout than spl_ncpus, but we don't want to always
  * reserve the RAM necessary to create the extra slots for additional CPUs up
  * front, and dynamically adding them is a complex task.
  */
@@ -94,8 +94,8 @@ aggsum_init(aggsum_t *as, uint64_t value)
 	 * Too many buckets may hurt read performance without improving
 	 * write.  From 12 CPUs use bucket per 2 CPUs, from 48 per 4, etc.
 	 */
-	as->as_bucketshift = highbit64(boot_ncpus / 6) / 2;
-	as->as_numbuckets = ((boot_ncpus - 1) >> as->as_bucketshift) + 1;
+	as->as_bucketshift = highbit64(spl_ncpus / 6) / 2;
+	as->as_numbuckets = ((spl_ncpus - 1) >> as->as_bucketshift) + 1;
 	as->as_buckets = kmem_zalloc(as->as_numbuckets *
 	    sizeof (aggsum_bucket_t), KM_SLEEP);
 	for (int i = 0; i < as->as_numbuckets; i++) {

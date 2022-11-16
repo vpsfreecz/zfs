@@ -38,6 +38,8 @@
 extern "C" {
 #endif
 
+extern uint_t spl_ncpus;
+
 #define	TASKQ_NAMELEN	31
 
 typedef struct taskq {

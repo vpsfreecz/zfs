@@ -94,7 +94,7 @@ multilist_create_impl(multilist_t *ml, size_t size, size_t offset,
  * Allocate a new multilist, using the default number of sublists (the number
  * of CPUs, or at least 4, or the tunable zfs_multilist_num_sublists). Note
  * that the multilists do not expand if more CPUs are hot-added. In that case,
- * we will have less fanout than boot_ncpus, but we don't want to always
+ * we will have less fanout than spl_ncpus, but we don't want to always
  * reserve the RAM necessary to create the extra slots for additional CPUs up
  * front, and dynamically adding them is a complex task.
  */
@@ -107,7 +107,7 @@ multilist_create(multilist_t *ml, size_t size, size_t offset,
 	if (zfs_multilist_num_sublists > 0) {
 		num_sublists = zfs_multilist_num_sublists;
 	} else {
-		num_sublists = MAX(boot_ncpus, 4);
+		num_sublists = MAX(spl_ncpus, 4);
 	}
 
 	multilist_create_impl(ml, size, offset, num_sublists, index_func);
