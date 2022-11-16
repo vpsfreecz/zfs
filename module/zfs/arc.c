@@ -451,7 +451,7 @@ unsigned long zfs_arc_meta_limit_percent = 75;
 /*
  * Percentage that can be consumed by dnodes of ARC meta buffers.
  */
-unsigned long zfs_arc_dnode_limit_percent = 10;
+unsigned long zfs_arc_dnode_limit_percent = 25;
 
 /*
  * These tunables are Linux specific
