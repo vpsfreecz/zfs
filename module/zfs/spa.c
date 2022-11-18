@@ -989,11 +989,9 @@ spa_taskqs_init(spa_t *spa, zio_type_t t, zio_taskq_type_t q)
 			count = MAX(1, zfs_numa_nodes());
 			/*
 			 * ... number of threads:
-			 * - either cpus / number of taskqs or
-			 * - zio_taskq_batch_tpq
-			 * ^ whichever is lower, but at least 1
+			 * cpus / number of numa nodes (at least 1)
 			 */
-			value =  MIN(MAX(1, zio_taskq_batch_tpq), cpus / count);
+			value =  MAX(1, cpus / count);
 		} else if (zio_taskq_batch_tpq > 0) {
 			flags |= TASKQ_THREADS_CPU_PCT;
 			count = MAX(1, (cpus + zio_taskq_batch_tpq / 2) /
