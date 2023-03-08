@@ -1109,6 +1109,7 @@ zfs_statvfs(struct inode *ip, struct kstatfs *statp)
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
 	uint64_t refdbytes, availbytes, usedobjs, availobjs;
 	int err = 0;
+	bool magic_hack = false;
 
 	if ((err = zfs_enter(zfsvfs, FTAG)) != 0)
 		return (err);
@@ -1157,6 +1158,19 @@ zfs_statvfs(struct inode *ip, struct kstatfs *statp)
 	statp->f_type = ZFS_SUPER_MAGIC;
 	statp->f_namelen =
 	    zfsvfs->z_longname ? (ZAP_MAXNAMELEN_NEW - 1) : (MAXNAMELEN - 1);
+
+	if (strcmp(current->comm, "containerd") == 0)
+		magic_hack = true;
+	if (strcmp(current->comm, "dockerd") == 0)
+		magic_hack = true;
+	if (strcmp(current->comm, "lxd") == 0)
+		magic_hack = true;
+	if (strcmp(current->comm, "podman") == 0)
+		magic_hack = true;
+	if (strcmp(current->comm, "crio") == 0)
+		magic_hack = true;
+	if (magic_hack)
+		statp->f_type = ZFS_SHACK_MAGIC;
 
 	/*
 	 * We have all of 40 characters to stuff a string here.
