@@ -7291,7 +7291,7 @@ share_mount(int op, int argc, char **argv)
 				libzfs_add_handle(&cb, zhp);
 				assert(cb.cb_used <= cb.cb_alloc);
 
-				if (zfs_iter_filesystems(zhp, 0, get_one_dataset, &state) != 0) {
+				if (zfs_iter_filesystems_v2(zhp, 0, get_one_dataset, &state) != 0) {
 					zfs_close(zhp);
 					if (options != NULL)
 						free(options);
