@@ -1279,6 +1279,7 @@ dsl_dir_tempreserve_impl(dsl_dir_t *dd, uint64_t asize, boolean_t netfree,
 	int retval;
 	uint64_t ref_rsrv;
 
+	(void) retval;
 top_of_function:
 	txg = tx->tx_txg;
 	retval = EDQUOT;
