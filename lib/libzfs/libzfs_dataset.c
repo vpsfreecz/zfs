@@ -1023,7 +1023,7 @@ zfs_which_resv_prop(zfs_handle_t *zhp, zfs_prop_t *resv_prop)
 }
 
 static int
-zfs_ugid_map_validate_str(char *strval)
+zfs_ugid_map_validate_str(const char *strval)
 {
 	int pos = 0, i = 0, entries = 0, matches;
 	int64_t ns_id, host_id, cnt;
