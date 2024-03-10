@@ -2638,29 +2638,30 @@ dmu_buf_will_dirty_impl(dmu_buf_t *db_fake, int flags, dmu_tx_t *tx)
 	mutex_enter(&db->db_mtx);
 
 	if (db->db_state == DB_CACHED || db->db_state == DB_NOFILL) {
-		dbuf_dirty_record_t *dr = dbuf_find_dirty_eq(db, tx->tx_txg);
 		/*
 		 * It's possible that it is already dirty but not cached,
 		 * because there are some calls to dbuf_dirty() that don't
 		 * go through dmu_buf_will_dirty().
 		 */
-		if (dr != NULL) {
-			if (dr->dt.dl.dr_brtwrite) {
-				/*
-				 * Block cloning: If we are dirtying a cloned
-				 * block, we cannot simply redirty it, because
-				 * this dr has no data associated with it.
-				 * We will go through a full undirtying below,
-				 * before dirtying it again.
-				 */
-				undirty = B_TRUE;
-			} else {
-				/* This dbuf is already dirty and cached. */
-				dbuf_redirty(dr);
-				mutex_exit(&db->db_mtx);
-				return;
-			}
+		dbuf_dirty_record_t *dr = dbuf_find_dirty_eq(db, tx->tx_txg);
+		if (dr != NULL && dr->dr_dbuf != NULL &&
+		    dr->dr_dbuf->db_level == 0 &&
+		    dr->dt.dl.dr_brtwrite) {
+			/*
+			 * Block cloning: If we are dirtying a cloned
+			 * block, we cannot simply redirty it, because
+			 * this dr has no data associated with it.
+			 * We will go through a full undirtying below,
+			 * before dirtying it again.
+			 */
+			undirty = B_TRUE;
+		} else if (dr != NULL) {
+			/* This dbuf is already dirty and cached. */
+			dbuf_redirty(dr);
+			mutex_exit(&db->db_mtx);
+			return;
 		}
+
 	}
 	mutex_exit(&db->db_mtx);
 
