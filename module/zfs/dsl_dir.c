@@ -392,6 +392,9 @@ dsl_dir_namelen(dsl_dir_t *dd)
 {
 	int result = 0;
 
+	if (!dd)
+		return (0);
+
 	if (dd->dd_parent) {
 		/* parent's name + 1 for the "/" */
 		result = dsl_dir_namelen(dd->dd_parent) + 1;

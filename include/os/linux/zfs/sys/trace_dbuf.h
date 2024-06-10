@@ -47,7 +47,7 @@
  */
 
 #define	DBUF_TP_STRUCT_ENTRY					\
-	__dynamic_array(char,	os_spa,	TRACE_DBUF_MSG_MAX)	\
+	__string(os_spa,	"NULL")				\
 	__field(uint64_t,	ds_object)			\
 	__field(uint64_t,	db_object)			\
 	__field(uint64_t,	db_level)			\
@@ -63,8 +63,6 @@
 		if (POINTER_IS_VALID(DB_DNODE(db)->dn_objset)) {	\
 			__assign_str(os_spa,				\
 			spa_name(DB_DNODE(db)->dn_objset->os_spa));	\
-		} else {						\
-			__assign_str(os_spa, "NULL");			\
 		}							\
 									\
 		__entry->ds_object = db->db_objset->os_dsl_dataset ?	\
