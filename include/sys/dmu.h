@@ -284,6 +284,7 @@ typedef enum dmu_object_type {
 #define	DMU_TX_NOWAIT		(0ULL)
 #define	DMU_TX_WAIT		(1ULL<<0)
 #define	DMU_TX_NOTHROTTLE	(1ULL<<1)
+#define	DMU_TX_SUSPEND		(1ULL<<2)
 
 void byteswap_uint64_array(void *buf, size_t size);
 void byteswap_uint32_array(void *buf, size_t size);
