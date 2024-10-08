@@ -526,6 +526,7 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	ASSERT3P(zp->z_acl_cached, ==, NULL);
 	ASSERT3P(zp->z_xattr_cached, ==, NULL);
 	zp->z_unlinked = B_FALSE;
+	zp->z_is_tmpfile = B_FALSE;
 	zp->z_atime_dirty = B_FALSE;
 	zp->z_is_ctldir = B_FALSE;
 	zp->z_suspended = B_FALSE;
@@ -593,28 +594,10 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	zfs_znode_update_vfs(zp);
 	zfs_inode_set_ops(zfsvfs, ip);
 
-	/*
-	 * The only way insert_inode_locked() can fail is if the ip->i_ino
-	 * number is already hashed for this super block.  This can never
-	 * happen because the inode numbers map 1:1 with the object numbers.
-	 *
-	 * Exceptions include rolling back a mounted file system, either
-	 * from the zfs rollback or zfs recv command.
-	 *
-	 * Active inodes are unhashed during the rollback, but since zrele
-	 * can happen asynchronously, we can't guarantee they've been
-	 * unhashed.  This can cause hash collisions in unlinked drain
-	 * processing so do not hash unlinked znodes.
-	 */
-	if (links > 0)
-		VERIFY3S(insert_inode_locked(ip), ==, 0);
-
 	mutex_enter(&zfsvfs->z_znodes_lock);
 	list_insert_tail(&zfsvfs->z_all_znodes, zp);
 	mutex_exit(&zfsvfs->z_znodes_lock);
 
-	if (links > 0)
-		unlock_new_inode(ip);
 	return (zp);
 
 error:
@@ -931,6 +914,12 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 	(*zpp)->z_mode = ZTOI(*zpp)->i_mode = mode;
 	(*zpp)->z_dnodesize = dnodesize;
 	(*zpp)->z_projid = projid;
+	if (flag & IS_TMPFILE) {
+		(*zpp)->z_is_tmpfile = B_TRUE;
+		/* Add to unlinked set */
+		(*zpp)->z_unlinked = B_TRUE;
+		zfs_unlinked_add((*zpp), tx);
+	}
 
 	if (obj_type == DMU_OT_ZNODE ||
 	    acl_ids->z_aclp->z_version < ZFS_ACL_VERSION_FUID) {
@@ -1150,6 +1139,8 @@ again:
 		err = SET_ERROR(ENOENT);
 	} else {
 		*zpp = zp;
+		VERIFY0(insert_inode_locked(ZTOI(zp)));
+		unlock_new_inode(ZTOI(zp));
 	}
 	zfs_znode_hold_exit(zfsvfs, zh);
 	return (err);
@@ -1335,8 +1326,9 @@ zfs_zinactive(znode_t *zp)
 	 * Don't allow a zfs_zget() while were trying to release this znode.
 	 */
 	zh = zfs_znode_hold_enter(zfsvfs, z_id);
-
 	mutex_enter(&zp->z_lock);
+	truncate_setsize(ZTOI(zp), 0);
+	clear_inode(ZTOI(zp));
 
 	/*
 	 * If this was the last reference to a file with no links, remove
@@ -1358,7 +1350,6 @@ zfs_zinactive(znode_t *zp)
 
 	mutex_exit(&zp->z_lock);
 	zfs_znode_dmu_fini(zp);
-
 	zfs_znode_hold_exit(zfsvfs, zh);
 }
 
