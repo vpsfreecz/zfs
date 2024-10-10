@@ -303,6 +303,8 @@ zfs_dirent_lock(zfs_dirlock_t **dlpp, znode_t *dzp, char *name,
 
 	mutex_exit(&dzp->z_lock);
 
+	int was_zxattr = flag & ZXATTR;
+
 	/*
 	 * We have a dirlock on the name.  (Note that it is the dirlock,
 	 * not the dzp's z_lock, that protects the name in the zap object.)
@@ -329,6 +331,9 @@ zfs_dirent_lock(zfs_dirlock_t **dlpp, znode_t *dzp, char *name,
 		}
 		error = zfs_zget(zfsvfs, zoid, zpp);
 		if (error) {
+			if (was_zxattr)
+				pr_err("zfs: was zxattr, zfs_dirent_lock: zfs_zget failed "
+				    "with error %d\n", error);
 			zfs_dirent_unlock(dl);
 			return (error);
 		}

@@ -1089,7 +1089,12 @@ zfs_zget(zfsvfs_t *zfsvfs, uint64_t obj_num, znode_t **zpp)
 		 */
 
 		ASSERT3P(zp, !=, NULL);
-		VERIFY3P(igrab(ZTOI(zp)), !=, NULL);
+		if (igrab(ZTOI(zp)) == NULL) {
+			dump_stack();
+			sa_buf_rele(db, NULL);
+			zfs_znode_hold_exit(zfsvfs, zh);
+			return (SET_ERROR(EIO));
+		}
 		*zpp = zp;
 
 		sa_buf_rele(db, NULL);

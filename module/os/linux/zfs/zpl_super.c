@@ -382,20 +382,13 @@ static int
 zpl_drop_inode(struct inode *ip)
 {
 	znode_t *zp = ITOZ(ip);
-	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	dmu_buf_t *db;
-	znode_hold_t *zh;
 	int error;
-
-	zh = zfs_znode_hold_enter(zfsvfs, zp->z_id);
 
 	if (!zp->z_unlinked && zp->z_sa_hdl &&
 	    (db = sa_get_db(zp->z_sa_hdl)) &&
-	    dmu_buf_refcount(db)) {
-		zfs_znode_hold_exit(zfsvfs, zh);
+	    dmu_buf_refcount(db))
 		return (0);
-	}
-	zfs_znode_hold_exit(zfsvfs, zh);
 
 	error = generic_drop_inode(ip);
 	return (error);
