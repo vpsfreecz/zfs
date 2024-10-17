@@ -1075,7 +1075,7 @@ again:
 	    doi.doi_bonus_size < sizeof (znode_phys_t)))) {
 		sa_buf_rele(db, NULL);
 		zfs_znode_hold_exit(zfsvfs, zh);
-		return (SET_ERROR(EINVAL));
+		return (EINVAL);
 	}
 
 	hdl = dmu_buf_get_user(db);
