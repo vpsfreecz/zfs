@@ -45,7 +45,6 @@ typedef enum kmc_bit {
 	KMC_BIT_TOTAL		= 18,	/* Proc handler helper bit */
 	KMC_BIT_ALLOC		= 19,	/* Proc handler helper bit */
 	KMC_BIT_MAX		= 20,	/* Proc handler helper bit */
-	KMC_BIT_RECLAIMABLE	= 21,	/* Can be freed by shrinker */
 } kmc_bit_t;
 
 /* kmem move callback return values */
@@ -67,7 +66,9 @@ typedef enum kmem_cbrc {
 #define	KMC_TOTAL		(1 << KMC_BIT_TOTAL)
 #define	KMC_ALLOC		(1 << KMC_BIT_ALLOC)
 #define	KMC_MAX			(1 << KMC_BIT_MAX)
-#define	KMC_RECLAIMABLE		(1 << KMC_BIT_RECLAIMABLE)
+
+#define	KMC_REAP_CHUNK		INT_MAX
+#define	KMC_DEFAULT_SEEKS	1
 
 extern struct list_head spl_kmem_cache_list;
 extern struct rw_semaphore spl_kmem_cache_sem;
