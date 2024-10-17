@@ -385,7 +385,7 @@ zpl_drop_inode(struct inode *ip)
 	dmu_buf_t *db;
 	int error;
 
-	if (!zp->z_unlinked && zp->z_sa_hdl &&
+	if (zp->z_sa_hdl &&
 	    (db = sa_get_db(zp->z_sa_hdl)) &&
 	    dmu_buf_refcount(db))
 		return (0);
