@@ -1536,7 +1536,6 @@ zfs_domount(struct super_block *sb, zfs_mnt_t *zm, int silent)
 	if (!zfsvfs->z_issnap)
 		zfsctl_create(zfsvfs);
 
-	zfsvfs->z_arc_prune = arc_add_prune_callback(zpl_prune_sb, sb);
 out:
 	if (error) {
 		if (zfsvfs != NULL) {
@@ -1601,8 +1600,6 @@ zfs_umount(struct super_block *sb)
 	zfsvfs_t *zfsvfs = sb->s_fs_info;
 	objset_t *os;
 
-	if (zfsvfs->z_arc_prune != NULL)
-		arc_remove_prune_callback(zfsvfs->z_arc_prune);
 	VERIFY(zfsvfs_teardown(zfsvfs, B_TRUE) == 0);
 	os = zfsvfs->z_os;
 
