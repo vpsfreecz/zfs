@@ -1230,8 +1230,16 @@ zfs_prune(struct super_block *sb, unsigned long nr_to_scan, int *objects)
 		.gfp_mask = GFP_KERNEL,
 	};
 
-	if ((error = zfs_enter(zfsvfs, FTAG)) != 0)
+	if (!(sb->s_flags & SB_ACTIVE))
+		return (0);
+
+	if (!refcount_inc_not_zero(&shrinker->refcount))
+		return (0);
+
+	if ((error = zfs_enter(zfsvfs, FTAG)) != 0) {
+		refcount_dec(&shrinker->refcount);
 		return (error);
+	}
 
 #ifdef SHRINKER_NUMA_AWARE
 	if (shrinker->flags & SHRINKER_NUMA_AWARE) {
@@ -1260,6 +1268,7 @@ zfs_prune(struct super_block *sb, unsigned long nr_to_scan, int *objects)
 #endif
 
 	zfs_exit(zfsvfs, FTAG);
+	refcount_dec(&shrinker->refcount);
 
 	dprintf_ds(zfsvfs->z_os->os_dsl_dataset,
 	    "pruning, nr_to_scan=%lu objects=%d error=%d\n",
