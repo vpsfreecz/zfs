@@ -383,6 +383,10 @@ zfs_inode_destroy(struct inode *ip)
 	if (list_link_active(&zp->z_link_node)) {
 		list_remove(&zfsvfs->z_all_znodes, zp);
 	}
+	if (zfsvfs->z_arc_prune && list_is_empty(&zfsvfs->z_all_znodes)) {
+		arc_remove_prune_callback(zfsvfs->z_arc_prune);
+		zfsvfs->z_arc_prune = NULL;
+	}
 	mutex_exit(&zfsvfs->z_znodes_lock);
 
 	if (zp->z_acl_cached) {
@@ -607,6 +611,8 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 		VERIFY3S(insert_inode_locked(ip), ==, 0);
 
 	mutex_enter(&zfsvfs->z_znodes_lock);
+	if (!zfsvfs->z_arc_prune && list_is_empty(&zfsvfs->z_all_znodes))
+		zfsvfs->z_arc_prune = arc_add_prune_callback(zpl_prune_sb, zfsvfs->z_sb);
 	list_insert_tail(&zfsvfs->z_all_znodes, zp);
 	mutex_exit(&zfsvfs->z_znodes_lock);
 
