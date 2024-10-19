@@ -385,9 +385,19 @@ zpl_drop_inode(struct inode *ip)
 	dmu_buf_t *db;
 	int error;
 
-	if (zp->z_sa_hdl &&
-	    (db = sa_get_db(zp->z_sa_hdl)) &&
-	    dmu_buf_refcount(db))
+	/*
+	 * Don't allow the kernel to proceed with inode
+	 * eviction if there's an active SA hold
+	 * or if the znode is unlinked -
+	 * let us do our own thing in these two cases:
+	 * - unlinked znodes might have xattr znodes
+	 *   which we need for zfs_zget to not fail
+	 *   during generic_shutdown_super
+	 * - active SA holds so that igrab() in
+	 *   zfs_zget doesn't race against eviction
+	 */
+	if ((zp->z_sa_hdl && (db = sa_get_db(zp->z_sa_hdl)) &&
+	    dmu_buf_refcount(db)) || zp->z_unlinked)
 		return (0);
 
 	error = generic_drop_inode(ip);
