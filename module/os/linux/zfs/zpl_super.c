@@ -378,12 +378,29 @@ zpl_prune_sb(uint64_t nr_to_scan, void *arg)
 	(void) -zfs_prune(sb, nr_to_scan, &objects);
 }
 
+static int
+zpl_drop_inode(struct inode *ip)
+{
+	znode_t *zp = ITOZ(ip);
+	dmu_buf_t *db;
+	int error;
+
+	if (zp->z_sa_hdl &&
+	    (db = sa_get_db(zp->z_sa_hdl)) &&
+	    dmu_buf_refcount(db))
+		return (0);
+
+	error = generic_drop_inode(ip);
+	return (error);
+}
+
 const struct super_operations zpl_super_operations = {
 	.alloc_inode		= zpl_inode_alloc,
 	.destroy_inode		= zpl_inode_destroy,
 	.dirty_inode		= zpl_dirty_inode,
 	.write_inode		= NULL,
 	.evict_inode		= zpl_evict_inode,
+	.drop_inode		= zpl_drop_inode,
 	.put_super		= zpl_put_super,
 	.sync_fs		= zpl_sync_fs,
 	.statfs			= zpl_statfs,
