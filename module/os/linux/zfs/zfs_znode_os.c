@@ -612,7 +612,7 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 
 	mutex_enter(&zfsvfs->z_znodes_lock);
 	if (!zfsvfs->z_arc_prune && list_is_empty(&zfsvfs->z_all_znodes))
-		zfsvfs->z_arc_prune = arc_add_prune_callback(zpl_prune_sb, sb);
+		zfsvfs->z_arc_prune = arc_add_prune_callback(zpl_prune_sb, zfsvfs->z_sb);
 	list_insert_tail(&zfsvfs->z_all_znodes, zp);
 	mutex_exit(&zfsvfs->z_znodes_lock);
 
