@@ -87,8 +87,8 @@ zpl_evict_inode(struct inode *ip)
 
 	cookie = spl_fstrans_mark();
 	truncate_setsize(ip, 0);
-	clear_inode(ip);
 	zfs_inactive(ip);
+	clear_inode(ip);
 	spl_fstrans_unmark(cookie);
 }
 
