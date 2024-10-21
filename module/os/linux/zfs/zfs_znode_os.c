@@ -1094,15 +1094,17 @@ zfs_zget(zfsvfs_t *zfsvfs, uint64_t obj_num, znode_t **zpp)
 		 * know about the znode.
 		 */
 		ASSERT3P(zp, !=, NULL);
-
+		mutex_enter(&zp->z_lock);
 		if (zp->z_unlinked) {
+			mutex_exit(&zp->z_lock);
 			sa_buf_rele(db, NULL);
 			zfs_znode_hold_exit(zfsvfs, zh);
 			return (SET_ERROR(ENOENT));
 		}
-		VERIFY3P(igrab(ZTOI(zp)), !=, NULL);
+		if (ZTOZSB(zp)->z_sb->s_flags & SB_ACTIVE)
+			VERIFY3P(igrab(ZTOI(zp)), !=, NULL);
 		*zpp = zp;
-
+		mutex_exit(&zp->z_lock);
 		sa_buf_rele(db, NULL);
 		zfs_znode_hold_exit(zfsvfs, zh);
 		return (0);
