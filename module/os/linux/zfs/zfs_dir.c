@@ -652,7 +652,6 @@ zfs_rmnode(znode_t *zp)
 {
 	zfsvfs_t	*zfsvfs = ZTOZSB(zp);
 	objset_t	*os = zfsvfs->z_os;
-	znode_t		*xzp = NULL;
 	dmu_tx_t	*tx;
 	znode_hold_t	*zh;
 	uint64_t	z_id = zp->z_id;
@@ -678,16 +677,14 @@ zfs_rmnode(znode_t *zp)
 			zfs_znode_hold_exit(zfsvfs, zh);
 			return;
 		}
-	}
-
-	/*
-	 * Free up all the data in the file.  We don't do this for directories
-	 * because we need truncate and remove to be in the same tx, like in
-	 * zfs_znode_delete(). Otherwise, if we crash here we'll end up with
-	 * an inconsistent truncated zap object in the delete queue.  Note a
-	 * truncated file is harmless since it only contains user data.
-	 */
-	if (S_ISREG(ZTOI(zp)->i_mode)) {
+	} else {
+		/*
+		* Free up all the data in the file.  We don't do this for XATTR directories
+		* because we need truncate and remove to be in the same tx, like in
+		* zfs_znode_delete(). Otherwise, if we crash here we'll end up with
+		* an inconsistent truncated zap object in the delete queue.  Note a
+		* truncated file is harmless since it only contains user data.
+		*/
 		error = dmu_free_long_range(os, zp->z_id, 0, DMU_OBJECT_END);
 		if (error) {
 			/*
@@ -707,10 +704,8 @@ zfs_rmnode(znode_t *zp)
 	 */
 	error = sa_lookup(zp->z_sa_hdl, SA_ZPL_XATTR(zfsvfs),
 	    &xattr_obj, sizeof (xattr_obj));
-	if (error == 0 && xattr_obj) {
-		error = zfs_zget(zfsvfs, xattr_obj, &xzp);
-		ASSERT(error == 0);
-	}
+	if (error)
+		xattr_obj = 0;
 
 	acl_obj = zfs_external_acl(zp);
 
@@ -720,10 +715,8 @@ zfs_rmnode(znode_t *zp)
 	tx = dmu_tx_create(os);
 	dmu_tx_hold_free(tx, zp->z_id, 0, DMU_OBJECT_END);
 	dmu_tx_hold_zap(tx, zfsvfs->z_unlinkedobj, FALSE, NULL);
-	if (xzp) {
+	if (xattr_obj)
 		dmu_tx_hold_zap(tx, zfsvfs->z_unlinkedobj, TRUE, NULL);
-		dmu_tx_hold_sa(tx, xzp->z_sa_hdl, B_FALSE);
-	}
 	if (acl_obj)
 		dmu_tx_hold_free(tx, acl_obj, 0, DMU_OBJECT_END);
 
@@ -739,19 +732,13 @@ zfs_rmnode(znode_t *zp)
 		zh = zfs_znode_hold_enter(zfsvfs, z_id);
 		zfs_znode_dmu_fini(zp);
 		zfs_znode_hold_exit(zfsvfs, zh);
-		goto out;
+		return;
 	}
 
-	if (xzp) {
-		ASSERT(error == 0);
-		mutex_enter(&xzp->z_lock);
-		xzp->z_unlinked = B_TRUE;	/* mark xzp for deletion */
-		clear_nlink(ZTOI(xzp));		/* no more links to it */
-		links = 0;
-		VERIFY(0 == sa_update(xzp->z_sa_hdl, SA_ZPL_LINKS(zfsvfs),
-		    &links, sizeof (links), tx));
-		mutex_exit(&xzp->z_lock);
-		zfs_unlinked_add(xzp, tx);
+	if (xattr_obj) {
+		/* Add extended attribute directory to the unlinked set. */
+		VERIFY3U(0, ==,
+		    zap_add_int(os, zfsvfs->z_unlinkedobj, xattr_obj, tx));
 	}
 
 	mutex_enter(&os->os_dsl_dataset->ds_dir->dd_activity_lock);
@@ -778,9 +765,9 @@ zfs_rmnode(znode_t *zp)
 	zfs_znode_delete(zp, tx);
 
 	dmu_tx_commit(tx);
-out:
-	if (xzp)
-		zfs_zrele_async(xzp);
+
+	if (xattr_obj)
+		zfs_unlinked_drain(zfsvfs);
 }
 
 static uint64_t
