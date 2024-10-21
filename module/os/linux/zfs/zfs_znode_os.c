@@ -1093,20 +1093,18 @@ zfs_zget(zfsvfs_t *zfsvfs, uint64_t obj_num, znode_t **zpp)
 		 * should never find a sa handle that doesn't
 		 * know about the znode.
 		 */
-
 		ASSERT3P(zp, !=, NULL);
-		/*
-		 * The only time this fails is when zfs_zget is called from
-		 * zfs_zinactive during this inode's zpl_evict_inode, which
-		 * we can safely ignore, otherwise we're protected by
-		 * zpl_drop_inode here.
-		 */
-		igrab(ZTOI(zp));
+
+		if (zp->z_unlinked) {
+			sa_buf_rele(db, NULL);
+			zfs_znode_hold_exit(zfsvfs, zh);
+			return (SET_ERROR(ENOENT));
+		}
+		VERIFY3P(igrab(ZTOI(zp)), !=, NULL);
 		*zpp = zp;
 
 		sa_buf_rele(db, NULL);
 		zfs_znode_hold_exit(zfsvfs, zh);
-
 		return (0);
 	}
 
