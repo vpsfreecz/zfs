@@ -111,7 +111,7 @@ zpl_drop_inode(struct inode *ip)
 	 *   zfs_zget doesn't race against eviction
 	 */
 	if ((zp->z_sa_hdl && (db = sa_get_db(zp->z_sa_hdl)) &&
-	    dmu_buf_refcount(db)))
+	    dmu_buf_refcount(db)) || zp->z_unlinked)
 		return (0);
 
 	error = generic_drop_inode(ip);
