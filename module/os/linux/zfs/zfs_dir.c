@@ -803,7 +803,7 @@ zfs_link_create(zfs_dirlock_t *dl, znode_t *zp, dmu_tx_t *tx, int flag)
 	mutex_enter(&zp->z_lock);
 
 	if (!(flag & ZRENAMING)) {
-		if (zp->z_unlinked) {	/* no new links to unlinked zp */
+		if (zp->z_unlinked && !(flag & ZTMPFILE)) {	/* no new links to unlinked zp */
 			ASSERT(!(flag & (ZNEW | ZEXISTS)));
 			mutex_exit(&zp->z_lock);
 			return (SET_ERROR(ENOENT));
@@ -835,6 +835,12 @@ zfs_link_create(zfs_dirlock_t *dl, znode_t *zp, dmu_tx_t *tx, int flag)
 			drop_nlink(ZTOI(zp));
 		mutex_exit(&zp->z_lock);
 		return (error);
+	}
+
+	if (flag & ZTMPFILE) {
+		zp->z_unlinked = B_FALSE;
+		VERIFY(zap_remove_int(zfsvfs->z_os,
+			zfsvfs->z_unlinkedobj, zp->z_id, tx) == 0);
 	}
 
 	/*

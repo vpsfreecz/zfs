@@ -43,6 +43,7 @@ extern "C" {
 #define	ZCILOOK		0x0020		/* case-insensitive lookup requested */
 #define	ZCIEXACT	0x0040		/* c-i requires c-s match (rename) */
 #define	ZHAVELOCK	0x0080		/* z_name_lock is already held */
+#define	ZTMPFILE        0x0100          /* for zfs_file_link */
 
 /* mknode flags */
 #define	IS_ROOT_NODE	0x01		/* create a root node */
