@@ -375,7 +375,11 @@ zpl_prune_sb(uint64_t nr_to_scan, void *arg)
 	struct super_block *sb = (struct super_block *)arg;
 	int objects = 0;
 
-	(void) -zfs_prune(sb, nr_to_scan, &objects);
+	down_read(&sb->s_umount);
+	if (sb->s_flags & SB_ACTIVE)
+		(void) -zfs_prune(sb, nr_to_scan, &objects);
+	up_read(&sb->s_umount);
+
 }
 
 const struct super_operations zpl_super_operations = {
