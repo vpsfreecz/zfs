@@ -811,6 +811,7 @@ zfs_link_create(zfs_dirlock_t *dl, znode_t *zp, dmu_tx_t *tx, int flag)
 	uint64_t mtime[2], ctime[2];
 	uint64_t links;
 	int count = 0;
+	int need_unlock = 0;
 	int error;
 
 	mutex_enter(&zp->z_lock);
@@ -855,6 +856,8 @@ zfs_link_create(zfs_dirlock_t *dl, znode_t *zp, dmu_tx_t *tx, int flag)
 		zp->z_unlinked = B_FALSE;
 		VERIFY(zap_remove_int(zfsvfs->z_os,
 			zfsvfs->z_unlinkedobj, zp->z_id, tx) == 0);
+		insert_inode_locked(ZTOI(zp));
+		need_unlock = 1;
 	}
 
 	/*
@@ -902,6 +905,9 @@ zfs_link_create(zfs_dirlock_t *dl, znode_t *zp, dmu_tx_t *tx, int flag)
 	error = sa_bulk_update(dzp->z_sa_hdl, bulk, count, tx);
 	ASSERT(error == 0);
 	mutex_exit(&dzp->z_lock);
+
+	if (need_unlock)
+		unlock_new_inode(ZTOI(zp));
 
 	return (0);
 }
@@ -998,6 +1004,9 @@ zfs_drop_nlink_locked(znode_t *zp, dmu_tx_t *tx, boolean_t *unlinkedp)
 		*unlinkedp = unlinked;
 	else if (unlinked)
 		zfs_unlinked_add(zp, tx);
+
+	if (zp->z_is_tmpfile && unlinked)
+		remove_inode_hash(ZTOI(zp));
 
 	return (0);
 }
