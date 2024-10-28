@@ -571,7 +571,7 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	zp->z_mode = ip->i_mode = mode;
 	ip->i_generation = (uint32_t)tmp_gen;
 	ip->i_blkbits = SPA_MINBLOCKSHIFT;
-	ip->i_count = 1;
+	atomic_set(&ip->i_count, 1);
 	set_nlink(ip, (uint32_t)links);
 
 	zfs_uid_write(ip, zfs_ugid_map_ns_to_host(zfsvfs->z_uid_map, z_uid));
