@@ -773,7 +773,7 @@ zpl_link(struct dentry *old_dentry, struct inode *dir, struct dentry *dentry)
 	crhold(cr);
 	zpl_inode_set_ctime_to_ts(ZTOI(zp), current_time(ZTOI(zp)));
 	/* Must have an existing ref, so igrab() cannot return NULL */
-	VERIFY3P(igrab(ZTOI(zp)), !=, NULL);
+	zhold(zp);
 
 	cookie = spl_fstrans_mark();
 	error = -zfs_link(ITOZ(dir), zp, dname(dentry), cr, 0);
