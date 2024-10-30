@@ -51,11 +51,8 @@ zfs_create_ugid_map(objset_t *os, zfs_prop_t prop)
 			break;
 
 		} else if (error != 3) {
-			pr_debug("invalid ugid map format");
 			return (NULL);
-			//return (error);
 		}
-		pr_debug("got map: ns_id=%u, host_id=%u,, count=%u for %s", ns_id, host_id, count, source);
 
 		entry = vmem_zalloc(sizeof(struct zfs_ugid_map_entry), KM_SLEEP);
 		entry->e_ns_id = ns_id;
@@ -116,16 +113,12 @@ zfs_ugid_map_ns_to_host(struct zfs_ugid_map *ugid_map, uint64_t id)
 
 		/* check if we're already mapped into the entry */
 		if (id >= entry->e_host_id && id < (entry->e_host_id + entry->e_count)) {
-			pr_debug("zfs_ugid_map_ns_to_host: %lld already mapped via mapping %lld:%lld:%lld",
-				id, entry->e_ns_id, entry->e_host_id, entry->e_count);
 			return (id);
 		}
 
 		/* check if we can map the entry */
 		if (id >= entry->e_ns_id && id < (entry->e_ns_id + entry->e_count)) {
 			res = entry->e_host_id + (id - entry->e_ns_id);
-			pr_debug("zfs_ugid_map_ns_to_host: %lld -> %lld via mapping %lld:%lld:%lld",
-				id, res, entry->e_ns_id, entry->e_host_id, entry->e_count);
 			VERIFY3U(0, <=, res);
 			return (res);
 		}
@@ -151,16 +144,12 @@ zfs_ugid_map_host_to_ns(struct zfs_ugid_map *ugid_map, uint64_t id)
 
 		/* check if we're already mapped into the entry */
 		if (id >= entry->e_ns_id && id < (entry->e_ns_id + entry->e_count)) {
-			pr_debug("zfs_ugid_map_host_to_ns: %lld already mapped via mapping %lld:%lld:%lld",
-				id, entry->e_ns_id, entry->e_host_id, entry->e_count);
 			return (id);
 		}
 
 		/* check if we can map the entry */
 		if (id >= entry->e_host_id && id < (entry->e_host_id + entry->e_count)) {
 			res = (id - entry->e_host_id) + entry->e_ns_id;
-			pr_debug("zfs_ugid_map_host_to_ns: %lld -> %lld via mapping %lld:%lld:%lld",
-				id, res, entry->e_ns_id, entry->e_host_id, entry->e_count);
 			VERIFY3U(0, <=, res);
 			return (res);
 		}
@@ -180,23 +169,17 @@ zfs_ugid_map_acl_from_xattr(struct zfs_ugid_map *uid_map,
 	if (IS_ERR(acl))
 		return (acl);
 
-	pr_debug("zfs_ugid_map_acl_from_xattr: run");
-
 	if (uid_map == NULL && gid_map == NULL)
 		return (acl);
 
 	FOREACH_ACL_ENTRY(pa, acl, pe) {
 		switch(pa->e_tag) {
 			case ACL_USER:
-				pr_debug("zfs_ugid_map_acl_from_xattr: map uid %u",
-						KUID_TO_SUID(pa->e_uid));
 				pa->e_uid = SUID_TO_KUID(zfs_ugid_map_ns_to_host(
 					uid_map,
 					KUID_TO_SUID(pa->e_uid)));
 				break;
 			case ACL_GROUP:
-				pr_debug("zfs_ugid_map_acl_from_xattr: map gid %u",
-						KGID_TO_SGID(pa->e_gid));
 				pa->e_gid = SGID_TO_KGID(zfs_ugid_map_ns_to_host(
 					gid_map,
 					KGID_TO_SGID(pa->e_gid)));
@@ -217,8 +200,6 @@ zfs_ugid_map_acl_to_xattr(struct zfs_ugid_map *uid_map,
 	struct posix_acl_entry *pa, *pe;
 	int ret;
 
-	pr_debug("zfs_ugid_map_acl_to_xattr: run");
-
 	if (uid_map == NULL && gid_map == NULL)
 		return (posix_acl_to_xattr(kcred->user_ns, acl, value, size));
 
@@ -226,15 +207,11 @@ zfs_ugid_map_acl_to_xattr(struct zfs_ugid_map *uid_map,
 	FOREACH_ACL_ENTRY(pa, acl, pe) {
 		switch(pa->e_tag) {
 			case ACL_USER:
-				pr_debug("zfs_ugid_map_acl_to_xattr: map uid %u",
-						KUID_TO_SUID(pa->e_uid));
 				pa->e_uid = SUID_TO_KUID(zfs_ugid_map_host_to_ns(
 					uid_map,
 					KUID_TO_SUID(pa->e_uid)));
 				break;
 			case ACL_GROUP:
-				pr_debug("zfs_ugid_map_acl_to_xattr: map gid %u",
-						KGID_TO_SGID(pa->e_gid));
 				pa->e_gid = SGID_TO_KGID(zfs_ugid_map_host_to_ns(
 					gid_map,
 					KGID_TO_SGID(pa->e_gid)));
@@ -254,15 +231,11 @@ zfs_ugid_map_acl_to_xattr(struct zfs_ugid_map *uid_map,
 	FOREACH_ACL_ENTRY(pa, acl, pe) {
 		switch(pa->e_tag) {
 			case ACL_USER:
-				pr_debug("zfs_ugid_map_acl_to_xattr: unmap uid %u",
-						KUID_TO_SUID(pa->e_uid));
 				pa->e_uid = SUID_TO_KUID(zfs_ugid_map_ns_to_host(
 					uid_map,
 					KUID_TO_SUID(pa->e_uid)));
 				break;
 			case ACL_GROUP:
-				pr_debug("zfs_ugid_map_acl_to_xattr: unmap gid %u",
-						KGID_TO_SGID(pa->e_gid));
 				pa->e_gid = SGID_TO_KGID(zfs_ugid_map_ns_to_host(
 					gid_map,
 					KGID_TO_SGID(pa->e_gid)));
