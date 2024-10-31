@@ -901,7 +901,6 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 
 		(*zpp)->z_sa_hdl = sa_hdl;
 	}
-	zhold(*zpp);
 
 	(*zpp)->z_pflags = pflags;
 	(*zpp)->z_mode = ZTOI(*zpp)->i_mode = mode;
@@ -1132,7 +1131,6 @@ again:
 		err = SET_ERROR(ENOENT);
 	} else {
 		*zpp = zp;
-		zhold(*zpp);
 		VERIFY0(insert_inode_locked(ZTOI(zp)));
 		unlock_new_inode(ZTOI(zp));
 	}
