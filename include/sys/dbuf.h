@@ -393,7 +393,7 @@ void dbuf_assign_arcbuf(dmu_buf_impl_t *db, arc_buf_t *buf, dmu_tx_t *tx);
 dbuf_dirty_record_t *dbuf_dirty(dmu_buf_impl_t *db, dmu_tx_t *tx);
 dbuf_dirty_record_t *dbuf_dirty_lightweight(dnode_t *dn, uint64_t blkid,
     dmu_tx_t *tx);
-boolean_t dbuf_undirty(dmu_buf_impl_t *db, dmu_tx_t *tx);
+boolean_t dbuf_undirty(dmu_buf_impl_t *db, uint64_t txg);
 int dmu_buf_get_bp_from_dbuf(dmu_buf_impl_t *db, blkptr_t **bp);
 int dmu_buf_untransform_direct(dmu_buf_impl_t *db, spa_t *spa);
 arc_buf_t *dbuf_loan_arcbuf(dmu_buf_impl_t *db);

@@ -119,7 +119,7 @@ dmu_write_direct_done(zio_t *zio)
 		 * calling dbuf_undirty().
 		 */
 		mutex_enter(&db->db_mtx);
-		VERIFY3B(dbuf_undirty(db, dsa->dsa_tx), ==, B_FALSE);
+		VERIFY3B(dbuf_undirty(db, dsa->dsa_txg), ==, B_FALSE);
 		mutex_exit(&db->db_mtx);
 	}
 
@@ -189,7 +189,8 @@ dmu_write_direct(zio_t *pio, dmu_buf_impl_t *db, abd_t *data, dmu_tx_t *tx)
 
 	dmu_sync_arg_t *dsa = kmem_zalloc(sizeof (dmu_sync_arg_t), KM_SLEEP);
 	dsa->dsa_dr = dr_head;
-	dsa->dsa_tx = tx;
+	dsa->dsa_txg = tx->tx_txg;
+	dsa->dsa_tx = NULL;
 
 	zio_t *zio = zio_write(pio, os->os_spa, txg, bp, data,
 	    db->db.db_size, db->db.db_size, &zp,

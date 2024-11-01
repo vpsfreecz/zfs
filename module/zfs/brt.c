@@ -1421,16 +1421,14 @@ brt_pending_add(spa_t *spa, const blkptr_t *bp, dmu_tx_t *tx)
 }
 
 void
-brt_pending_remove(spa_t *spa, const blkptr_t *bp, dmu_tx_t *tx)
+brt_pending_remove(spa_t *spa, const blkptr_t *bp, uint64_t txg)
 {
 	brt_t *brt;
 	avl_tree_t *pending_tree;
 	kmutex_t *pending_lock;
 	brt_pending_entry_t *bpe, bpe_search;
-	uint64_t txg;
 
 	brt = spa->spa_brt;
-	txg = dmu_tx_get_txg(tx);
 	ASSERT3U(txg, !=, 0);
 	pending_tree = &brt->brt_pending_tree[txg & TXG_MASK];
 	pending_lock = &brt->brt_pending_lock[txg & TXG_MASK];

@@ -2006,7 +2006,7 @@ dbuf_free_range(dnode_t *dn, uint64_t start_blkid, uint64_t end_blkid,
 
 		/* found a level 0 buffer in the range */
 		mutex_enter(&db->db_mtx);
-		if (dbuf_undirty(db, tx)) {
+		if (dbuf_undirty(db, tx->tx_txg)) {
 			/* mutex has been dropped and dbuf destroyed */
 			continue;
 		}
@@ -2536,9 +2536,8 @@ dbuf_undirty_bonus(dbuf_dirty_record_t *dr)
  * transaction.  Return whether this evicted the dbuf.
  */
 boolean_t
-dbuf_undirty(dmu_buf_impl_t *db, dmu_tx_t *tx)
+dbuf_undirty(dmu_buf_impl_t *db, uint64_t txg)
 {
-	uint64_t txg = tx->tx_txg;
 	boolean_t brtwrite;
 	boolean_t diowrite;
 
@@ -2574,7 +2573,7 @@ dbuf_undirty(dmu_buf_impl_t *db, dmu_tx_t *tx)
 		 * transaction group.
 		 */
 		brt_pending_remove(dmu_objset_spa(db->db_objset),
-		    &dr->dt.dl.dr_overridden_by, tx);
+		    &dr->dt.dl.dr_overridden_by, txg);
 	}
 
 	dnode_t *dn = dr->dr_dnode;
@@ -2687,7 +2686,7 @@ dmu_buf_will_dirty_impl(dmu_buf_t *db_fake, int flags, dmu_tx_t *tx)
 	(void) dbuf_read(db, NULL, flags);
 	if (undirty) {
 		mutex_enter(&db->db_mtx);
-		VERIFY(!dbuf_undirty(db, tx));
+		VERIFY(!dbuf_undirty(db, tx->tx_txg));
 		mutex_exit(&db->db_mtx);
 	}
 	(void) dbuf_dirty(db, tx);
@@ -2829,7 +2828,7 @@ dmu_buf_will_clone_or_dio(dmu_buf_t *db_fake, dmu_tx_t *tx)
 	 * hold on the db, so it should never be evicted after calling
 	 * dbuf_undirty().
 	 */
-	VERIFY3B(dbuf_undirty(db, tx), ==, B_FALSE);
+	VERIFY3B(dbuf_undirty(db, tx->tx_txg), ==, B_FALSE);
 	ASSERT0P(dbuf_find_dirty_eq(db, tx->tx_txg));
 
 	if (db->db_buf != NULL) {
@@ -2912,7 +2911,7 @@ dmu_buf_will_fill(dmu_buf_t *db_fake, dmu_tx_t *tx, boolean_t canfail)
 		 * as if the clone was never done.
 		 */
 		if (dr && dr->dt.dl.dr_brtwrite) {
-			VERIFY(!dbuf_undirty(db, tx));
+			VERIFY(!dbuf_undirty(db, tx->tx_txg));
 			db->db_state = DB_UNCACHED;
 		}
 	}
@@ -2993,7 +2992,7 @@ dmu_buf_fill_done(dmu_buf_t *dbuf, dmu_tx_t *tx, boolean_t failed)
 			    "fill done handling freed in flight");
 			failed = B_FALSE;
 		} else if (failed) {
-			VERIFY(!dbuf_undirty(db, tx));
+			VERIFY(!dbuf_undirty(db, tx->tx_txg));
 			arc_buf_destroy(db->db_buf, db);
 			db->db_buf = NULL;
 			dbuf_clear_data(db);
@@ -3144,7 +3143,7 @@ dbuf_assign_arcbuf(dmu_buf_impl_t *db, arc_buf_t *buf, dmu_tx_t *tx)
 		 * pending clone and mark the block as uncached. This will be
 		 * as if the clone was never done.
 		 */
-		VERIFY(!dbuf_undirty(db, tx));
+		VERIFY(!dbuf_undirty(db, tx->tx_txg));
 		db->db_state = DB_UNCACHED;
 	}
 	ASSERT(db->db_buf == NULL);
