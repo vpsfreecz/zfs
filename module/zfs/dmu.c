@@ -2007,6 +2007,7 @@ dmu_sync_late_arrival(zio_t *pio, objset_t *os, dmu_sync_cb_t *done, zgd_t *zgd,
 	dsa->dsa_dr = NULL;
 	dsa->dsa_done = done;
 	dsa->dsa_zgd = zgd;
+	dsa->dsa_txg = tx->tx_txg;
 	dsa->dsa_tx = tx;
 
 	/*
@@ -2198,6 +2199,7 @@ dmu_sync(zio_t *pio, uint64_t txg, dmu_sync_cb_t *done, zgd_t *zgd)
 	dsa->dsa_dr = dr;
 	dsa->dsa_done = done;
 	dsa->dsa_zgd = zgd;
+	dsa->dsa_txg = 0;
 	dsa->dsa_tx = NULL;
 
 	zio_nowait(arc_write(pio, os->os_spa, txg, zgd->zgd_bp,

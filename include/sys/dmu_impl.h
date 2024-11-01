@@ -259,6 +259,7 @@ typedef struct {
 	dbuf_dirty_record_t	*dsa_dr;
 	void (*dsa_done)(struct zgd *, int);
 	struct zgd		*dsa_zgd;
+	uint64_t		dsa_txg;
 	dmu_tx_t		*dsa_tx;
 } dmu_sync_arg_t;
 
