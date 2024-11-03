@@ -1769,6 +1769,7 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	    sizeof (mode))) != 0)
 		return (error);
 
+	filemap_invalidate_lock(ZTOI(zp)->i_mapping);
 	if (off > zp->z_size) {
 		error =  zfs_extend(zp, off+len);
 		if (error == 0 && log)
@@ -1811,13 +1812,9 @@ log:
 	error = 0;
 
 out:
-	/*
-	 * Truncate the page cache - for file truncate operations, use
-	 * the purpose-built API for truncations.  For punching operations,
-	 * the truncation is handled under a range lock in zfs_free_range.
-	 */
-	if (len == 0)
+	if (!len)
 		truncate_setsize(ZTOI(zp), off);
+	filemap_invalidate_unlock(ZTOI(zp)->i_mapping);
 	return (error);
 }
 
