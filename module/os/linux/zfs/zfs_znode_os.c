@@ -1769,7 +1769,9 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	    sizeof (mode))) != 0)
 		return (error);
 
+#ifdef HAVE_FILEMAP_INVALIDATE_LOCK
 	filemap_invalidate_lock(ZTOI(zp)->i_mapping);
+#endif
 	if (off > zp->z_size) {
 		error =  zfs_extend(zp, off+len);
 		if (error == 0 && log)
@@ -1814,7 +1816,9 @@ log:
 out:
 	if (!len)
 		truncate_setsize(ZTOI(zp), off);
+#ifdef HAVE_FILEMAP_INVALIDATE_LOCK
 	filemap_invalidate_unlock(ZTOI(zp)->i_mapping);
+#endif
 	return (error);
 }
 
