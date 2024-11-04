@@ -99,6 +99,10 @@ zpl_copy_file_range(struct file *src_file, loff_t src_off,
 	if (flags != 0)
 		return (-EINVAL);
 
+#ifdef HAVE_FILEMAP_INVALIDATE_LOCK
+	filemap_invalidate_lock(src_file->f_mapping);
+	filemap_invalidate_lock(dst_file->f_mapping);
+#endif
 	/* Try to do it via zfs_clone_range() and allow shortening. */
 	ret = zpl_clone_file_range_impl(src_file, src_off,
 	    dst_file, dst_off, len);
@@ -130,6 +134,10 @@ zpl_copy_file_range(struct file *src_file, loff_t src_off,
 		ret = -EOPNOTSUPP;
 #endif /* HAVE_VFS_GENERIC_COPY_FILE_RANGE || HAVE_VFS_SPLICE_COPY_FILE_RANGE */
 
+#if defined(HAVE_FILEMAP_INVALIDATE_LOCK)
+	filemap_invalidate_unlock(dst_file->f_mapping);
+	filemap_invalidate_unlock(src_file->f_mapping);
+#endif
 	return (ret);
 }
 
@@ -162,6 +170,10 @@ zpl_remap_file_range(struct file *src_file, loff_t src_off,
 	if (flags & REMAP_FILE_DEDUP)
 		return (-EOPNOTSUPP);
 
+#ifdef HAVE_FILEMAP_INVALIDATE_LOCK
+	filemap_invalidate_lock(src_file->f_mapping);
+	filemap_invalidate_lock(dst_file->f_mapping);
+#endif
 	/* Zero length means to clone everything to the end of the file */
 	if (len == 0)
 		len = i_size_read(file_inode(src_file)) - src_off;
@@ -172,6 +184,10 @@ zpl_remap_file_range(struct file *src_file, loff_t src_off,
 	if (!(flags & REMAP_FILE_CAN_SHORTEN) && ret >= 0 && ret != len)
 		ret = -EINVAL;
 
+#if defined(HAVE_FILEMAP_INVALIDATE_LOCK)
+	filemap_invalidate_unlock(dst_file->f_mapping);
+	filemap_invalidate_unlock(src_file->f_mapping);
+#endif
 	return (ret);
 }
 #endif /* HAVE_VFS_REMAP_FILE_RANGE */
@@ -184,6 +200,10 @@ int
 zpl_clone_file_range(struct file *src_file, loff_t src_off,
     struct file *dst_file, loff_t dst_off, uint64_t len)
 {
+#ifdef HAVE_FILEMAP_INVALIDATE_LOCK
+	filemap_invalidate_lock(src_file->f_mapping);
+	filemap_invalidate_lock(dst_file->f_mapping);
+#endif
 	/* Zero length means to clone everything to the end of the file */
 	if (len == 0)
 		len = i_size_read(file_inode(src_file)) - src_off;
@@ -195,6 +215,10 @@ zpl_clone_file_range(struct file *src_file, loff_t src_off,
 	if (ret >= 0 && ret != len)
 		ret = -EINVAL;
 
+#if defined(HAVE_FILEMAP_INVALIDATE_LOCK)
+	filemap_invalidate_unlock(dst_file->f_mapping);
+	filemap_invalidate_unlock(src_file->f_mapping);
+#endif
 	return (ret);
 }
 #endif /* HAVE_VFS_CLONE_FILE_RANGE */
