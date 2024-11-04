@@ -558,12 +558,13 @@ spa_history_log_internal(spa_t *spa, const char *operation,
 			dmu_tx_abort(htx);
 			return;
 		}
-	}
-
-	if (htx->tx_txg > spa_final_dirty_txg(spa)) {
-		if (tx == NULL)
+		if (htx->tx_txg > spa_final_dirty_txg(spa)) {
 			dmu_tx_abort(htx);
-		return;
+			return;
+		}
+	} else {
+		if (!tx->tx_txg || (tx->tx_txg > spa_final_dirty_txg(spa)))
+			return;
 	}
 
 	va_start(adx, fmt);
