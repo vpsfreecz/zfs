@@ -370,16 +370,20 @@ zfs_inode_alloc(struct super_block *sb, struct inode **ip)
 	return (0);
 }
 
-/*
- * Called in multiple places when an inode should be destroyed.
- */
+void
+zfs_inode_free(struct inode *ip)
+{
+	znode_t *zp = ITOZ(ip);
+
+	kmem_cache_free(znode_cache, zp);
+}
+
 void
 zfs_inode_destroy(struct inode *ip)
 {
 	znode_t *zp = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 
-	VERIFY0(atomic_read(&ip->i_count));
 	mutex_enter(&zfsvfs->z_znodes_lock);
 	if (list_link_active(&zp->z_link_node)) {
 		list_remove(&zfsvfs->z_all_znodes, zp);
@@ -396,7 +400,9 @@ zfs_inode_destroy(struct inode *ip)
 		zp->z_xattr_cached = NULL;
 	}
 
-	kmem_cache_free(znode_cache, zp);
+#if 0
+	zfs_inode_free(ip);
+#endif
 }
 
 static void
