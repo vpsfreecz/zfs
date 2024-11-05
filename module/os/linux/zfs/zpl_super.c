@@ -44,9 +44,14 @@ zpl_inode_alloc(struct super_block *sb)
 }
 
 static void
+zpl_inode_free(struct inode *ip)
+{
+	zfs_inode_free(ip);
+}
+
+static void __maybe_unused
 zpl_inode_destroy(struct inode *ip)
 {
-	ASSERT(atomic_read(&ip->i_count) == 0);
 	zfs_inode_destroy(ip);
 }
 
@@ -89,6 +94,9 @@ zpl_evict_inode(struct inode *ip)
 	truncate_inode_pages_final(&ip->i_data);
 	clear_inode(ip);
 	zfs_inactive(ip);
+#if 1
+	zfs_inode_destroy(ip);
+#endif
 	spl_fstrans_unmark(cookie);
 }
 
@@ -384,7 +392,11 @@ zpl_prune_sb(uint64_t nr_to_scan, void *arg)
 
 const struct super_operations zpl_super_operations = {
 	.alloc_inode		= zpl_inode_alloc,
+#if 1
+	.free_inode		= zpl_inode_free,
+#else
 	.destroy_inode		= zpl_inode_destroy,
+#endif
 	.dirty_inode		= zpl_dirty_inode,
 	.write_inode		= NULL,
 	.evict_inode		= zpl_evict_inode,
