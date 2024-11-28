@@ -1275,6 +1275,13 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
 	 * zfsvfs_t have been handled only then can it be safely destroyed.
 	 */
 	if (zfsvfs->z_os) {
+		mutex_enter(&zfsvfs->z_znodes_lock);
+		for (zp = list_head(&zfsvfs->z_all_znodes); zp;
+		    zp = list_next(&zfsvfs->z_all_znodes, zp)) {
+			if (zp->z_sa_hdl)
+				filemap_write_and_wait(ZTOI(zp)->i_mapping);
+		}
+		mutex_exit(&zfsvfs->z_znodes_lock);
 		/*
 		 * If we're unmounting we have to wait for the list to
 		 * drain completely.
@@ -1552,9 +1559,25 @@ void
 zfs_preumount(struct super_block *sb)
 {
 	zfsvfs_t *zfsvfs = sb->s_fs_info;
+	znode_t *zp;
 
 	/* zfsvfs is NULL when zfs_domount fails during mount */
 	if (zfsvfs) {
+		/*
+		* Since we have to disable zpl_prune_sb when umounting,
+		* because the shrinker gets freed before zpl_kill_sb is
+		* ever called, the umount might be unable to sync open files.
+		*
+		* Let's do it here.
+		*/
+		mutex_enter(&zfsvfs->z_znodes_lock);
+		for (zp = list_head(&zfsvfs->z_all_znodes); zp;
+		    zp = list_next(&zfsvfs->z_all_znodes, zp)) {
+			if (zp->z_sa_hdl)
+				filemap_write_and_wait(ZTOI(zp)->i_mapping);
+		}
+		mutex_exit(&zfsvfs->z_znodes_lock);
+
 		zfs_unlinked_drain_stop_wait(zfsvfs);
 		zfsctl_destroy(sb->s_fs_info);
 		/*
