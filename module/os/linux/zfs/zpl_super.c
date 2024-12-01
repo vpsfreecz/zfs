@@ -92,6 +92,8 @@ zpl_evict_inode(struct inode *ip)
 	fstrans_cookie_t cookie;
 
 	cookie = spl_fstrans_mark();
+	if (zn_has_cached_data(ITOZ(ip), 0, LLONG_MAX))
+		zn_flush_cached_data(ITOZ(ip), B_TRUE);
 	truncate_inode_pages_final(&ip->i_data);
 	clear_inode(ip);
 	zfs_inactive(ip);
@@ -419,7 +421,7 @@ zpl_write_inode(struct inode *ip, struct writeback_control *wbc)
 	if (!error)
 		return (0);
 
-	__mark_inode_dirty(ip, I_DIRTY_SYNC);
+	__mark_inode_dirty(ip, I_DIRTY_DATASYNC);
 	return (error);
 }
 
@@ -431,7 +433,7 @@ const struct super_operations zpl_super_operations = {
 	.destroy_inode		= zpl_inode_destroy,
 #endif
 	.dirty_inode		= zpl_dirty_inode,
-	.write_inode		= zpl_write_inode,
+	.write_inode		= NULL,//zpl_write_inode,
 	.evict_inode		= zpl_evict_inode,
 	.put_super		= zpl_put_super,
 	.sync_fs		= zpl_sync_fs,
