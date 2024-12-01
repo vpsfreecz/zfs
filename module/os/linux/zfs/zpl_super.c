@@ -398,6 +398,31 @@ zpl_prune_sb(uint64_t nr_to_scan, void *arg)
 
 }
 
+static int
+zpl_write_inode(struct inode *ip, struct writeback_control *wbc)
+{
+	int error = 0;
+
+	// TODO: readonly bail early
+	/*
+	 * Mark inode dirty if this is non-blocking call and there are
+	 * tagged pages in the page cache.
+	 */
+	if ((wbc->sync_mode == WB_SYNC_NONE) &&
+	    mapping_tagged(ip->i_mapping, PAGECACHE_TAG_WRITEBACK)) {
+		__mark_inode_dirty(ip, I_DIRTY_DATASYNC);
+		return (0);
+	}
+
+	error = zpl_writepages(ip->i_mapping, wbc);
+
+	if (!error)
+		return (0);
+
+	__mark_inode_dirty(ip, I_DIRTY_SYNC);
+	return (error);
+}
+
 const struct super_operations zpl_super_operations = {
 	.alloc_inode		= zpl_inode_alloc,
 #ifdef HAVE_INODE_FREE
@@ -406,7 +431,7 @@ const struct super_operations zpl_super_operations = {
 	.destroy_inode		= zpl_inode_destroy,
 #endif
 	.dirty_inode		= zpl_dirty_inode,
-	.write_inode		= NULL,
+	.write_inode		= zpl_write_inode,
 	.evict_inode		= zpl_evict_inode,
 	.put_super		= zpl_put_super,
 	.sync_fs		= zpl_sync_fs,
