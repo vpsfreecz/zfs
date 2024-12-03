@@ -1577,8 +1577,7 @@ zfs_zero_partial_page(znode_t *zp, uint64_t start, uint64_t len)
 		memset(pb + off, 0, len);
 		kunmap(pp);
 
-		if (mapping_writably_mapped(mp))
-			flush_dcache_page(pp);
+		flush_dcache_page(pp);
 
 		mark_page_accessed(pp);
 		SetPageUptodate(pp);

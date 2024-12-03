@@ -261,8 +261,7 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 				ClearPageError(pp);
 				SetPageUptodate(pp);
 
-				if (mapping_writably_mapped(mp))
-					flush_dcache_page(pp);
+				flush_dcache_page(pp);
 
 				mark_page_accessed(pp);
 			}
@@ -319,8 +318,7 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 			error = zfs_uiomove(pb + off, bytes, UIO_READ, uio);
 			kunmap(pp);
 
-			if (mapping_writably_mapped(mp))
-				flush_dcache_page(pp);
+			flush_dcache_page(pp);
 
 			mark_page_accessed(pp);
 			put_page(pp);
