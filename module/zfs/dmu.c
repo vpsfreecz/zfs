@@ -1427,13 +1427,13 @@ dmu_read_uio_dnode(dnode_t *dn, zfs_uio_t *uio, uint64_t size)
 		dmu_buf_t *db = dbp[i];
 
 		bufoff = zfs_uio_offset(uio) - db->db_offset;
-		tocpy = MIN(db->db_size - bufoff, size);
+			tocpy = MIN(db->db_size - bufoff, size);
 
-		ASSERT(db->db_data != NULL);
+			ASSERT(db->db_data != NULL);
 
-		uint64_t resid_before = uio->uio_resid;
-		err = zfs_uio_fault_move((char *)db->db_data + bufoff,
-		    tocpy, UIO_READ, uio);
+			uint64_t resid_before = uio->uio_resid;
+			err = zfs_uio_fault_move((char *)db->db_data + bufoff,
+			    tocpy, UIO_READ, uio);
 		uint64_t moved = resid_before - uio->uio_resid;
 
 		size -= moved;
@@ -1555,14 +1555,14 @@ top:
 
 		if (tocpy == db->db_size)
 			dmu_buf_will_fill(db, tx, B_TRUE);
-		else
-			dmu_buf_will_dirty(db, tx);
+			else
+				dmu_buf_will_dirty(db, tx);
 
-		ASSERT(db->db_data != NULL);
-		uint64_t resid_before = uio->uio_resid;
-		err = zfs_uio_fault_move((char *)db->db_data + bufoff,
-		    tocpy, UIO_WRITE, uio);
-		uint64_t moved = resid_before - uio->uio_resid;
+			ASSERT(db->db_data != NULL);
+			uint64_t resid_before = uio->uio_resid;
+			err = zfs_uio_fault_move((char *)db->db_data + bufoff,
+			    tocpy, UIO_WRITE, uio);
+			uint64_t moved = resid_before - uio->uio_resid;
 
 		if (tocpy == db->db_size && dmu_buf_fill_done(db, tx, err)) {
 			/* The fill was reverted.  Undo any uio progress. */
