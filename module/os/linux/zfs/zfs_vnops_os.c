@@ -244,7 +244,7 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
 		uint64_t nbytes = MIN(PAGE_SIZE - off, len);
 
-		struct page *pp = find_lock_page(mp, start >> PAGE_SHIFT);
+		struct page *pp = grab_cache_page_write_begin(mp, start >> PAGE_SHIFT);
 		if (pp) {
 			if (mapping_writably_mapped(mp))
 				flush_dcache_page(pp);
@@ -293,7 +293,7 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
 		uint64_t bytes = MIN(PAGE_SIZE - off, len);
 
-		struct page *pp = find_lock_page(mp, start >> PAGE_SHIFT);
+		struct page *pp = grab_cache_page(mp, start >> PAGE_SHIFT);
 		if (pp) {
 
 			/*
