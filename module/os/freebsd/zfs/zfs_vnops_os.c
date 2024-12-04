@@ -5189,6 +5189,33 @@ zfs_check_attrname(const char *name)
 	return (0);
 }
 
+static char *
+zfs_dup_attrname_maybe_rename(const char *name)
+{
+	char *ret;
+	size_t len = strlen(name);
+
+	if (zfs_xattr_compat)
+		goto orig;
+
+	if (ZFS_XA_NS_PREFIX_FORBIDDEN(name)) {
+		ret = kmem_alloc(len + 6, KM_SLEEP);
+		snprintf(ret, len + 5, "user.%s", name);
+		return (ret);
+	}
+
+orig:
+	ret = kmem_alloc(len + 1, KM_SLEEP);
+	memcpy(ret, name, len);
+	return (ret);
+}
+
+static void
+zfs_dup_attrname_free(char *name, const char *orig)
+{
+	kmem_free(name, strlen(name));
+}
+
 /*
  * FreeBSD's extended attributes namespace defines file name prefix for ZFS'
  * extended attribute name:
@@ -5347,15 +5374,16 @@ zfs_getextattr_sa(struct vop_getextattr_args *ap, const char *attrname)
 }
 
 static int
-zfs_getextattr_impl(struct vop_getextattr_args *ap, boolean_t compat)
+zfs_getextattr_impl(struct vop_getextattr_args *ap, boolean_t compat,
+    char *maybe_renamed)
 {
 	znode_t *zp = VTOZ(ap->a_vp);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	char attrname[EXTATTR_MAXNAMELEN+1];
 	int error;
 
-	error = zfs_create_attrname(ap->a_attrnamespace, ap->a_name, attrname,
-	    sizeof (attrname), compat);
+	error = zfs_create_attrname(ap->a_attrnamespace, maybe_renamed,
+	    attrname, sizeof (attrname), compat);
 	if (error != 0)
 		return (error);
 
@@ -5373,6 +5401,8 @@ zfs_getextattr_impl(struct vop_getextattr_args *ap, boolean_t compat)
 static int
 zfs_getextattr(struct vop_getextattr_args *ap)
 {
+	const char *origname = ap->a_name;
+	char *maybe_renamed;
 	znode_t *zp = VTOZ(ap->a_vp);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	int error;
@@ -5388,29 +5418,36 @@ zfs_getextattr(struct vop_getextattr_args *ap)
 	if (error != 0)
 		return (SET_ERROR(error));
 
-	error = zfs_check_attrname(ap->a_name);
-	if (error != 0)
-		return (error);
+	maybe_renamed = zfs_dup_attrname_maybe_rename(origname);
 
-	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+	error = zfs_check_attrname(maybe_renamed);
+	if (error != 0) {
+		zfs_dup_attrname_free(maybe_renamed, origname);
 		return (error);
+	}
+
+	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0) {
+		zfs_dup_attrname_free(maybe_renamed, origname);
+		return (error);
+	}
 	error = ENOENT;
 	rw_enter(&zp->z_xattr_lock, RW_READER);
 
-	error = zfs_getextattr_impl(ap, zfs_xattr_compat);
+	error = zfs_getextattr_impl(ap, zfs_xattr_compat, maybe_renamed);
 	if ((error == ENOENT || error == ENOATTR) &&
 	    ap->a_attrnamespace == EXTATTR_NAMESPACE_USER) {
 		/*
 		 * Fall back to the alternate namespace format if we failed to
 		 * find a user xattr.
 		 */
-		error = zfs_getextattr_impl(ap, !zfs_xattr_compat);
+		error = zfs_getextattr_impl(ap, !zfs_xattr_compat, maybe_renamed);
 	}
 
 	rw_exit(&zp->z_xattr_lock);
 	zfs_exit(zfsvfs, FTAG);
 	if (error == ENOENT)
 		error = SET_ERROR(ENOATTR);
+	zfs_dup_attrname_free(maybe_renamed, origname);
 	return (error);
 }
 
@@ -5488,15 +5525,16 @@ zfs_deleteextattr_sa(struct vop_deleteextattr_args *ap, const char *attrname)
 }
 
 static int
-zfs_deleteextattr_impl(struct vop_deleteextattr_args *ap, boolean_t compat)
+zfs_deleteextattr_impl(struct vop_deleteextattr_args *ap, boolean_t compat,
+    char *maybe_renamed)
 {
 	znode_t *zp = VTOZ(ap->a_vp);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	char attrname[EXTATTR_MAXNAMELEN+1];
 	int error;
 
-	error = zfs_create_attrname(ap->a_attrnamespace, ap->a_name, attrname,
-	    sizeof (attrname), compat);
+	error = zfs_create_attrname(ap->a_attrnamespace, maybe_renamed,
+	    attrname, sizeof (attrname), compat);
 	if (error != 0)
 		return (error);
 
@@ -5514,6 +5552,8 @@ zfs_deleteextattr_impl(struct vop_deleteextattr_args *ap, boolean_t compat)
 static int
 zfs_deleteextattr(struct vop_deleteextattr_args *ap)
 {
+	const char *origname = ap->a_name;
+	char *maybe_renamed;
 	znode_t *zp = VTOZ(ap->a_vp);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	int error;
@@ -5529,28 +5569,34 @@ zfs_deleteextattr(struct vop_deleteextattr_args *ap)
 	if (error != 0)
 		return (SET_ERROR(error));
 
-	error = zfs_check_attrname(ap->a_name);
-	if (error != 0)
+	maybe_renamed = zfs_dup_attrname_maybe_rename(origname);
+	error = zfs_check_attrname(maybe_renamed);
+	if (error != 0) {
+		zfs_dup_attrname_free(maybe_renamed, origname);
 		return (error);
-
-	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+	}
+	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0) {
+		zfs_dup_attrname_free(maybe_renamed, origname);
 		return (error);
+	}
 	rw_enter(&zp->z_xattr_lock, RW_WRITER);
 
-	error = zfs_deleteextattr_impl(ap, zfs_xattr_compat);
+	error = zfs_deleteextattr_impl(ap, zfs_xattr_compat, maybe_renamed);
 	if ((error == ENOENT || error == ENOATTR) &&
 	    ap->a_attrnamespace == EXTATTR_NAMESPACE_USER) {
 		/*
 		 * Fall back to the alternate namespace format if we failed to
 		 * find a user xattr.
 		 */
-		error = zfs_deleteextattr_impl(ap, !zfs_xattr_compat);
+		error = zfs_deleteextattr_impl(ap, !zfs_xattr_compat,
+		    maybe_renamed);
 	}
 
 	rw_exit(&zp->z_xattr_lock);
 	zfs_exit(zfsvfs, FTAG);
 	if (error == ENOENT)
 		error = SET_ERROR(ENOATTR);
+	zfs_dup_attrname_free(maybe_renamed, origname);
 	return (error);
 }
 
@@ -5647,14 +5693,15 @@ zfs_setextattr_sa(struct vop_setextattr_args *ap, const char *attrname)
 }
 
 static int
-zfs_setextattr_impl(struct vop_setextattr_args *ap, boolean_t compat)
+zfs_setextattr_impl(struct vop_setextattr_args *ap, boolean_t compat,
+    char *maybe_renamed)
 {
 	znode_t *zp = VTOZ(ap->a_vp);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	char attrname[EXTATTR_MAXNAMELEN+1];
 	int error;
 
-	error = zfs_create_attrname(ap->a_attrnamespace, ap->a_name, attrname,
+	error = zfs_create_attrname(ap->a_attrnamespace, maybe_renamed, attrname,
 	    sizeof (attrname), compat);
 	if (error != 0)
 		return (error);
@@ -5662,7 +5709,7 @@ zfs_setextattr_impl(struct vop_setextattr_args *ap, boolean_t compat)
 	struct vop_deleteextattr_args vda = {
 		.a_vp = ap->a_vp,
 		.a_attrnamespace = ap->a_attrnamespace,
-		.a_name = ap->a_name,
+		.a_name = maybe_renamed,
 		.a_cred = ap->a_cred,
 		.a_td = ap->a_td,
 	};
@@ -5691,7 +5738,7 @@ zfs_setextattr_impl(struct vop_setextattr_args *ap, boolean_t compat)
 		/*
 		 * Also clear all versions of the alternate compat name.
 		 */
-		zfs_deleteextattr_impl(&vda, !compat);
+		zfs_deleteextattr_impl(&vda, !compat, maybe_renamed);
 	}
 	return (error);
 }
@@ -5702,6 +5749,8 @@ zfs_setextattr_impl(struct vop_setextattr_args *ap, boolean_t compat)
 static int
 zfs_setextattr(struct vop_setextattr_args *ap)
 {
+	const char *origname = ap->a_name;
+	char *maybe_renamed;
 	znode_t *zp = VTOZ(ap->a_vp);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	int error;
@@ -5717,18 +5766,24 @@ zfs_setextattr(struct vop_setextattr_args *ap)
 	if (error != 0)
 		return (SET_ERROR(error));
 
-	error = zfs_check_attrname(ap->a_name);
-	if (error != 0)
+	maybe_renamed = zfs_dup_attrname_maybe_rename(origname);
+	error = zfs_check_attrname(maybe_renamed);
+	if (error != 0) {
+		zfs_dup_attrname_free(maybe_renamed, origname);
 		return (error);
+	}
 
-	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0) {
+		zfs_dup_attrname_free(maybe_renamed, origname);
 		return (error);
+	}
 	rw_enter(&zp->z_xattr_lock, RW_WRITER);
 
-	error = zfs_setextattr_impl(ap, zfs_xattr_compat);
+	error = zfs_setextattr_impl(ap, zfs_xattr_compat, maybe_renamed);
 
 	rw_exit(&zp->z_xattr_lock);
 	zfs_exit(zfsvfs, FTAG);
+	zfs_dup_attrname_free(maybe_renamed, origname);
 	return (error);
 }
 

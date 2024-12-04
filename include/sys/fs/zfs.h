@@ -1954,7 +1954,8 @@ enum zio_encrypt {
 	    ZFS_XA_NS_PREFIX_MATCH(LINUX_SECURITY, name) || \
 	    ZFS_XA_NS_PREFIX_MATCH(LINUX_SYSTEM, name) || \
 	    ZFS_XA_NS_PREFIX_MATCH(LINUX_TRUSTED, name) || \
-	    ZFS_XA_NS_PREFIX_MATCH(LINUX_USER, name))
+	    (ZFS_XA_NS_PREFIX_MATCH(LINUX_USER, name) && \
+	        zfs_xattr_compat))
 
 #ifdef	__cplusplus
 }
