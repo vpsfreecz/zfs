@@ -2718,6 +2718,15 @@ zio_suspend(spa_t *spa, zio_t *zio, zio_suspend_reason_t reason)
 	mutex_exit(&spa->spa_suspend_lock);
 
 	txg_wait_kick(spa->spa_dsl_pool);
+
+	/*
+	 * A transaction can be sleeping on dirty-space throttling rather than
+	 * the TXG sync condition.  Wake that branch as well so suspend-aware
+	 * assignments can re-evaluate the pool state immediately.
+	 */
+	mutex_enter(&spa->spa_dsl_pool->dp_lock);
+	cv_broadcast(&spa->spa_dsl_pool->dp_spaceavail_cv);
+	mutex_exit(&spa->spa_dsl_pool->dp_lock);
 }
 
 int

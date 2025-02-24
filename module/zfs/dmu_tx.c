@@ -1242,8 +1242,15 @@ dmu_tx_assign(dmu_tx_t *tx, dmu_tx_flag_t flags)
 	if ((flags & DMU_TX_NOTHROTTLE))
 		tx->tx_dirty_delayed = B_TRUE;
 
-	if (!(flags & DMU_TX_SUSPEND))
-		tx->tx_break_on_suspend = B_TRUE;
+	/*
+	 * failmode=continue makes suspension terminal for both blocking and
+	 * nonblocking assignments.  Nonblocking callers commonly follow an
+	 * ERESTART with dmu_tx_wait(), so the transaction must retain the same
+	 * decision for that external wait as well.
+	 */
+	tx->tx_break_on_suspend = (!(flags & DMU_TX_SUSPEND) &&
+	    spa_get_failmode(tx->tx_pool->dp_spa) ==
+	    ZIO_FAILURE_MODE_CONTINUE);
 
 	while ((err = dmu_tx_try_assign(tx)) != 0) {
 		dmu_tx_unassign(tx);
@@ -1251,28 +1258,13 @@ dmu_tx_assign(dmu_tx_t *tx, dmu_tx_flag_t flags)
 		boolean_t suspended = (err == ESHUTDOWN);
 		if (suspended) {
 			/*
-			 * Pool suspended. We need to decide whether to block
-			 * and retry, or return error, depending on the
-			 * caller's flags and the pool config.
+			 * Under failmode=continue, return a terminal error to
+			 * blocking and nonblocking callers.  Otherwise the
+			 * caller waits here or receives ERESTART and retains
+			 * the dmu_tx_wait() wait-through-suspend contract.
 			 */
-			if (flags & DMU_TX_SUSPEND)
-				/*
-				 * The caller expressly does not care about
-				 * suspend, so treat it as a normal retry.
-				 */
-				err = SET_ERROR(ERESTART);
-			else if ((flags & DMU_TX_WAIT) &&
-			    spa_get_failmode(tx->tx_pool->dp_spa) ==
-			    ZIO_FAILURE_MODE_CONTINUE)
-				/*
-				 * Caller wants to wait, but pool config is
-				 * overriding that, so return EIO to be
-				 * propagated back to userspace.
-				 */
-				err = SET_ERROR(EIO);
-			else
-				/* Anything else, we should just block. */
-				err = SET_ERROR(ERESTART);
+			err = tx->tx_break_on_suspend ? SET_ERROR(EIO) :
+			    SET_ERROR(ERESTART);
 		}
 
 		/*
@@ -1328,11 +1320,9 @@ dmu_tx_wait(dmu_tx_t *tx)
 	ASSERT(!dsl_pool_config_held(tx->tx_pool));
 
 	/*
-	 * Break on suspend according to whether or not DMU_TX_SUSPEND was
-	 * supplied to the previous dmu_tx_assign() call. For clients, this
-	 * ensures that after dmu_tx_assign() fails, the followup dmu_tx_wait()
-	 * gets the same behaviour wrt suspend. See also the comments in
-	 * dmu_tx_assign().
+	 * Retain the suspend decision made by the previous dmu_tx_assign().
+	 * This gives a nonblocking caller's follow-up dmu_tx_wait() the same
+	 * failmode and DMU_TX_SUSPEND behavior as the assignment attempt.
 	 */
 	txg_wait_flag_t flags =
 	    (tx->tx_break_on_suspend ? TXG_WAIT_SUSPEND : TXG_WAIT_NONE);
@@ -1340,6 +1330,7 @@ dmu_tx_wait(dmu_tx_t *tx)
 	before = gethrtime();
 
 	if (tx->tx_wait_dirty) {
+		boolean_t interrupted;
 		uint64_t dirty;
 
 		/*
@@ -1350,22 +1341,33 @@ dmu_tx_wait(dmu_tx_t *tx)
 		mutex_enter(&dp->dp_lock);
 		if (dp->dp_dirty_total >= zfs_dirty_data_max)
 			DMU_TX_STAT_BUMP(dmu_tx_dirty_over_max);
-		while (dp->dp_dirty_total >= zfs_dirty_data_max)
+		while (dp->dp_dirty_total >= zfs_dirty_data_max &&
+		    (!tx->tx_break_on_suspend || !spa_suspended(spa)))
 			cv_wait(&dp->dp_spaceavail_cv, &dp->dp_lock);
+		interrupted = (tx->tx_break_on_suspend && spa_suspended(spa));
 		dirty = dp->dp_dirty_total;
 		mutex_exit(&dp->dp_lock);
 
-		dmu_tx_delay(tx, dirty);
-
-		tx->tx_wait_dirty = B_FALSE;
-
 		/*
-		 * Note: setting tx_dirty_delayed only has effect if the
-		 * caller used DMU_TX_WAIT.  Otherwise they are going to
-		 * destroy this tx and try again.  The common case,
-		 * zfs_write(), uses DMU_TX_WAIT.
+		 * Leave the dirty-wait state intact when suspension interrupted
+		 * the wait.  dmu_tx_assign() will retry once, translate the
+		 * suspension according to the caller flags and failmode, and
+		 * either return or wait for resume without losing the original
+		 * throttle reason.
 		 */
-		tx->tx_dirty_delayed = B_TRUE;
+		if (!interrupted) {
+			dmu_tx_delay(tx, dirty);
+
+			tx->tx_wait_dirty = B_FALSE;
+
+			/*
+			 * Note: setting tx_dirty_delayed only has effect if the
+			 * caller used DMU_TX_WAIT.  Otherwise they are going to
+			 * destroy this tx and try again.  The common case,
+			 * zfs_write(), uses DMU_TX_WAIT.
+			 */
+			tx->tx_dirty_delayed = B_TRUE;
+		}
 	} else if (spa_suspended(spa) || tx->tx_lasttried_txg == 0) {
 		/*
 		 * If the pool is suspended we need to wait until it
@@ -1377,12 +1379,31 @@ dmu_tx_wait(dmu_tx_t *tx)
 		txg_wait_synced_flags(dp, spa_last_synced_txg(spa) + 1, flags);
 	} else if (tx->tx_needassign_txh) {
 		dnode_t *dn = tx->tx_needassign_txh->txh_dnode;
+		boolean_t interrupted;
 
 		mutex_enter(&dn->dn_mtx);
-		while (dn->dn_assigned_txg == tx->tx_lasttried_txg - 1)
-			cv_wait(&dn->dn_notxholds, &dn->dn_mtx);
+		while (dn->dn_assigned_txg == tx->tx_lasttried_txg - 1 &&
+		    (!tx->tx_break_on_suspend || !spa_suspended(spa))) {
+			/*
+			 * dn_notxholds is dnode-local, so zio_suspend() cannot
+			 * enumerate and signal every possible waiter.  Recheck
+			 * at a bounded interval to make suspension a terminal
+			 * predicate without replacing the commit-path wakeup.
+			 */
+			if (tx->tx_break_on_suspend) {
+				(void) cv_timedwait(&dn->dn_notxholds,
+				    &dn->dn_mtx, ddi_get_lbolt() +
+				    MSEC_TO_TICK(100));
+			} else {
+				cv_wait(&dn->dn_notxholds, &dn->dn_mtx);
+			}
+		}
+		interrupted = (dn->dn_assigned_txg ==
+		    tx->tx_lasttried_txg - 1 && tx->tx_break_on_suspend &&
+		    spa_suspended(spa));
 		mutex_exit(&dn->dn_mtx);
-		tx->tx_needassign_txh = NULL;
+		if (!interrupted)
+			tx->tx_needassign_txh = NULL;
 	} else {
 		/*
 		 * If we have a lot of dirty data just wait until we sync
