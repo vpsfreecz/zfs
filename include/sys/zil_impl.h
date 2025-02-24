@@ -100,11 +100,16 @@ typedef enum {
  * holding the "zl_issuer_lock". After the lwb is issued, the zilog's
  * "zl_lock" is used to protect the lwb against concurrent access.
  */
+typedef enum {
+	LWB_FLAG_SLIM =		(1<<0),	/* log block has slim format */
+	LWB_FLAG_SLOG =		(1<<1),	/* lwb_blk is on SLOG device */
+	LWB_FLAG_CRASHED =	(1<<2),	/* lwb is on the crash list */
+} lwb_flag_t;
+
 typedef struct lwb {
 	zilog_t		*lwb_zilog;	/* back pointer to log struct */
 	blkptr_t	lwb_blk;	/* on disk address of this log blk */
-	boolean_t	lwb_slim;	/* log block has slim format */
-	boolean_t	lwb_slog;	/* lwb_blk is on SLOG device */
+	lwb_flag_t	lwb_flags;	/* extra info about this lwb */
 	int		lwb_error;	/* log block allocation error */
 	int		lwb_nmax;	/* max bytes in the buffer */
 	int		lwb_nused;	/* # used bytes in buffer */
@@ -221,6 +226,7 @@ struct zilog {
 	uint64_t	zl_cur_left;	/* current burst remaining size */
 	uint64_t	zl_cur_max;	/* biggest record in current burst */
 	list_t		zl_lwb_list;	/* in-flight log write list */
+	list_t		zl_lwb_crash_list; /* log writes in-flight at crash */
 	avl_tree_t	zl_bp_tree;	/* track bps during log parse */
 	clock_t		zl_replay_time;	/* lbolt of when replay started */
 	uint64_t	zl_replay_blks;	/* number of log blocks replayed */
@@ -244,6 +250,9 @@ struct zilog {
 	 * (see zil_max_copied_data()).
 	 */
 	uint64_t	zl_max_block_size;
+
+	/* After crash, txg to restart zil */
+	uint64_t	zl_restart_txg;
 
 	/* Pointer for per dataset zil sums */
 	zil_sums_t *zl_sums;

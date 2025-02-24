@@ -1093,8 +1093,8 @@ out:
 		*zpp = zp;
 	}
 
-	if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
-		zil_commit(zilog, 0);
+	if (error == 0 && zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
+		error = zil_commit(zilog, 0);
 
 	zfs_exit(zfsvfs, FTAG);
 	return (error);
@@ -1223,9 +1223,8 @@ out:
 	if (xzp)
 		vrele(ZTOV(xzp));
 
-	if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
-		zil_commit(zilog, 0);
-
+	if (error == 0 && zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
+		error = zil_commit(zilog, 0);
 
 	zfs_exit(zfsvfs, FTAG);
 	return (error);
@@ -1456,8 +1455,8 @@ out:
 
 	getnewvnode_drop_reserve();
 
-	if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
-		zil_commit(zilog, 0);
+	if (error == 0 && zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
+		error = zil_commit(zilog, 0);
 
 	zfs_exit(zfsvfs, FTAG);
 	return (error);
@@ -1537,8 +1536,8 @@ zfs_rmdir_(vnode_t *dvp, vnode_t *vp, const char *name, cred_t *cr)
 	if (zfsvfs->z_use_namecache)
 		cache_vop_rmdir(dvp, vp);
 out:
-	if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
-		zil_commit(zilog, 0);
+	if (error == 0 && zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
+		error = zil_commit(zilog, 0);
 
 	zfs_exit(zfsvfs, FTAG);
 	return (error);
@@ -2777,8 +2776,8 @@ out:
 	}
 
 out2:
-	if (os->os_sync == ZFS_SYNC_ALWAYS)
-		zil_commit(zilog, 0);
+	if (err == 0 && os->os_sync == ZFS_SYNC_ALWAYS)
+		err = zil_commit(zilog, 0);
 
 	zfs_exit(zfsvfs, FTAG);
 	return (err);
@@ -3307,7 +3306,7 @@ out_seq:
 
 out:
 	if (error == 0 && zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
-		zil_commit(zilog, 0);
+		error = zil_commit(zilog, 0);
 	zfs_exit(zfsvfs, FTAG);
 
 	return (error);
@@ -3500,7 +3499,7 @@ zfs_symlink(znode_t *dzp, const char *name, vattr_t *vap,
 		*zpp = zp;
 
 		if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
-			zil_commit(zilog, 0);
+			error = zil_commit(zilog, 0);
 	}
 
 	zfs_exit(zfsvfs, FTAG);
@@ -3690,8 +3689,8 @@ zfs_link(znode_t *tdzp, znode_t *szp, const char *name, cred_t *cr,
 		vnevent_link(ZTOV(szp), ct);
 	}
 
-	if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
-		zil_commit(zilog, 0);
+	if (error == 0 && zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
+		error = zil_commit(zilog, 0);
 
 	zfs_exit(zfsvfs, FTAG);
 	return (error);
@@ -4082,8 +4081,9 @@ typedef struct {
 } putpage_commit_arg_t;
 
 static void
-zfs_putpage_commit_cb(void *arg)
+zfs_putpage_commit_cb(void *arg, int err)
 {
+	(void) err;
 	putpage_commit_arg_t *pca = arg;
 	vm_object_t object = pca->pca_pages[0]->object;
 
@@ -4279,8 +4279,13 @@ zfs_putpages(struct vnode *vp, vm_page_t *ma, size_t len, int flags,
 
 out:
 	zfs_rangelock_exit(lr);
-	if (commit)
-		zil_commit(zfsvfs->z_log, zp->z_id);
+	if (commit) {
+		err = zil_commit(zfsvfs->z_log, zp->z_id);
+		if (err != 0) {
+			zfs_exit(zfsvfs, FTAG);
+			return (err);
+		}
+	}
 
 	dataset_kstats_update_write_kstats(&zfsvfs->z_kstat, len);
 
@@ -6204,9 +6209,11 @@ zfs_deallocate(struct vop_deallocate_args *ap)
 	if (error == 0) {
 		if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS ||
 		    (ap->a_ioflag & IO_SYNC) != 0)
-			zil_commit(zilog, zp->z_id);
-		*ap->a_offset = off + len;
-		*ap->a_len = 0;
+			error = zil_commit(zilog, zp->z_id);
+		if (error == 0) {
+			*ap->a_offset = off + len;
+			*ap->a_len = 0;
+		}
 	}
 
 	zfs_exit(zfsvfs, FTAG);

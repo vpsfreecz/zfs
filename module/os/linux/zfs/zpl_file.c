@@ -23,6 +23,7 @@
  * Copyright (c) 2011, Lawrence Livermore National Security, LLC.
  * Copyright (c) 2015 by Chunwei Chen. All rights reserved.
  * Copyright (c) 2025, Rob Norris <robn@despairlabs.com>
+ * Copyright (c) 2025, Klara, Inc.
  */
 
 
@@ -119,8 +120,8 @@ zpl_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
 	int error;
 	fstrans_cookie_t cookie;
 
-	error = filemap_write_and_wait_range(inode->i_mapping, start, end);
-	if (error)
+	error = file_write_and_wait_range(filp, start, end);
+	if (error != 0)
 		return (error);
 
 	crhold(cr);
@@ -549,6 +550,7 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 	znode_t		*zp = ITOZ(mapping->host);
 	zfsvfs_t	*zfsvfs = ITOZSB(mapping->host);
 	enum writeback_sync_modes sync_mode;
+	int first_pass_error;
 	int result;
 
 	if ((result = zpl_enter(zfsvfs, FTAG)) != 0)
@@ -567,25 +569,53 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 	 */
 	boolean_t for_sync = (sync_mode == WB_SYNC_ALL);
 	wbc->sync_mode = WB_SYNC_NONE;
-	result = zpl_write_cache_pages(mapping, wbc, &for_sync);
-	if (sync_mode != wbc->sync_mode) {
-		if ((result = zpl_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
-			return (result);
-		if (zfsvfs->z_log != NULL)
-			zil_commit(zfsvfs->z_log, zp->z_id);
-		zpl_exit(zfsvfs, FTAG);
+	first_pass_error = zpl_write_cache_pages(mapping, wbc, &for_sync);
+	if (sync_mode == wbc->sync_mode)
+		return (first_pass_error);
 
+	/*
+	 * Preserve the first writeback error, but still commit any pages that
+	 * were already queued so they are not left waiting on writeback
+	 * completion.
+	 */
+	result = zpl_enter_verify_zp(zfsvfs, zp, FTAG);
+	if (result != 0)
+		return (first_pass_error != 0 ? first_pass_error : result);
+
+	if (zfsvfs->z_log != NULL) {
 		/*
-		 * We need to call write_cache_pages() again (we can't just
-		 * return after the commit) because the previous call in
-		 * non-SYNC mode does not guarantee that we got all the dirty
-		 * pages (see the implementation of write_cache_pages() for
-		 * details). That being said, this is a no-op in most cases.
+		 * We don't want to block here if the pool suspends,
+		 * because this is not a syncing op by itself, but
+		 * might be part of one that the caller will
+		 * coordinate.
 		 */
-		wbc->sync_mode = sync_mode;
-		result = zpl_write_cache_pages(mapping, wbc, &for_sync);
+		result = -zil_commit_flags(zfsvfs->z_log, zp->z_id,
+		    ZIL_COMMIT_NOW);
 	}
-	return (result);
+
+	zpl_exit(zfsvfs, FTAG);
+
+	/*
+	 * If zil_commit_flags() failed, it's unclear what state things
+	 * are currently in. putpage() has written back out what it can
+	 * to the DMU, but it may not be on disk. We have little choice
+	 * but to escape.
+	 */
+	if (result != 0)
+		return (result);
+
+	if (first_pass_error != 0)
+		return (first_pass_error);
+
+	/*
+	 * We need to call write_cache_pages() again (we can't just
+	 * return after the commit) because the previous call in
+	 * non-SYNC mode does not guarantee that we got all the dirty
+	 * pages (see the implementation of write_cache_pages() for
+	 * details). That being said, this is a no-op in most cases.
+	 */
+	wbc->sync_mode = sync_mode;
+	return (zpl_write_cache_pages(mapping, wbc, &for_sync));
 }
 
 #ifdef HAVE_VFS_WRITEPAGE
