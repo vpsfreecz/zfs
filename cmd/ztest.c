@@ -1991,13 +1991,13 @@ ztest_log_write(ztest_ds_t *zd, dmu_tx_t *tx, lr_write_t *lr)
 	itx = zil_itx_create(TX_WRITE,
 	    sizeof (*lr) + (write_state == WR_COPIED ? lr->lr_length : 0));
 
-	if (write_state == WR_COPIED &&
-	    dmu_read(zd->zd_os, lr->lr_foid, lr->lr_offset, lr->lr_length,
-	    ((lr_write_t *)&itx->itx_lr) + 1, DMU_READ_NO_PREFETCH) != 0) {
-		zil_itx_destroy(itx);
-		itx = zil_itx_create(TX_WRITE, sizeof (*lr));
-		write_state = WR_NEED_COPY;
-	}
+		if (write_state == WR_COPIED &&
+		    dmu_read(zd->zd_os, lr->lr_foid, lr->lr_offset, lr->lr_length,
+		    ((lr_write_t *)&itx->itx_lr) + 1, DMU_READ_NO_PREFETCH) != 0) {
+			zil_itx_destroy(itx, 0);
+			itx = zil_itx_create(TX_WRITE, sizeof (*lr));
+			write_state = WR_NEED_COPY;
+		}
 	itx->itx_private = zd;
 	itx->itx_wr_state = write_state;
 	itx->itx_sync = (ztest_random(8) == 0);
