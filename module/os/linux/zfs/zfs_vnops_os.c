@@ -3706,8 +3706,9 @@ top:
 }
 
 static void
-zfs_putpage_commit_cb(void *arg)
+zfs_putpage_commit_cb(void *arg, int err)
 {
+	(void) err;
 	struct page *pp = arg;
 
 	ClearPageError(pp);
