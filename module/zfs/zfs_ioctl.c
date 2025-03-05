@@ -2654,6 +2654,20 @@ zfs_prop_set_special(const char *dsname, zprop_source_t source,
 		zfsvfs_rele(zfsvfs, FTAG);
 		break;
 	}
+	case ZFS_PROP_DEFAULTUSERQUOTA:
+	case ZFS_PROP_DEFAULTGROUPQUOTA:
+	case ZFS_PROP_DEFAULTPROJECTQUOTA:
+	case ZFS_PROP_DEFAULTUSEROBJQUOTA:
+	case ZFS_PROP_DEFAULTGROUPOBJQUOTA:
+	case ZFS_PROP_DEFAULTPROJECTOBJQUOTA:
+	{
+		zfsvfs_t *zfsvfs;
+		if ((err = zfsvfs_hold(dsname, FTAG, &zfsvfs, B_TRUE)) != 0)
+			break;
+		err = zfs_set_default_quota(zfsvfs, prop, intval);
+		zfsvfs_rele(zfsvfs, FTAG);
+		break;
+	}
 	default:
 		err = -1;
 	}
