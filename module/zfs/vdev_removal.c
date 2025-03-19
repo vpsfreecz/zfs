@@ -1614,9 +1614,9 @@ spa_vdev_remove_thread(void *arg)
 	vca.vca_read_error_bytes = 0;
 	vca.vca_write_error_bytes = 0;
 
-	zfs_range_tree_t *segs = zfs_range_tree_create_flags(
-	    NULL, ZFS_RANGE_SEG64, NULL, 0, 0,
-	    ZFS_RT_F_DYN_NAME, vdev_rt_name(vd, "spa_vdev_remove_thread:segs"));
+		zfs_range_tree_t *segs = zfs_range_tree_create_flags(
+		    NULL, ZFS_RANGE_SEG64, NULL, 0, 0,
+		    ZFS_RT_F_DYN_NAME, vdev_rt_name(vd, "spa_vdev_remove_thread:segs"));
 
 	mutex_enter(&svr->svr_lock);
 
