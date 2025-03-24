@@ -1086,6 +1086,15 @@ again:
 
 		ASSERT3P(zp, !=, NULL);
 
+		struct inode *ip = ZTOI(zp);
+
+		spin_lock(&ip->i_lock);
+		if (ip->i_state & I_FREEING && ip->i_state & I_SYNC) {
+			spin_unlock(&ip->i_lock);
+			return (SET_ERROR(EAGAIN));
+		}
+		spin_unlock(&ip->i_lock);
+
 		mutex_enter(&zp->z_lock);
 		ASSERT3U(zp->z_id, ==, obj_num);
 		/*
