@@ -1288,9 +1288,11 @@ dbuf_loan_arcbuf(dmu_buf_impl_t *db)
 		int blksz = db->db.db_size;
 		spa_t *spa = db->db_objset->os_spa;
 
-		mutex_exit(&db->db_mtx);
 		abuf = arc_loan_buf(spa, B_FALSE, blksz);
+		rw_enter(&db->db_rwlock, RW_READER);
 		memcpy(abuf->b_data, db->db.db_data, blksz);
+		rw_exit(&db->db_rwlock);
+		mutex_exit(&db->db_mtx);
 	} else {
 		abuf = db->db_buf;
 		arc_loan_inuse_buf(abuf, db);
@@ -1713,7 +1715,9 @@ dbuf_fix_old_data(dmu_buf_impl_t *db, uint64_t txg)
 		int bonuslen = DN_SLOTS_TO_BONUSLEN(dn->dn_num_slots);
 		dr->dt.dl.dr_data = kmem_alloc(bonuslen, KM_SLEEP);
 		arc_space_consume(bonuslen, ARC_SPACE_BONUS);
+		rw_enter(&db->db_rwlock, RW_READER);
 		memcpy(dr->dt.dl.dr_data, db->db.db_data, bonuslen);
+		rw_exit(&db->db_rwlock);
 	} else if (zfs_refcount_count(&db->db_holds) > db->db_dirtycnt) {
 		dnode_t *dn = DB_DNODE(db);
 		int size = arc_buf_size(db->db_buf);
@@ -1743,7 +1747,9 @@ dbuf_fix_old_data(dmu_buf_impl_t *db, uint64_t txg)
 		} else {
 			dr->dt.dl.dr_data = arc_alloc_buf(spa, db, type, size);
 		}
+		rw_enter(&db->db_rwlock, RW_READER);
 		memcpy(dr->dt.dl.dr_data->b_data, db->db.db_data, size);
+		rw_exit(&db->db_rwlock);
 	} else {
 		db->db_buf = NULL;
 		dbuf_clear_data(db);
@@ -3002,7 +3008,9 @@ dmu_buf_fill_done(dmu_buf_t *dbuf, dmu_tx_t *tx, boolean_t failed)
 			ASSERT(db->db_blkid != DMU_BONUS_BLKID);
 			/* we were freed while filling */
 			/* XXX dbuf_undirty? */
+			rw_enter(&db->db_rwlock, RW_WRITER);
 			memset(db->db.db_data, 0, db->db.db_size);
+			rw_exit(&db->db_rwlock);
 			db->db_freed_in_flight = FALSE;
 			db->db_state = DB_CACHED;
 			DTRACE_SET_STATE(db,
@@ -3130,7 +3138,11 @@ dbuf_assign_arcbuf(dmu_buf_impl_t *db, arc_buf_t *buf, dmu_tx_t *tx)
 		ASSERT(!arc_is_encrypted(buf));
 		mutex_exit(&db->db_mtx);
 		(void) dbuf_dirty(db, tx);
+		mutex_enter(&db->db_mtx);
+		rw_enter(&db->db_rwlock, RW_WRITER);
 		memcpy(db->db.db_data, buf->b_data, db->db.db_size);
+		rw_exit(&db->db_rwlock);
+		mutex_exit(&db->db_mtx);
 		arc_buf_destroy(buf, db);
 		return;
 	}
@@ -3937,7 +3949,7 @@ dbuf_hold_impl(dnode_t *dn, uint8_t level, uint64_t blkid,
 
 	if (db->db_buf != NULL) {
 		arc_buf_access(db->db_buf);
-		ASSERT3P(db->db.db_data, ==, db->db_buf->b_data);
+		VERIFY3P(db->db.db_data, ==, db->db_buf->b_data);
 	}
 
 	ASSERT(db->db_buf == NULL || arc_referenced(db->db_buf));
@@ -4816,7 +4828,9 @@ dbuf_sync_leaf(dbuf_dirty_record_t *dr, dmu_tx_t *tx)
 		} else {
 			*datap = arc_alloc_buf(os->os_spa, db, type, psize);
 		}
+		rw_enter(&db->db_rwlock, RW_READER);
 		memcpy((*datap)->b_data, db->db.db_data, psize);
+		rw_exit(&db->db_rwlock);
 	}
 	db->db_data_pending = dr;
 
