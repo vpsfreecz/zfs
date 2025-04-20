@@ -3137,12 +3137,16 @@ dbuf_assign_arcbuf(dmu_buf_impl_t *db, arc_buf_t *buf, dmu_tx_t *tx)
 		 */
 		ASSERT(!arc_is_encrypted(buf));
 		mutex_exit(&db->db_mtx);
+
 		(void) dbuf_dirty(db, tx);
+
 		mutex_enter(&db->db_mtx);
+		VERIFY(db->db_state == DB_CACHED);
 		rw_enter(&db->db_rwlock, RW_WRITER);
 		memcpy(db->db.db_data, buf->b_data, db->db.db_size);
 		rw_exit(&db->db_rwlock);
 		mutex_exit(&db->db_mtx);
+
 		arc_buf_destroy(buf, db);
 		return;
 	}
