@@ -79,6 +79,7 @@ dnode_increase_indirection(dnode_t *dn, dmu_tx_t *tx)
 	(void) dbuf_read(db, NULL, DB_RF_MUST_SUCCEED|DB_RF_HAVESTRUCT);
 	if (dn->dn_dbuf != NULL)
 		rw_enter(&dn->dn_dbuf->db_rwlock, RW_WRITER);
+
 	rw_enter(&db->db_rwlock, RW_WRITER);
 	ASSERT(db->db.db_data);
 	ASSERT(arc_released(db->db_buf));
@@ -529,12 +530,13 @@ dnode_evict_bonus(dnode_t *dn)
 {
 	rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
 	if (dn->dn_bonus != NULL) {
+		mutex_enter(&dn->dn_bonus->db_mtx);
 		if (zfs_refcount_is_zero(&dn->dn_bonus->db_holds)) {
-			mutex_enter(&dn->dn_bonus->db_mtx);
 			dbuf_destroy(dn->dn_bonus);
 			dn->dn_bonus = NULL;
 		} else {
 			dn->dn_bonus->db_pending_evict = TRUE;
+			mutex_exit(&dn->dn_bonus->db_mtx);
 		}
 	}
 	rw_exit(&dn->dn_struct_rwlock);

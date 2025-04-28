@@ -380,11 +380,13 @@ int dmu_bonus_hold_by_dnode(dnode_t *dn, const void *tag, dmu_buf_t **dbp,
 	}
 	db = dn->dn_bonus;
 
+	mutex_enter(&db->db_mtx);
 	/* as long as the bonus buf is held, the dnode will be held */
 	if (zfs_refcount_add(&db->db_holds, tag) == 1) {
 		VERIFY(dnode_add_ref(dn, db));
 		atomic_inc_32(&dn->dn_dbufs_count);
 	}
+	mutex_exit(&db->db_mtx);
 
 	/*
 	 * Wait to drop dn_struct_rwlock until after adding the bonus dbuf's
