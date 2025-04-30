@@ -3116,10 +3116,9 @@ dbuf_assign_arcbuf(dmu_buf_impl_t *db, arc_buf_t *buf, dmu_tx_t *tx)
 	ASSERT3U(arc_buf_lsize(buf), ==, db->db.db_size);
 	ASSERT(tx->tx_txg != 0);
 
+	mutex_enter(&db->db_mtx);
 	arc_return_buf(buf, db);
 	ASSERT(arc_released(buf));
-
-	mutex_enter(&db->db_mtx);
 
 	while (db->db_state == DB_READ || db->db_state == DB_FILL)
 		cv_wait(&db->db_changed, &db->db_mtx);
@@ -3252,9 +3251,9 @@ dbuf_destroy(dmu_buf_impl_t *db)
 	 * the hash table.  We can now drop db_mtx, which allows us to
 	 * acquire the dn_dbufs_mtx.
 	 */
+	DB_DNODE_ENTER(db);
 	mutex_exit(&db->db_mtx);
 
-	DB_DNODE_ENTER(db);
 	dn = DB_DNODE(db);
 	dndb = dn->dn_dbuf;
 	if (db->db_blkid != DMU_BONUS_BLKID) {
