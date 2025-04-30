@@ -1531,9 +1531,8 @@ zfs_extend(znode_t *zp, uint64_t end)
 	VERIFY(0 == sa_update(zp->z_sa_hdl, SA_ZPL_SIZE(ZTOZSB(zp)),
 	    &zp->z_size, sizeof (zp->z_size), tx));
 
-	zfs_rangelock_exit(lr);
-
 	dmu_tx_commit(tx);
+	zfs_rangelock_exit(lr);
 
 	return (0);
 }
