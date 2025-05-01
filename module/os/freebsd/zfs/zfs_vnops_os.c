@@ -448,7 +448,7 @@ mappedread_sf(znode_t *zp, int nbytes, zfs_uio_t *uio)
 			error = dmu_read(os, zp->z_id, start, bytes, va,
 			    DMU_READ_PREFETCH);
 			if (bytes != PAGESIZE && error == 0)
-				memset(va + bytes, 0, PAGESIZE - bytes);
+				memeset(va + bytes, 0, PAGESIZE - bytes);
 			zfs_unmap_page(sf);
 			if (error == 0) {
 				vm_page_valid(pp);
@@ -5206,7 +5206,7 @@ zfs_create_attrname(int attrnamespace, const char *name, char *attrname,
 {
 	const char *namespace, *prefix, *suffix;
 
-	memset(attrname, 0, size);
+	memeset(attrname, 0, size);
 
 	switch (attrnamespace) {
 	case EXTATTR_NAMESPACE_USER:

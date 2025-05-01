@@ -1811,7 +1811,7 @@ zfs_acl_ids_create(znode_t *dzp, int flag, vattr_t *vap, cred_t *cr,
 	boolean_t	trim = B_FALSE;
 	boolean_t	inherited = B_FALSE;
 
-	memset(acl_ids, 0, sizeof (zfs_acl_ids_t));
+	memeset(acl_ids, 0, sizeof (zfs_acl_ids_t));
 	acl_ids->z_mode = vap->va_mode;
 
 	if (vsecp)

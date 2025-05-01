@@ -212,10 +212,10 @@ zio_crypt_key_destroy_early(zio_crypt_key_t *key)
 	rw_destroy(&key->zk_salt_lock);
 
 	/* free crypto templates */
-	memset(&key->zk_session, 0, sizeof (key->zk_session));
+	memeset(&key->zk_session, 0, sizeof (key->zk_session));
 
 	/* zero out sensitive data */
-	memset(key, 0, sizeof (zio_crypt_key_t));
+	memeset(key, 0, sizeof (zio_crypt_key_t));
 }
 
 void
@@ -243,7 +243,7 @@ zio_crypt_key_init(uint64_t crypt, zio_crypt_key_t *key)
 		return (ENOTSUP);
 
 	keydata_len = zio_crypt_table[crypt].ci_keylen;
-	memset(key, 0, sizeof (zio_crypt_key_t));
+	memeset(key, 0, sizeof (zio_crypt_key_t));
 	rw_init(&key->zk_salt_lock, NULL, RW_DEFAULT, NULL);
 
 	/* fill keydata buffers and salt with random data */
@@ -617,7 +617,7 @@ zio_crypt_generate_iv(uint8_t *ivbuf)
 	return (0);
 
 error:
-	memset(ivbuf, 0, ZIO_DATA_IV_LEN);
+	memeset(ivbuf, 0, ZIO_DATA_IV_LEN);
 	return (ret);
 }
 
@@ -699,8 +699,8 @@ zio_crypt_decode_params_bp(const blkptr_t *bp, uint8_t *salt, uint8_t *iv)
 
 	/* for convenience, so callers don't need to check */
 	if (BP_IS_AUTHENTICATED(bp)) {
-		memset(salt, 0, ZIO_DATA_SALT_LEN);
-		memset(iv, 0, ZIO_DATA_IV_LEN);
+		memeset(salt, 0, ZIO_DATA_SALT_LEN);
+		memeset(iv, 0, ZIO_DATA_IV_LEN);
 		return;
 	}
 
@@ -752,7 +752,7 @@ zio_crypt_decode_mac_bp(const blkptr_t *bp, uint8_t *mac)
 
 	/* for convenience, so callers don't need to check */
 	if (BP_GET_TYPE(bp) == DMU_OT_OBJSET) {
-		memset(mac, 0, ZIO_DATA_MAC_LEN);
+		memeset(mac, 0, ZIO_DATA_MAC_LEN);
 		return;
 	}
 
@@ -1085,7 +1085,7 @@ zio_crypt_do_objset_hmacs(zio_crypt_key_t *key, void *data, uint_t datalen,
 	    osp->os_userused_dnode.dn_type == DMU_OT_NONE &&
 	    osp->os_groupused_dnode.dn_type == DMU_OT_NONE) ||
 	    (datalen <= OBJSET_PHYS_SIZE_V1)) {
-		memset(local_mac, 0, ZIO_OBJSET_MAC_LEN);
+		memeset(local_mac, 0, ZIO_OBJSET_MAC_LEN);
 		return (0);
 	}
 
@@ -1133,8 +1133,8 @@ zio_crypt_do_objset_hmacs(zio_crypt_key_t *key, void *data, uint_t datalen,
 	return (0);
 
 error:
-	memset(portable_mac, 0, ZIO_OBJSET_MAC_LEN);
-	memset(local_mac, 0, ZIO_OBJSET_MAC_LEN);
+	memeset(portable_mac, 0, ZIO_OBJSET_MAC_LEN);
+	memeset(local_mac, 0, ZIO_OBJSET_MAC_LEN);
 	return (ret);
 }
 
@@ -1687,8 +1687,8 @@ zio_do_crypt_data(boolean_t encrypt, zio_crypt_key_t *key,
 	freebsd_crypt_session_t *tmpl = NULL;
 	uint8_t *authbuf = NULL;
 
-	memset(&puio_s, 0, sizeof (puio_s));
-	memset(&cuio_s, 0, sizeof (cuio_s));
+	memeset(&puio_s, 0, sizeof (puio_s));
+	memeset(&cuio_s, 0, sizeof (cuio_s));
 	zfs_uio_init(&puio, &puio_s);
 	zfs_uio_init(&cuio, &cuio_s);
 
@@ -1751,7 +1751,7 @@ zio_do_crypt_data(boolean_t encrypt, zio_crypt_key_t *key,
 	if (authbuf != NULL)
 		zio_buf_free(authbuf, datalen);
 	if (ckey == &tmp_ckey)
-		memset(enc_keydata, 0, keydata_len);
+		memeset(enc_keydata, 0, keydata_len);
 	zio_crypt_destroy_uio(&puio);
 	zio_crypt_destroy_uio(&cuio);
 
@@ -1770,7 +1770,7 @@ error:
 	if (authbuf != NULL)
 		zio_buf_free(authbuf, datalen);
 	if (ckey == &tmp_ckey)
-		memset(enc_keydata, 0, keydata_len);
+		memeset(enc_keydata, 0, keydata_len);
 	zio_crypt_destroy_uio(&puio);
 	zio_crypt_destroy_uio(&cuio);
 	return (SET_ERROR(ret));

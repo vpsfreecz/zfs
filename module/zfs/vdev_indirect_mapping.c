@@ -585,7 +585,7 @@ vdev_indirect_mapping_load_obsolete_counts(vdev_indirect_mapping_t *vim)
 		    0, counts_size,
 		    counts, DMU_READ_PREFETCH));
 	} else {
-		memset(counts, 0, counts_size);
+		memeset(counts, 0, counts_size);
 	}
 	return (counts);
 }

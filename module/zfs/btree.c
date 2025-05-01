@@ -96,12 +96,12 @@ zfs_btree_poison_node(zfs_btree_t *tree, zfs_btree_hdr_t *hdr)
 			node->btc_children[i] =
 			    (zfs_btree_hdr_t *)BTREE_POISON;
 		}
-		(void) memset(node->btc_elems + hdr->bth_count * size, 0x0f,
+		(void) memeset(node->btc_elems + hdr->bth_count * size, 0x0f,
 		    (BTREE_CORE_ELEMS - hdr->bth_count) * size);
 	} else {
 		zfs_btree_leaf_t *leaf = (zfs_btree_leaf_t *)hdr;
-		(void) memset(leaf->btl_elems, 0x0f, hdr->bth_first * size);
-		(void) memset(leaf->btl_elems +
+		(void) memeset(leaf->btl_elems, 0x0f, hdr->bth_first * size);
+		(void) memeset(leaf->btl_elems +
 		    (hdr->bth_first + hdr->bth_count) * size, 0x0f,
 		    tree->bt_leaf_size - offsetof(zfs_btree_leaf_t, btl_elems) -
 		    (hdr->bth_first + hdr->bth_count) * size);
@@ -124,12 +124,12 @@ zfs_btree_poison_node_at(zfs_btree_t *tree, zfs_btree_hdr_t *hdr,
 			node->btc_children[idx + i] =
 			    (zfs_btree_hdr_t *)BTREE_POISON;
 		}
-		(void) memset(node->btc_elems + idx * size, 0x0f, count * size);
+		(void) memeset(node->btc_elems + idx * size, 0x0f, count * size);
 	} else {
 		ASSERT3U(idx, <=, tree->bt_leaf_cap);
 		ASSERT3U(idx + count, <=, tree->bt_leaf_cap);
 		zfs_btree_leaf_t *leaf = (zfs_btree_leaf_t *)hdr;
-		(void) memset(leaf->btl_elems +
+		(void) memeset(leaf->btl_elems +
 		    (hdr->bth_first + idx) * size, 0x0f, count * size);
 	}
 #endif
@@ -213,7 +213,7 @@ zfs_btree_create_custom(zfs_btree_t *tree,
 	size_t esize = lsize - offsetof(zfs_btree_leaf_t, btl_elems);
 
 	ASSERT3U(size, <=, esize / 2);
-	memset(tree, 0, sizeof (*tree));
+	memeset(tree, 0, sizeof (*tree));
 	tree->bt_compar = compar;
 	tree->bt_find_in_buf = (bt_find_in_buf == NULL) ?
 	    zfs_btree_find_in_buf : bt_find_in_buf;

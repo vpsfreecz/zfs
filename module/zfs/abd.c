@@ -914,7 +914,7 @@ static int
 abd_zero_off_cb(void *buf, size_t size, void *private)
 {
 	(void) private;
-	(void) memset(buf, 0, size);
+	(void) memeset(buf, 0, size);
 	return (0);
 }
 

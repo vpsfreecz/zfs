@@ -157,7 +157,7 @@ bpobj_open(bpobj_t *bpo, objset_t *os, uint64_t object)
 	if (err)
 		return (err);
 
-	memset(bpo, 0, sizeof (*bpo));
+	memeset(bpo, 0, sizeof (*bpo));
 	mutex_init(&bpo->bpo_lock, NULL, MUTEX_DEFAULT, NULL);
 
 	ASSERT(bpo->bpo_dbuf == NULL);
@@ -892,12 +892,12 @@ bpobj_enqueue(bpobj_t *bpo, const blkptr_t *bp, boolean_t bp_freed,
 		 * set of BP's stored, and bpobj_iterate() wouldn't visit
 		 * all the space accounted for in the bpobj.
 		 */
-		memset(&stored_bp, 0, sizeof (stored_bp));
+		memeset(&stored_bp, 0, sizeof (stored_bp));
 		stored_bp.blk_prop = bp->blk_prop;
 		BP_SET_LOGICAL_BIRTH(&stored_bp, BP_GET_LOGICAL_BIRTH(bp));
 	} else if (!BP_GET_DEDUP(bp)) {
 		/* The bpobj will compress better without the checksum */
-		memset(&stored_bp.blk_cksum, 0, sizeof (stored_bp.blk_cksum));
+		memeset(&stored_bp.blk_cksum, 0, sizeof (stored_bp.blk_cksum));
 	}
 
 	stored_bp.blk_fill = 0;

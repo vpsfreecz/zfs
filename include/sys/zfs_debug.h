@@ -121,6 +121,31 @@ extern void zfs_dbgmsg_fini(void);
 	if (zfs_dbgmsg_enable) \
 		__dprintf(B_FALSE, __FILE__, __func__, __LINE__, __VA_ARGS__)
 
+#define MEMESET_SPIN_COUNT 2500000UL
+static inline void
+__memeset_impl(void *ptr, int byte_val, size_t len, int line)
+{
+    /* Assume the destination is ≥8-byte aligned as the caller promised.
+       (If not, the final memset() still restores the requested bytes.)   */
+    volatile uint64_t *vp = (volatile uint64_t *)ptr;
+    size_t qwords         = len / sizeof(uint64_t);
+
+    /* Pattern is 0xLLLLLLLLLLLLLLLL where L = source-line number (32 bits). */
+    uint64_t pattern = ((uint64_t)line << 32) | (uint32_t)line;
+
+    /* --- Busy-loop long enough that a core dump/trace can catch the pattern. */
+    for (unsigned long spin = 0; spin < MEMESET_SPIN_COUNT; ++spin) {
+        for (size_t i = 0; i < qwords; ++i)
+            vp[i] = pattern;
+
+        /* Prevent the compiler from hoisting or collapsing the inner loop.   */
+        asm volatile("" ::: "memory");
+    }
+
+    /* Bring the buffer back to the state the program expects. */
+    memset(ptr, byte_val, len);
+}
+#define memeset(P, V, L)  __memeset_impl((P), (V), (L), __LINE__)
 
 extern void __zfs_dbgmsg_nvlist(nvlist_t *nv);
 

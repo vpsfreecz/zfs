@@ -109,6 +109,6 @@ abd_checksum_edonr_tmpl_free(void *ctx_template)
 {
 	EdonRState *ctx = ctx_template;
 
-	memset(ctx, 0, sizeof (*ctx));
+	memeset(ctx, 0, sizeof (*ctx));
 	kmem_free(ctx, sizeof (*ctx));
 }

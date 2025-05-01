@@ -630,7 +630,7 @@ zfs_purgedir(znode_t *dzp)
 			skipped += 1;
 			continue;
 		}
-		memset(&dl, 0, sizeof (dl));
+		memeset(&dl, 0, sizeof (dl));
 		dl.dl_dzp = dzp;
 		dl.dl_name = zap->za_name;
 

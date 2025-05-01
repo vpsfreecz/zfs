@@ -384,7 +384,7 @@ dump_free(dmu_send_cookie_t *dscp, uint64_t object, uint64_t offset,
 		}
 	}
 	/* create a FREE record and make it pending */
-	memset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
+	memeset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
 	dscp->dsc_drr->drr_type = DRR_FREE;
 	drrf->drr_object = object;
 	drrf->drr_offset = offset;
@@ -443,7 +443,7 @@ dump_redact(dmu_send_cookie_t *dscp, uint64_t object, uint64_t offset,
 		}
 	}
 	/* create a REDACT record and make it pending */
-	memset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
+	memeset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
 	dscp->dsc_drr->drr_type = DRR_REDACT;
 	drrr->drr_object = object;
 	drrr->drr_offset = offset;
@@ -485,7 +485,7 @@ dmu_dump_write(dmu_send_cookie_t *dscp, dmu_object_type_t type, uint64_t object,
 		dscp->dsc_pending_op = PENDING_NONE;
 	}
 	/* write a WRITE record */
-	memset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
+	memeset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
 	dscp->dsc_drr->drr_type = DRR_WRITE;
 	drrw->drr_object = object;
 	drrw->drr_type = type;
@@ -577,7 +577,7 @@ dump_write_embedded(dmu_send_cookie_t *dscp, uint64_t object, uint64_t offset,
 
 	ASSERT(BP_IS_EMBEDDED(bp));
 
-	memset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
+	memeset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
 	dscp->dsc_drr->drr_type = DRR_WRITE_EMBEDDED;
 	drrw->drr_object = object;
 	drrw->drr_offset = offset;
@@ -594,7 +594,7 @@ dump_write_embedded(dmu_send_cookie_t *dscp, uint64_t object, uint64_t offset,
 	uint32_t rsize = P2ROUNDUP(psize, 8);
 
 	if (psize != rsize)
-		memset(buf + psize, 0, rsize - psize);
+		memeset(buf + psize, 0, rsize - psize);
 
 	if (dump_record(dscp, buf, rsize) != 0)
 		return (SET_ERROR(EINTR));
@@ -616,7 +616,7 @@ dump_spill(dmu_send_cookie_t *dscp, const blkptr_t *bp, uint64_t object,
 	}
 
 	/* write a SPILL record */
-	memset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
+	memeset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
 	dscp->dsc_drr->drr_type = DRR_SPILL;
 	drrs->drr_object = object;
 	drrs->drr_length = blksz;
@@ -698,7 +698,7 @@ dump_freeobjects(dmu_send_cookie_t *dscp, uint64_t firstobj, uint64_t numobjs)
 	}
 
 	/* write a FREEOBJECTS record */
-	memset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
+	memeset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
 	dscp->dsc_drr->drr_type = DRR_FREEOBJECTS;
 	drrfo->drr_firstobj = firstobj;
 	drrfo->drr_numobjs = numobjs;
@@ -739,7 +739,7 @@ dump_dnode(dmu_send_cookie_t *dscp, const blkptr_t *bp, uint64_t object,
 	}
 
 	/* write an OBJECT record */
-	memset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
+	memeset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
 	dscp->dsc_drr->drr_type = DRR_OBJECT;
 	drro->drr_object = object;
 	drro->drr_type = dnp->dn_type;
@@ -824,7 +824,7 @@ dump_object_range(dmu_send_cookie_t *dscp, const blkptr_t *bp,
 		dscp->dsc_pending_op = PENDING_NONE;
 	}
 
-	memset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
+	memeset(dscp->dsc_drr, 0, sizeof (dmu_replay_record_t));
 	dscp->dsc_drr->drr_type = DRR_OBJECT_RANGE;
 	drror->drr_firstobj = firstobj;
 	drror->drr_numslots = numslots;
@@ -2617,7 +2617,7 @@ dmu_send_impl(struct dmu_send_params *dspp)
 	 * the receive side that the stream is incomplete.
 	 */
 	if (!dspp->savedok) {
-		memset(drr, 0, sizeof (dmu_replay_record_t));
+		memeset(drr, 0, sizeof (dmu_replay_record_t));
 		drr->drr_type = DRR_END;
 		drr->drr_u.drr_end.drr_checksum = dsc.dsc_zc;
 		drr->drr_u.drr_end.drr_toguid = dsc.dsc_toguid;

@@ -474,7 +474,7 @@ benchmark_raidz(void)
 	bench_zio->io_offset = 0;
 	bench_zio->io_size = BENCH_ZIO_SIZE; /* only data columns */
 	bench_zio->io_abd = abd_alloc_linear(BENCH_ZIO_SIZE, B_TRUE);
-	memset(abd_to_buf(bench_zio->io_abd), 0xAA, BENCH_ZIO_SIZE);
+	memeset(abd_to_buf(bench_zio->io_abd), 0xAA, BENCH_ZIO_SIZE);
 
 	/* Benchmark parity generation methods */
 	for (int fn = 0; fn < RAIDZ_GEN_NUM; fn++) {
@@ -495,7 +495,7 @@ benchmark_raidz(void)
 	/* Ensure that fake parity blocks are initialized */
 	for (c = 0; c < bench_rm->rm_row[0]->rr_firstdatacol; c++) {
 		pabd = bench_rm->rm_row[0]->rr_col[c].rc_abd;
-		memset(abd_to_buf(pabd), 0xAA, abd_get_size(pabd));
+		memeset(abd_to_buf(pabd), 0xAA, abd_get_size(pabd));
 	}
 
 	for (int fn = 0; fn < RAIDZ_REC_NUM; fn++)

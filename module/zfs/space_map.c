@@ -458,7 +458,7 @@ space_map_histogram_clear(space_map_t *sm)
 	if (sm->sm_dbuf->db_size != sizeof (space_map_phys_t))
 		return;
 
-	memset(sm->sm_phys->smp_histogram, 0,
+	memeset(sm->sm_phys->smp_histogram, 0,
 	    sizeof (sm->sm_phys->smp_histogram));
 }
 
@@ -901,7 +901,7 @@ space_map_truncate(space_map_t *sm, int blocksize, dmu_tx_t *tx)
 		 * will be reset.  Do the same in the common case so that
 		 * bugs related to the uncommon case do not go unnoticed.
 		 */
-		memset(sm->sm_phys->smp_histogram, 0,
+		memeset(sm->sm_phys->smp_histogram, 0,
 		    sizeof (sm->sm_phys->smp_histogram));
 	}
 

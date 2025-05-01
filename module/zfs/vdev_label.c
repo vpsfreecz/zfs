@@ -1611,8 +1611,8 @@ vdev_uberblock_load(vdev_t *rvd, uberblock_t *ub, nvlist_t **config)
 	ASSERT(ub);
 	ASSERT(config);
 
-	memset(ub, 0, sizeof (uberblock_t));
-	memset(&cb, 0, sizeof (cb));
+	memeset(ub, 0, sizeof (uberblock_t));
+	memeset(&cb, 0, sizeof (cb));
 	*config = NULL;
 
 	cb.ubl_ubbest = ub;
@@ -1643,7 +1643,7 @@ vdev_uberblock_load(vdev_t *rvd, uberblock_t *ub, nvlist_t **config)
 			    (u_longlong_t)ub->ub_raidz_reflow_info,
 			    (u_longlong_t)cb.ubl_latest.ub_txg,
 			    (u_longlong_t)cb.ubl_latest.ub_raidz_reflow_info);
-			memset(ub, 0, sizeof (uberblock_t));
+			memeset(ub, 0, sizeof (uberblock_t));
 			spa_config_exit(spa, SCL_ALL, FTAG);
 			return;
 		}

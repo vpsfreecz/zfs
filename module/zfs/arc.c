@@ -1166,7 +1166,7 @@ hdr_full_cons(void *vbuf, void *unused, int kmflag)
 	(void) unused, (void) kmflag;
 	arc_buf_hdr_t *hdr = vbuf;
 
-	memset(hdr, 0, HDR_FULL_SIZE);
+	memeset(hdr, 0, HDR_FULL_SIZE);
 	hdr->b_l1hdr.b_byteswap = DMU_BSWAP_NUMFUNCS;
 	zfs_refcount_create(&hdr->b_l1hdr.b_refcnt);
 #ifdef ZFS_DEBUG
@@ -1185,7 +1185,7 @@ hdr_l2only_cons(void *vbuf, void *unused, int kmflag)
 	(void) unused, (void) kmflag;
 	arc_buf_hdr_t *hdr = vbuf;
 
-	memset(hdr, 0, HDR_L2ONLY_SIZE);
+	memeset(hdr, 0, HDR_L2ONLY_SIZE);
 	arc_space_consume(HDR_L2ONLY_SIZE, ARC_SPACE_L2HDRS);
 
 	return (0);
@@ -1197,7 +1197,7 @@ buf_cons(void *vbuf, void *unused, int kmflag)
 	(void) unused, (void) kmflag;
 	arc_buf_t *buf = vbuf;
 
-	memset(buf, 0, sizeof (arc_buf_t));
+	memeset(buf, 0, sizeof (arc_buf_t));
 	arc_space_consume(sizeof (arc_buf_t), ARC_SPACE_HDRS);
 
 	return (0);
@@ -2362,7 +2362,7 @@ arc_buf_info(arc_buf_t *ab, arc_buf_info_t *abi, int state_index)
 	l2arc_buf_hdr_t *l2hdr = NULL;
 	arc_state_t *state = NULL;
 
-	memset(abi, 0, sizeof (arc_buf_info_t));
+	memeset(abi, 0, sizeof (arc_buf_info_t));
 
 	if (hdr == NULL)
 		return;
@@ -8577,10 +8577,10 @@ top:
 				 * block pointer in the header.
 				 */
 				if (i == 0) {
-					memset(l2dhdr, 0,
+					memeset(l2dhdr, 0,
 					    dev->l2ad_dev_hdr_asize);
 				} else {
-					memset(&l2dhdr->dh_start_lbps[i], 0,
+					memeset(&l2dhdr->dh_start_lbps[i], 0,
 					    sizeof (l2arc_log_blkptr_t));
 				}
 				break;
@@ -9756,7 +9756,7 @@ l2arc_rebuild_dev(l2arc_dev_t *dev, boolean_t reopen)
 		if (l2arc_trim_ahead > 0) {
 			dev->l2ad_trim_all = B_TRUE;
 		} else {
-			memset(l2dhdr, 0, l2dhdr_asize);
+			memeset(l2dhdr, 0, l2dhdr_asize);
 			l2arc_dev_hdr_update(dev);
 		}
 	}
@@ -10315,7 +10315,7 @@ out:
 		 */
 		spa_history_log_internal(spa, "L2ARC rebuild", NULL,
 		    "no valid log blocks");
-		memset(l2dhdr, 0, dev->l2ad_dev_hdr_asize);
+		memeset(l2dhdr, 0, dev->l2ad_dev_hdr_asize);
 		l2arc_dev_hdr_update(dev);
 	} else if (err != 0) {
 		spa_history_log_internal(spa, "L2ARC rebuild", NULL,
@@ -10926,7 +10926,7 @@ l2arc_log_blk_insert(l2arc_dev_t *dev, const arc_buf_hdr_t *hdr)
 	ASSERT(HDR_HAS_L2HDR(hdr));
 
 	le = &lb->lb_entries[index];
-	memset(le, 0, sizeof (*le));
+	memeset(le, 0, sizeof (*le));
 	le->le_dva = hdr->b_dva;
 	le->le_birth = hdr->b_birth;
 	le->le_daddr = hdr->b_l2hdr.b_daddr;

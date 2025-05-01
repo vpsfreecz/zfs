@@ -317,7 +317,7 @@ reuse:
 	zs->zs_blkid = blkid;
 	/* Allow immediate stream reuse until first hit. */
 	zs->zs_atime = now - zfetch_min_sec_reap;
-	memset(zs->zs_ranges, 0, sizeof (zs->zs_ranges));
+	memeset(zs->zs_ranges, 0, sizeof (zs->zs_ranges));
 	zs->zs_pf_dist = 0;
 	zs->zs_ipf_dist = 0;
 	zs->zs_pf_start = blkid;

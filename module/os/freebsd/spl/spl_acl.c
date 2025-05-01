@@ -120,7 +120,7 @@ acl_from_aces(struct acl *aclp, const ace_t *aces, int nentries)
 		return (EINVAL);
 	}
 
-	memset(aclp, 0, sizeof (*aclp));
+	memeset(aclp, 0, sizeof (*aclp));
 	aclp->acl_maxcnt = ACL_MAX_ENTRIES;
 	aclp->acl_cnt = nentries;
 
@@ -175,7 +175,7 @@ aces_from_acl(ace_t *aces, int *nentries, const struct acl *aclp)
 	const struct acl_entry *entry;
 	ace_t *ace;
 
-	memset(aces, 0, sizeof (*aces) * aclp->acl_cnt);
+	memeset(aces, 0, sizeof (*aces) * aclp->acl_cnt);
 
 	*nentries = aclp->acl_cnt;
 

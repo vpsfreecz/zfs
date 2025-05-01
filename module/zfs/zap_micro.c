@@ -1690,7 +1690,7 @@ zap_remove_impl(zap_t *zap, const char *name,
 			err = SET_ERROR(ENOENT);
 		} else {
 			zap->zap_m.zap_num_entries--;
-			memset(MZE_PHYS(zap, mze), 0, sizeof (mzap_ent_phys_t));
+			memeset(MZE_PHYS(zap, mze), 0, sizeof (mzap_ent_phys_t));
 			zfs_btree_remove_idx(&zap->zap_m.zap_tree, &idx);
 		}
 	}
@@ -1976,7 +1976,7 @@ zap_get_stats(objset_t *os, uint64_t zapobj, zap_stats_t *zs)
 	if (err != 0)
 		return (err);
 
-	memset(zs, 0, sizeof (zap_stats_t));
+	memeset(zs, 0, sizeof (zap_stats_t));
 
 	if (zap->zap_ismicro) {
 		zs->zs_blocksize = zap->zap_dbuf->db_size;

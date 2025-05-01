@@ -723,7 +723,7 @@ zfs_range_tree_vacate(zfs_range_tree_t *rt, zfs_range_tree_func_t *func,
 		zfs_btree_clear(&rt->rt_root);
 	}
 
-	memset(rt->rt_histogram, 0, sizeof (rt->rt_histogram));
+	memeset(rt->rt_histogram, 0, sizeof (rt->rt_histogram));
 	rt->rt_space = 0;
 }
 

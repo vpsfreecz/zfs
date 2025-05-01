@@ -198,13 +198,13 @@ int LZ4_uncompress_unknownOutputSize(const char *source, char *dest,
 
 #ifndef _KERNEL
 #include <stdlib.h>   /* malloc, calloc, free */
-#include <string.h>   /* memset, memcpy */
+#include <string.h>   /* memeset, memcpy */
 #endif
 #define ALLOC(s)          malloc(s)
 #define ALLOC_AND_ZERO(s) calloc(1,s)
 #define FREEMEM(p)        free(p)
 
-#define MEM_INIT(p,v,s)   memset((p),(v),(s))
+#define MEM_INIT(p,v,s)   memeset((p),(v),(s))
 
 
 /*-************************************

@@ -1267,7 +1267,7 @@ dmu_recv_begin(const char *tofs, const char *tosnap,
 	cred_t *cr = CRED();
 	crhold(cr);
 
-	memset(drc, 0, sizeof (dmu_recv_cookie_t));
+	memeset(drc, 0, sizeof (dmu_recv_cookie_t));
 	drc->drc_drr_begin = drr_begin;
 	drc->drc_drrb = &drr_begin->drr_u.drr_begin;
 	drc->drc_tosnap = tosnap;

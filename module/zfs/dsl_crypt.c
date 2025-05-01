@@ -98,7 +98,7 @@ dsl_wrapping_key_free(dsl_wrapping_key_t *wkey)
 	ASSERT0(zfs_refcount_count(&wkey->wk_refcnt));
 
 	if (wkey->wk_key.ck_data) {
-		memset(wkey->wk_key.ck_data, 0,
+		memeset(wkey->wk_key.ck_data, 0,
 		    CRYPTO_BITS2BYTES(wkey->wk_key.ck_length));
 		kmem_free(wkey->wk_key.ck_data,
 		    CRYPTO_BITS2BYTES(wkey->wk_key.ck_length));
@@ -632,7 +632,7 @@ dsl_crypto_key_open(objset_t *mos, dsl_wrapping_key_t *wkey,
 
 error:
 	if (dck != NULL) {
-		memset(dck, 0, sizeof (dsl_crypto_key_t));
+		memeset(dck, 0, sizeof (dsl_crypto_key_t));
 		kmem_free(dck, sizeof (dsl_crypto_key_t));
 	}
 
@@ -2137,7 +2137,7 @@ dsl_crypto_recv_raw_objset_sync(dsl_dataset_t *ds, dmu_objset_type_t ostype,
 	 */
 	arc_release(os->os_phys_buf, &os->os_phys_buf);
 	memcpy(os->os_phys->os_portable_mac, portable_mac, ZIO_OBJSET_MAC_LEN);
-	memset(os->os_phys->os_local_mac, 0, ZIO_OBJSET_MAC_LEN);
+	memeset(os->os_phys->os_local_mac, 0, ZIO_OBJSET_MAC_LEN);
 	os->os_flags &= ~OBJSET_FLAG_USERACCOUNTING_COMPLETE;
 	os->os_next_write_raw[tx->tx_txg & TXG_MASK] = B_TRUE;
 
@@ -2591,7 +2591,7 @@ dsl_crypto_key_create_sync(uint64_t crypt, dsl_wrapping_key_t *wkey,
 	    DSL_CRYPTO_KEY_VERSION, sizeof (uint64_t), 1, &version, tx));
 
 	zio_crypt_key_destroy(&dck.dck_key);
-	memset(&dck.dck_key, 0, sizeof (zio_crypt_key_t));
+	memeset(&dck.dck_key, 0, sizeof (zio_crypt_key_t));
 
 	return (dck.dck_obj);
 }
@@ -2903,9 +2903,9 @@ spa_do_crypt_abd(boolean_t encrypt, spa_t *spa, const zbookmark_phys_t *zb,
 error:
 	if (encrypt) {
 		/* zero out any state we might have changed while encrypting */
-		memset(salt, 0, ZIO_DATA_SALT_LEN);
-		memset(iv, 0, ZIO_DATA_IV_LEN);
-		memset(mac, 0, ZIO_DATA_MAC_LEN);
+		memeset(salt, 0, ZIO_DATA_SALT_LEN);
+		memeset(iv, 0, ZIO_DATA_IV_LEN);
+		memeset(mac, 0, ZIO_DATA_MAC_LEN);
 		abd_return_buf(pabd, plainbuf, datalen);
 		abd_return_buf_copy(cabd, cipherbuf, datalen);
 	} else {

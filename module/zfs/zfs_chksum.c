@@ -192,7 +192,7 @@ chksum_benchit(chksum_stat_t *cs)
 	void *salt = &cs->salt.zcs_bytes;
 	static int chksum_stat_limit = LIMIT_INIT;
 
-	memset(salt, 0, sizeof (cs->salt.zcs_bytes));
+	memeset(salt, 0, sizeof (cs->salt.zcs_bytes));
 	if (cs->init)
 		ctx = cs->init(&cs->salt);
 

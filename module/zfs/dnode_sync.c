@@ -120,7 +120,7 @@ dnode_increase_indirection(dnode_t *dn, dmu_tx_t *tx)
 		mutex_exit(&child->db_mtx);
 	}
 
-	memset(dn->dn_phys->dn_blkptr, 0, sizeof (blkptr_t) * nblkptr);
+	memeset(dn->dn_phys->dn_blkptr, 0, sizeof (blkptr_t) * nblkptr);
 
 	rw_exit(&db->db_rwlock);
 	if (dn->dn_dbuf != NULL)
@@ -159,7 +159,7 @@ free_blocks(dnode_t *dn, blkptr_t *bp, int num, dmu_tx_t *tx)
 		dmu_object_type_t type = BP_GET_TYPE(bp);
 		uint64_t lvl = BP_GET_LEVEL(bp);
 
-		memset(bp, 0, sizeof (blkptr_t));
+		memeset(bp, 0, sizeof (blkptr_t));
 
 		if (spa_feature_is_active(dn->dn_objset->os_spa,
 		    SPA_FEATURE_HOLE_BIRTH)) {
@@ -355,7 +355,7 @@ free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
 		rw_enter(&db->db_rwlock, RW_WRITER);
 		for (i = 0, bp = db->db.db_data; i < 1 << epbs; i++, bp++)
 			ASSERT(BP_IS_HOLE(bp));
-		memset(db->db.db_data, 0, db->db.db_size);
+		memeset(db->db.db_data, 0, db->db.db_size);
 		free_blocks(dn, db->db_blkptr, 1, tx);
 		rw_exit(&db->db_rwlock);
 	}
@@ -612,7 +612,7 @@ dnode_sync_free(dnode_t *dn, dmu_tx_t *tx)
 	ASSERT(dn->dn_free_txg > 0);
 	if (dn->dn_allocated_txg != dn->dn_free_txg)
 		dmu_buf_will_dirty(&dn->dn_dbuf->db, tx);
-	memset(dn->dn_phys, 0, sizeof (dnode_phys_t) * dn->dn_num_slots);
+	memeset(dn->dn_phys, 0, sizeof (dnode_phys_t) * dn->dn_num_slots);
 	dnode_free_interior_slots(dn);
 
 	mutex_enter(&dn->dn_mtx);
@@ -844,7 +844,7 @@ dnode_sync(dnode_t *dn, dmu_tx_t *tx)
 		ASSERT(dn->dn_allocated_txg == tx->tx_txg);
 		if (dn->dn_next_nblkptr[txgoff] > dnp->dn_nblkptr) {
 			/* zero the new blkptrs we are gaining */
-			memset(dnp->dn_blkptr + dnp->dn_nblkptr, 0,
+			memeset(dnp->dn_blkptr + dnp->dn_nblkptr, 0,
 			    sizeof (blkptr_t) *
 			    (dn->dn_next_nblkptr[txgoff] - dnp->dn_nblkptr));
 #ifdef ZFS_DEBUG

@@ -41,7 +41,7 @@ ddt_stat_generate(ddt_t *ddt, const ddt_lightweight_entry_t *ddlwe,
 	uint64_t lsize = DDK_GET_LSIZE(&ddlwe->ddlwe_key);
 	uint64_t psize = DDK_GET_PSIZE(&ddlwe->ddlwe_key);
 
-	memset(dds, 0, sizeof (*dds));
+	memeset(dds, 0, sizeof (*dds));
 
 	for (int p = 0; p < DDT_NPHYS(ddt); p++) {
 		const ddt_univ_phys_t *ddp = &ddlwe->ddlwe_phys;
@@ -151,7 +151,7 @@ ddt_histogram_add(ddt_histogram_t *dst, const ddt_histogram_t *src)
 void
 ddt_histogram_total(ddt_stat_t *dds, const ddt_histogram_t *ddh)
 {
-	memset(dds, 0, sizeof (*dds));
+	memeset(dds, 0, sizeof (*dds));
 
 	for (int h = 0; h < 64; h++)
 		ddt_stat_add(dds, &ddh->ddh_stat[h]);
@@ -182,7 +182,7 @@ ddt_histogram_empty(const ddt_histogram_t *ddh)
 void
 ddt_get_dedup_object_stats(spa_t *spa, ddt_object_t *ddo_total)
 {
-	memset(ddo_total, 0, sizeof (*ddo_total));
+	memeset(ddo_total, 0, sizeof (*ddo_total));
 
 	for (enum zio_checksum c = 0; c < ZIO_CHECKSUM_FUNCTIONS; c++) {
 		ddt_t *ddt = spa->spa_ddt[c];
@@ -289,7 +289,7 @@ ddt_get_dedup_dspace(spa_t *spa)
 	if (spa->spa_dedup_dspace != ~0ULL)
 		return (spa->spa_dedup_dspace);
 
-	memset(&dds_total, 0, sizeof (ddt_stat_t));
+	memeset(&dds_total, 0, sizeof (ddt_stat_t));
 
 	/* Calculate and cache the stats */
 	ddt_get_dedup_stats(spa, &dds_total);

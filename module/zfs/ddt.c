@@ -432,7 +432,7 @@ ddt_object_destroy(ddt_t *ddt, ddt_type_t type, ddt_class_t class,
 	VERIFY0(zap_remove(os, ddt->ddt_dir_object, name, tx));
 	VERIFY0(zap_remove(os, spa->spa_ddt_stat_object, name, tx));
 	VERIFY0(ddt_ops[type]->ddt_op_destroy(os, *objectp, tx));
-	memset(&ddt->ddt_object_stats[type][class], 0, sizeof (ddt_object_t));
+	memeset(&ddt->ddt_object_stats[type][class], 0, sizeof (ddt_object_t));
 
 	*objectp = 0;
 }
@@ -770,9 +770,9 @@ ddt_phys_clear(ddt_univ_phys_t *ddp, ddt_phys_variant_t v)
 	ASSERT3U(v, <, DDT_PHYS_NONE);
 
 	if (v == DDT_PHYS_FLAT)
-		memset(&ddp->ddp_flat, 0, DDT_FLAT_PHYS_SIZE);
+		memeset(&ddp->ddp_flat, 0, DDT_FLAT_PHYS_SIZE);
 	else
-		memset(&ddp->ddp_trad[v], 0, DDT_TRAD_PHYS_SIZE / DDT_PHYS_MAX);
+		memeset(&ddp->ddp_trad[v], 0, DDT_TRAD_PHYS_SIZE / DDT_PHYS_MAX);
 }
 
 static uint64_t
@@ -981,10 +981,10 @@ ddt_alloc(const ddt_t *ddt, const ddt_key_t *ddk)
 
 	if (ddt->ddt_flags & DDT_FLAG_FLAT) {
 		dde = kmem_cache_alloc(ddt_entry_flat_cache, KM_SLEEP);
-		memset(dde, 0, DDT_ENTRY_FLAT_SIZE);
+		memeset(dde, 0, DDT_ENTRY_FLAT_SIZE);
 	} else {
 		dde = kmem_cache_alloc(ddt_entry_trad_cache, KM_SLEEP);
-		memset(dde, 0, DDT_ENTRY_TRAD_SIZE);
+		memeset(dde, 0, DDT_ENTRY_TRAD_SIZE);
 	}
 
 	cv_init(&dde->dde_cv, NULL, CV_DEFAULT, NULL);
@@ -1620,7 +1620,7 @@ ddt_table_alloc(spa_t *spa, enum zio_checksum c)
 	ddt_t *ddt;
 
 	ddt = kmem_cache_alloc(ddt_cache, KM_SLEEP);
-	memset(ddt, 0, sizeof (ddt_t));
+	memeset(ddt, 0, sizeof (ddt_t));
 	mutex_init(&ddt->ddt_lock, NULL, MUTEX_DEFAULT, NULL);
 	avl_create(&ddt->ddt_tree, ddt_key_compare,
 	    sizeof (ddt_entry_t), offsetof(ddt_entry_t, dde_node));
@@ -1784,7 +1784,7 @@ ddt_repair_start(ddt_t *ddt, const blkptr_t *bp)
 		}
 	}
 
-	memset(dde->dde_phys, 0, DDT_PHYS_SIZE(ddt));
+	memeset(dde->dde_phys, 0, DDT_PHYS_SIZE(ddt));
 
 	return (dde);
 }
@@ -2665,7 +2665,7 @@ ddt_prune_walk(spa_t *spa, uint64_t cutoff, ddt_age_histo_t *histogram)
 	}
 
 	if (histogram != NULL)
-		memset(histogram, 0, sizeof (ddt_age_histo_t));
+		memeset(histogram, 0, sizeof (ddt_age_histo_t));
 
 	while ((error =
 	    ddt_walk_impl(spa, &ddb, &ddlwe, DDT_FLAG_FLAT, B_FALSE)) == 0) {

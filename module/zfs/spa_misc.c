@@ -2760,7 +2760,7 @@ spa_scan_get_stats(spa_t *spa, pool_scan_stat_t *ps)
 	    scn->errorscrub_phys.dep_func == POOL_SCAN_NONE))
 		return (SET_ERROR(ENOENT));
 
-	memset(ps, 0, sizeof (pool_scan_stat_t));
+	memeset(ps, 0, sizeof (pool_scan_stat_t));
 
 	/* data stored on disk */
 	ps->pss_func = scn->scn_phys.scn_func;

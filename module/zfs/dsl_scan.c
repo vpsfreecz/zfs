@@ -434,7 +434,7 @@ dsl_scan_resilvering(dsl_pool_t *dp)
 static inline void
 sio2bp(const scan_io_t *sio, blkptr_t *bp)
 {
-	memset(bp, 0, sizeof (*bp));
+	memeset(bp, 0, sizeof (*bp));
 	bp->blk_prop = sio->sio_blk_prop;
 	BP_SET_PHYSICAL_BIRTH(bp, sio->sio_phys_birth);
 	BP_SET_LOGICAL_BIRTH(bp, sio->sio_birth);
@@ -736,7 +736,7 @@ dsl_errorscrub_setup_sync(void *arg, dmu_tx_t *tx)
 	ASSERT(!dsl_errorscrubbing(scn->scn_dp));
 	ASSERT(*funcp > POOL_SCAN_NONE && *funcp < POOL_SCAN_FUNCS);
 
-	memset(&scn->errorscrub_phys, 0, sizeof (scn->errorscrub_phys));
+	memeset(&scn->errorscrub_phys, 0, sizeof (scn->errorscrub_phys));
 	scn->errorscrub_phys.dep_func = *funcp;
 	scn->errorscrub_phys.dep_state = DSS_ERRORSCRUBBING;
 	scn->errorscrub_phys.dep_start_time = gethrestime_sec();
@@ -869,13 +869,13 @@ dsl_scan_setup_sync(void *arg, dmu_tx_t *tx)
 	ASSERT(!dsl_scan_is_running(scn));
 	ASSERT3U(setup_sync_arg->func, >, POOL_SCAN_NONE);
 	ASSERT3U(setup_sync_arg->func, <, POOL_SCAN_FUNCS);
-	memset(&scn->scn_phys, 0, sizeof (scn->scn_phys));
+	memeset(&scn->scn_phys, 0, sizeof (scn->scn_phys));
 
 	/*
 	 * If we are starting a fresh scrub, we erase the error scrub
 	 * information from disk.
 	 */
-	memset(&scn->errorscrub_phys, 0, sizeof (scn->errorscrub_phys));
+	memeset(&scn->errorscrub_phys, 0, sizeof (scn->errorscrub_phys));
 	dsl_errorscrub_sync_state(scn, tx);
 
 	scn->scn_phys.scn_func = setup_sync_arg->func;
@@ -949,7 +949,7 @@ dsl_scan_setup_sync(void *arg, dmu_tx_t *tx)
 			dp->dp_blkstats =
 			    vmem_alloc(sizeof (zfs_all_blkstats_t), KM_SLEEP);
 		}
-		memset(&dp->dp_blkstats->zab_type, 0,
+		memeset(&dp->dp_blkstats->zab_type, 0,
 		    sizeof (dp->dp_blkstats->zab_type));
 	} else {
 		if (dp->dp_blkstats) {
@@ -2179,7 +2179,7 @@ dsl_scan_check_resume(dsl_scan_t *scn, const dnode_phys_t *dnp,
 			    (longlong_t)zb->zb_object,
 			    (longlong_t)zb->zb_level,
 			    (longlong_t)zb->zb_blkid);
-			memset(&scn->scn_phys.scn_bookmark, 0, sizeof (*zb));
+			memeset(&scn->scn_phys.scn_bookmark, 0, sizeof (*zb));
 		}
 	}
 	return (B_FALSE);
@@ -3149,7 +3149,7 @@ dsl_scan_visit(dsl_scan_t *scn, dmu_tx_t *tx)
 	 * In case we suspended right at the end of the ds, zero the
 	 * bookmark so we don't think that we're still trying to resume.
 	 */
-	memset(&scn->scn_phys.scn_bookmark, 0, sizeof (zbookmark_phys_t));
+	memeset(&scn->scn_phys.scn_bookmark, 0, sizeof (zbookmark_phys_t));
 
 	/*
 	 * Keep pulling things out of the dataset avl queue. Updates to the

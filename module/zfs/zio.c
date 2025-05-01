@@ -989,7 +989,7 @@ zio_create(zio_t *pio, spa_t *spa, uint64_t txg, const blkptr_t *bp,
 	IMPLY(lsize != psize, (flags & ZIO_FLAG_RAW_COMPRESS) != 0);
 
 	zio = kmem_cache_alloc(zio_cache, KM_SLEEP);
-	memset(zio, 0, sizeof (zio_t));
+	memeset(zio, 0, sizeof (zio_t));
 
 	mutex_init(&zio->io_lock, NULL, MUTEX_NOLOCKDEP, NULL);
 	cv_init(&zio->io_cv, NULL, CV_DEFAULT, NULL);
@@ -3185,7 +3185,7 @@ zio_write_gang_block(zio_t *pio, metaslab_class_t *mc)
 
 	gn = zio_gang_node_alloc(gnpp);
 	gbh = gn->gn_gbh;
-	memset(gbh, 0, SPA_GANGBLOCKSIZE);
+	memeset(gbh, 0, SPA_GANGBLOCKSIZE);
 	gbh_abd = abd_get_from_buf(gbh, SPA_GANGBLOCKSIZE);
 
 	/*
@@ -3224,9 +3224,9 @@ zio_write_gang_block(zio_t *pio, metaslab_class_t *mc)
 		zp.zp_encrypt = gio->io_prop.zp_encrypt;
 		zp.zp_byteorder = gio->io_prop.zp_byteorder;
 		zp.zp_direct_write = B_FALSE;
-		memset(zp.zp_salt, 0, ZIO_DATA_SALT_LEN);
-		memset(zp.zp_iv, 0, ZIO_DATA_IV_LEN);
-		memset(zp.zp_mac, 0, ZIO_DATA_MAC_LEN);
+		memeset(zp.zp_salt, 0, ZIO_DATA_SALT_LEN);
+		memeset(zp.zp_iv, 0, ZIO_DATA_IV_LEN);
+		memeset(zp.zp_mac, 0, ZIO_DATA_MAC_LEN);
 
 		zio_t *cio = zio_write(zio, spa, txg, &gbh->zg_blkptr[g],
 		    has_data ? abd_get_offset(pio->io_abd, pio->io_size -

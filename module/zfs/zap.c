@@ -123,7 +123,7 @@ fzap_upgrade(zap_t *zap, dmu_tx_t *tx, zap_flags_t flags)
 	 * explicitly zero it since it might be coming from an
 	 * initialized microzap
 	 */
-	memset(zap->zap_dbuf->db_data, 0, zap->zap_dbuf->db_size);
+	memeset(zap->zap_dbuf->db_data, 0, zap->zap_dbuf->db_size);
 	zp->zap_block_type = ZBT_HEADER;
 	zp->zap_magic = ZAP_MAGIC;
 

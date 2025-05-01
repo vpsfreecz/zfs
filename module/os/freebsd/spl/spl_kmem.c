@@ -113,7 +113,7 @@ zfs_kmem_free(void *buf, size_t size __unused)
 	ASSERT3P(i, !=, NULL);
 	LIST_REMOVE(i, next);
 	mtx_unlock(&kmem_items_mtx);
-	memset(buf, 0xDC, MAX(size, 16));
+	memeset(buf, 0xDC, MAX(size, 16));
 #endif
 	free(buf, M_SOLARIS);
 }

@@ -328,7 +328,7 @@ zil_read_log_data(zilog_t *zilog, const lr_write_t *lr, void *wbuf)
 
 	if (BP_IS_HOLE(bp)) {
 		if (wbuf != NULL)
-			memset(wbuf, 0, MAX(BP_GET_LSIZE(bp), lr->lr_length));
+			memeset(wbuf, 0, MAX(BP_GET_LSIZE(bp), lr->lr_length));
 		return (0);
 	}
 
@@ -1957,7 +1957,7 @@ next_lwb:
 			zio_shrink(lwb->lwb_write_zio, wsz);
 			wsz = lwb->lwb_write_zio->io_size;
 		}
-		memset(lwb->lwb_buf + lwb->lwb_nused, 0, wsz - lwb->lwb_nused);
+		memeset(lwb->lwb_buf + lwb->lwb_nused, 0, wsz - lwb->lwb_nused);
 		zilc->zc_pad = 0;
 		zilc->zc_nused = lwb->lwb_nused;
 		zilc->zc_eck.zec_cksum = lwb->lwb_blk.blk_cksum;
@@ -2324,7 +2324,7 @@ zil_lwb_commit(zilog_t *zilog, lwb_t *lwb, itx_t *itx)
 			    lwb->lwb_child_zio);
 			if (dbuf != NULL && error == 0) {
 				/* Zero any padding bytes in the last block. */
-				memset((char *)dbuf + lrwb->lr_length, 0,
+				memeset((char *)dbuf + lrwb->lr_length, 0,
 				    dlen - lrwb->lr_length);
 			}
 
@@ -2387,7 +2387,7 @@ zil_itx_create(uint64_t txtype, size_t olrsize)
 	itx->itx_lr.lrc_txtype = txtype;
 	itx->itx_lr.lrc_reclen = lrsize;
 	itx->itx_lr.lrc_seq = 0;	/* defensive */
-	memset((char *)&itx->itx_lr + olrsize, 0, lrsize - olrsize);
+	memeset((char *)&itx->itx_lr + olrsize, 0, lrsize - olrsize);
 	itx->itx_sync = B_TRUE;		/* default is synchronous */
 	itx->itx_callback = NULL;
 	itx->itx_callback_data = NULL;
@@ -3729,8 +3729,8 @@ zil_sync(zilog_t *zilog, dmu_tx_t *tx)
 
 		ASSERT(list_is_empty(&zilog->zl_lwb_list));
 
-		memset(zh, 0, sizeof (zil_header_t));
-		memset(zilog->zl_replayed_seq, 0,
+		memeset(zh, 0, sizeof (zil_header_t));
+		memeset(zilog->zl_replayed_seq, 0,
 		    sizeof (zilog->zl_replayed_seq));
 
 		if (zilog->zl_keep_first) {

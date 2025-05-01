@@ -4755,11 +4755,11 @@ vdev_get_stats_ex_impl(vdev_t *vd, vdev_stat_t *vs, vdev_stat_ex_t *vsx)
 	 */
 	if (!vd->vdev_ops->vdev_op_leaf) {
 		if (vs) {
-			memset(vs->vs_ops, 0, sizeof (vs->vs_ops));
-			memset(vs->vs_bytes, 0, sizeof (vs->vs_bytes));
+			memeset(vs->vs_ops, 0, sizeof (vs->vs_ops));
+			memeset(vs->vs_bytes, 0, sizeof (vs->vs_bytes));
 		}
 		if (vsx)
-			memset(vsx, 0, sizeof (*vsx));
+			memeset(vsx, 0, sizeof (*vsx));
 
 		for (int c = 0; c < vd->vdev_children; c++) {
 			vdev_t *cvd = vd->vdev_child[c];

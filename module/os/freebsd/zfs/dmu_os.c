@@ -273,7 +273,7 @@ dmu_read_pages(objset_t *os, uint64_t object, vm_page_t *ma, int count,
 #endif
 	if (pgoff != 0) {
 		ASSERT3P(m, !=, bogus_page);
-		memset(va + pgoff, 0, PAGESIZE - pgoff);
+		memeset(va + pgoff, 0, PAGESIZE - pgoff);
 		zfs_unmap_page(sf);
 		vm_page_valid(m);
 	}
@@ -300,7 +300,7 @@ dmu_read_pages(objset_t *os, uint64_t object, vm_page_t *ma, int count,
 		if (tocpy < PAGESIZE) {
 			ASSERT3S(i, ==, *rahead - 1);
 			ASSERT3U((db->db_size & PAGE_MASK), !=, 0);
-			memset(va + tocpy, 0, PAGESIZE - tocpy);
+			memeset(va + tocpy, 0, PAGESIZE - tocpy);
 		}
 		zfs_unmap_page(sf);
 		vm_page_valid(m);

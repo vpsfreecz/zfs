@@ -291,7 +291,7 @@ dbuf_cons(void *vdb, void *unused, int kmflag)
 {
 	(void) unused, (void) kmflag;
 	dmu_buf_impl_t *db = vdb;
-	memset(db, 0, sizeof (dmu_buf_impl_t));
+	memeset(db, 0, sizeof (dmu_buf_impl_t));
 
 	mutex_init(&db->db_mtx, NULL, MUTEX_NOLOCKDEP, NULL);
 	rw_init(&db->db_rwlock, NULL, RW_NOLOCKDEP, NULL);
@@ -1414,7 +1414,7 @@ dbuf_read_done(zio_t *zio, const zbookmark_phys_t *zb, const blkptr_t *bp,
 		/* freed in flight */
 		ASSERT(zio == NULL || zio->io_error == 0);
 		arc_release(buf, db);
-		memset(buf->b_data, 0, db->db.db_size);
+		memeset(buf->b_data, 0, db->db.db_size);
 		arc_buf_freeze(buf);
 		db->db_freed_in_flight = FALSE;
 		dbuf_set_data(db, buf);
@@ -1450,7 +1450,7 @@ dbuf_read_bonus(dmu_buf_impl_t *db, dnode_t *dn)
 	db_data = kmem_alloc(max_bonuslen, KM_SLEEP);
 	arc_space_consume(max_bonuslen, ARC_SPACE_BONUS);
 	if (bonuslen < max_bonuslen)
-		memset(db_data, 0, max_bonuslen);
+		memeset(db_data, 0, max_bonuslen);
 	if (bonuslen)
 		memcpy(db_data, DN_BONUS(dn->dn_phys), bonuslen);
 	db->db.db_data = db_data;
@@ -1501,7 +1501,7 @@ dbuf_read_hole(dmu_buf_impl_t *db, dnode_t *dn, blkptr_t *bp)
 
 	if (is_hole) {
 		db_data = dbuf_alloc_arcbuf(db);
-		memset(db_data->b_data, 0, db->db.db_size);
+		memeset(db_data->b_data, 0, db->db.db_size);
 
 		if (bp != NULL && db->db_level > 0 && BP_IS_HOLE(bp) &&
 		    BP_GET_LOGICAL_BIRTH(bp) != 0) {
@@ -2075,7 +2075,7 @@ dbuf_free_range(dnode_t *dn, uint64_t start_blkid, uint64_t end_blkid,
 			ASSERT(db->db.db_data != NULL);
 			arc_release(db->db_buf, db);
 			rw_enter(&db->db_rwlock, RW_WRITER);
-			memset(db->db.db_data, 0, db->db.db_size);
+			memeset(db->db.db_data, 0, db->db.db_size);
 			rw_exit(&db->db_rwlock);
 			arc_buf_freeze(db->db_buf);
 		}
@@ -2117,7 +2117,7 @@ dbuf_new_size(dmu_buf_impl_t *db, int size, dmu_tx_t *tx)
 	memcpy(buf->b_data, old_buf->b_data, MIN(osize, size));
 	/* zero the remainder */
 	if (size > osize)
-		memset((uint8_t *)buf->b_data + osize, 0, size - osize);
+		memeset((uint8_t *)buf->b_data + osize, 0, size - osize);
 
 	mutex_enter(&db->db_mtx);
 	dbuf_set_data(db, buf);
@@ -2361,7 +2361,7 @@ dbuf_dirty(dmu_buf_impl_t *db, dmu_tx_t *tx)
 	 * transaction group won't leak out when we sync the older txg.
 	 */
 	dr = kmem_cache_alloc(dbuf_dirty_kmem_cache, KM_SLEEP);
-	memset(dr, 0, sizeof (*dr));
+	memeset(dr, 0, sizeof (*dr));
 	list_link_init(&dr->dr_dirty_node);
 	list_link_init(&dr->dr_dbuf_node);
 	dr->dr_dnode = dn;
@@ -3014,7 +3014,7 @@ dmu_buf_fill_done(dmu_buf_t *dbuf, dmu_tx_t *tx, boolean_t failed)
 			/* we were freed while filling */
 			/* XXX dbuf_undirty? */
 			rw_enter(&db->db_rwlock, RW_WRITER);
-			memset(db->db.db_data, 0, db->db.db_size);
+			memeset(db->db.db_data, 0, db->db.db_size);
 			rw_exit(&db->db_rwlock);
 			db->db_freed_in_flight = FALSE;
 			db->db_state = DB_CACHED;
@@ -5042,7 +5042,7 @@ dbuf_write_children_ready(zio_t *zio, arc_buf_t *buf, void *vdb)
 		 * zero out.
 		 */
 		rw_enter(&db->db_rwlock, RW_WRITER);
-		memset(db->db.db_data, 0, db->db.db_size);
+		memeset(db->db.db_data, 0, db->db.db_size);
 		rw_exit(&db->db_rwlock);
 	}
 }

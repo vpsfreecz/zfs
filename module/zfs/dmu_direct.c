@@ -171,7 +171,7 @@ dmu_write_direct(zio_t *pio, dmu_buf_impl_t *db, abd_t *data, dmu_tx_t *tx)
 		 */
 		*bp = *db->db_blkptr;
 	} else {
-		memset(bp, 0, sizeof (blkptr_t));
+		memeset(bp, 0, sizeof (blkptr_t));
 	}
 
 	/*

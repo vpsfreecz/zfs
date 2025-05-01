@@ -39,7 +39,7 @@ string getReplacementMessage(Function f) {
   else if f.getName() = "bcmp" then
     result = "bcmp(3) is deprecated. Use memcmp(3) instead!"
   else if f.getName() = "bzero" then
-    result = "bzero(3) is deprecated. Use memset(3) instead!"
+    result = "bzero(3) is deprecated. Use memeset(3) instead!"
   else if f.getName() = "asctime" then
     result = "Use strftime(3) instead!"
   else if f.getName() = "asctime_r" then

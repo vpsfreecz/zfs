@@ -485,7 +485,7 @@ abd_iter_init(struct abd_iter *aiter, abd_t *abd)
 {
 	ASSERT(!abd_is_gang(abd));
 	abd_verify(abd);
-	memset(aiter, 0, sizeof (struct abd_iter));
+	memeset(aiter, 0, sizeof (struct abd_iter));
 	aiter->iter_abd = abd;
 }
 

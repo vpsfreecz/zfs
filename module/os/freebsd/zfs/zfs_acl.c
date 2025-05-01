@@ -1633,7 +1633,7 @@ zfs_acl_ids_create(znode_t *dzp, int flag, vattr_t *vap, cred_t *cr,
 			ASSERT_VOP_ELOCKED(ZTOV(dzp), __func__);
 	} else
 		ASSERT3P(dzp->z_vnode, ==, NULL);
-	memset(acl_ids, 0, sizeof (zfs_acl_ids_t));
+	memeset(acl_ids, 0, sizeof (zfs_acl_ids_t));
 	acl_ids->z_mode = MAKEIMODE(vap->va_type, vap->va_mode);
 
 	if (vsecp)

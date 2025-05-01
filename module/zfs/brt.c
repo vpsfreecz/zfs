@@ -797,7 +797,7 @@ brt_vdev_sync(spa_t *spa, brt_vdev_t *brtvd, dmu_tx_t *tx)
 		    brtvd->bv_size * sizeof (brtvd->bv_entcount[0]),
 		    brtvd->bv_entcount, tx);
 		uint64_t nblocks = BRT_RANGESIZE_TO_NBLOCKS(brtvd->bv_size);
-		memset(brtvd->bv_bitmap, 0, BT_SIZEOFMAP(nblocks));
+		memeset(brtvd->bv_bitmap, 0, BT_SIZEOFMAP(nblocks));
 		brtvd->bv_entcount_dirty = FALSE;
 	}
 

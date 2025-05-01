@@ -4073,7 +4073,7 @@ zfs_fillpage(struct inode *ip, struct page *pp)
 	int error = dmu_read(zfsvfs->z_os, zp->z_id, io_off,
 	    io_len, va, DMU_READ_PREFETCH);
 	if (io_len != PAGE_SIZE)
-		memset((char *)va + io_len, 0, PAGE_SIZE - io_len);
+		memeset((char *)va + io_len, 0, PAGE_SIZE - io_len);
 	kunmap(pp);
 
 	if (error) {

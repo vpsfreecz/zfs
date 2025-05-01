@@ -233,10 +233,10 @@ ddt_log_alloc_entry(ddt_t *ddt)
 
 	if (ddt->ddt_flags & DDT_FLAG_FLAT) {
 		ddle = kmem_cache_alloc(ddt_log_entry_flat_cache, KM_SLEEP);
-		memset(ddle, 0, DDT_LOG_ENTRY_FLAT_SIZE);
+		memeset(ddle, 0, DDT_LOG_ENTRY_FLAT_SIZE);
 	} else {
 		ddle = kmem_cache_alloc(ddt_log_entry_trad_cache, KM_SLEEP);
-		memset(ddle, 0, DDT_LOG_ENTRY_TRAD_SIZE);
+		memeset(ddle, 0, DDT_LOG_ENTRY_TRAD_SIZE);
 	}
 
 	return (ddle);
@@ -290,7 +290,7 @@ ddt_log_entry(ddt_t *ddt, ddt_lightweight_entry_t *ddlwe, ddt_log_update_t *dlu)
 	 */
 	if (dlu->dlu_offset == 0) {
 		dmu_buf_will_fill(db, dlu->dlu_tx, B_FALSE);
-		memset(db->db_data, 0, db->db_size);
+		memeset(db->db_data, 0, db->db_size);
 	}
 
 	/* Create the log record directly in the buffer */
@@ -330,7 +330,7 @@ ddt_log_commit(ddt_t *ddt, ddt_log_update_t *dlu)
 
 	ddt_log_update_header(ddt, ddt->ddt_log_active, dlu->dlu_tx);
 
-	memset(dlu, 0, sizeof (ddt_log_update_t));
+	memeset(dlu, 0, sizeof (ddt_log_update_t));
 
 	ddt_log_update_stats(ddt);
 }
@@ -426,7 +426,7 @@ ddt_log_truncate(ddt_t *ddt, dmu_tx_t *tx)
 
 	ddl->ddl_length = 0;
 	ddl->ddl_flags &= ~DDL_FLAG_CHECKPOINT;
-	memset(&ddl->ddl_checkpoint, 0, sizeof (ddt_key_t));
+	memeset(&ddl->ddl_checkpoint, 0, sizeof (ddt_key_t));
 	ddt_log_update_header(ddt, ddl, tx);
 
 	ddt_log_update_stats(ddt);

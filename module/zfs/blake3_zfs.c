@@ -64,7 +64,7 @@ abd_checksum_blake3_native(abd_t *abd, uint64_t size, const void *ctx_template,
 #if defined(_KERNEL)
 	kpreempt_enable();
 #else
-	memset(ctx, 0, sizeof (*ctx));
+	memeset(ctx, 0, sizeof (*ctx));
 	kmem_free(ctx, sizeof (*ctx));
 #endif
 }
@@ -116,6 +116,6 @@ abd_checksum_blake3_tmpl_free(void *ctx_template)
 {
 	BLAKE3_CTX *ctx = ctx_template;
 
-	memset(ctx, 0, sizeof (*ctx));
+	memeset(ctx, 0, sizeof (*ctx));
 	kmem_free(ctx, sizeof (*ctx));
 }

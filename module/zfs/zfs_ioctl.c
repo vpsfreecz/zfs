@@ -5861,7 +5861,7 @@ dump_bytes_init(dump_bytes_arg_t *dba, int fd, dmu_send_outparams_t *out)
 	taskq_init_ent(&dba->dba_tqent);
 #endif
 
-	memset(out, 0, sizeof (dmu_send_outparams_t));
+	memeset(out, 0, sizeof (dmu_send_outparams_t));
 	out->dso_outfunc = dump_bytes;
 	out->dso_arg = dba;
 	out->dso_dryrun = B_FALSE;

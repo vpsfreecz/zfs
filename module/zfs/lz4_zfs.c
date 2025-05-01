@@ -856,7 +856,7 @@ real_LZ4_compress(const char *source, char *dest, int isize, int osize)
 	if (ctx == NULL)
 		return (0);
 
-	memset(ctx, 0, sizeof (struct refTables));
+	memeset(ctx, 0, sizeof (struct refTables));
 
 	if (isize < LZ4_64KLIMIT)
 		result = LZ4_compress64kCtx(ctx, source, dest, isize, osize);

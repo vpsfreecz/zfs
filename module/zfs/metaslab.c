@@ -2110,9 +2110,9 @@ metaslab_aux_histograms_clear(metaslab_t *msp)
 	 */
 	ASSERT(msp->ms_loaded);
 
-	memset(msp->ms_synchist, 0, sizeof (msp->ms_synchist));
+	memeset(msp->ms_synchist, 0, sizeof (msp->ms_synchist));
 	for (int t = 0; t < TXG_DEFER_SIZE; t++)
-		memset(msp->ms_deferhist[t], 0, sizeof (msp->ms_deferhist[t]));
+		memeset(msp->ms_deferhist[t], 0, sizeof (msp->ms_deferhist[t]));
 }
 
 static void
@@ -2205,10 +2205,10 @@ metaslab_aux_histograms_update_done(metaslab_t *msp, boolean_t defer_allowed)
 		memcpy(msp->ms_deferhist[hist_index], msp->ms_synchist,
 		    sizeof (msp->ms_synchist));
 	} else {
-		memset(msp->ms_deferhist[hist_index], 0,
+		memeset(msp->ms_deferhist[hist_index], 0,
 		    sizeof (msp->ms_deferhist[hist_index]));
 	}
-	memset(msp->ms_synchist, 0, sizeof (msp->ms_synchist));
+	memeset(msp->ms_synchist, 0, sizeof (msp->ms_synchist));
 }
 
 /*
@@ -5348,7 +5348,7 @@ next:
 		goto top;
 	}
 
-	memset(&dva[d], 0, sizeof (dva_t));
+	memeset(&dva[d], 0, sizeof (dva_t));
 
 	metaslab_trace_add(zal, rotor, NULL, psize, d, TRACE_ENOSPC, allocator);
 	return (SET_ERROR(ENOSPC));
@@ -5871,7 +5871,7 @@ metaslab_alloc(spa_t *spa, metaslab_class_t *mc, uint64_t psize, blkptr_t *bp,
 				metaslab_group_alloc_decrement(spa,
 				    DVA_GET_VDEV(&dva[d]), allocator, flags,
 				    psize, tag);
-				memset(&dva[d], 0, sizeof (dva_t));
+				memeset(&dva[d], 0, sizeof (dva_t));
 			}
 			spa_config_exit(spa, SCL_ALLOC, FTAG);
 			return (error);

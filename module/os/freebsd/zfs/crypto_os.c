@@ -65,7 +65,7 @@ crypto_mac_init(struct hmac_ctx *ctx, const crypto_key_t *c_key)
 	/*
 	 * This code is based on the similar code in geom/eli/g_eli_hmac.c
 	 */
-	memset(key, 0, sizeof (key));
+	memeset(key, 0, sizeof (key));
 	if (c_key->ck_length  == 0)
 		/* do nothing */;
 	else if (cl_bytes <= SHA512_HMAC_BLOCK_SIZE)
@@ -85,16 +85,16 @@ crypto_mac_init(struct hmac_ctx *ctx, const crypto_key_t *c_key)
 		k_ipad[i] = key[i] ^ 0x36;
 		k_opad[i] = key[i] ^ 0x5c;
 	}
-	memset(key, 0, sizeof (key));
+	memeset(key, 0, sizeof (key));
 
 	/* Start inner SHA512. */
 	SHA512_Init(&ctx->innerctx);
 	SHA512_Update(&ctx->innerctx, k_ipad, sizeof (k_ipad));
-	memset(k_ipad, 0, sizeof (k_ipad));
+	memeset(k_ipad, 0, sizeof (k_ipad));
 	/* Start outer SHA512. */
 	SHA512_Init(&ctx->outerctx);
 	SHA512_Update(&ctx->outerctx, k_opad, sizeof (k_opad));
-	memset(k_opad, 0, sizeof (k_opad));
+	memeset(k_opad, 0, sizeof (k_opad));
 }
 
 void
@@ -115,12 +115,12 @@ crypto_mac_final(struct hmac_ctx *ctx, void *md, size_t mdsize)
 	SHA512_Update(&ctx->outerctx, digest, sizeof (digest));
 	SHA512_Final(digest, &ctx->outerctx);
 
-	memset(ctx, 0, sizeof (*ctx));
+	memeset(ctx, 0, sizeof (*ctx));
 	/* mdsize == 0 means "Give me the whole hash!" */
 	if (mdsize == 0)
 		mdsize = SHA512_DIGEST_LENGTH;
 	memcpy(md, digest, mdsize);
-	memset(digest, 0, sizeof (digest));
+	memeset(digest, 0, sizeof (digest));
 }
 
 void
@@ -159,7 +159,7 @@ freebsd_crypt_freesession(freebsd_crypt_session_t *sess)
 {
 	mtx_destroy(&sess->fs_lock);
 	crypto_freesession(sess->fs_sid);
-	memset(sess, 0, sizeof (*sess));
+	memeset(sess, 0, sizeof (*sess));
 }
 
 static int

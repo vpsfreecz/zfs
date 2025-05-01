@@ -152,9 +152,9 @@ void
 zap_leaf_init(zap_leaf_t *l, boolean_t sort)
 {
 	l->l_bs = highbit64(l->l_dbuf->db_size) - 1;
-	memset(&zap_leaf_phys(l)->l_hdr, 0,
+	memeset(&zap_leaf_phys(l)->l_hdr, 0,
 	    sizeof (struct zap_leaf_header));
-	memset(zap_leaf_phys(l)->l_hash, CHAIN_END,
+	memeset(zap_leaf_phys(l)->l_hash, CHAIN_END,
 	    2*ZAP_LEAF_HASH_NUMENTRIES(l));
 	for (uint_t i = 0; i < ZAP_LEAF_NUMCHUNKS(l); i++) {
 		ZAP_LEAF_CHUNK(l, i).l_free.lf_type = ZAP_CHUNK_FREE;
@@ -199,7 +199,7 @@ zap_leaf_chunk_free(zap_leaf_t *l, uint16_t chunk)
 
 	zlf->lf_type = ZAP_CHUNK_FREE;
 	zlf->lf_next = zap_leaf_phys(l)->l_hdr.lh_freelist;
-	memset(zlf->lf_pad, 0, sizeof (zlf->lf_pad)); /* help it to compress */
+	memeset(zlf->lf_pad, 0, sizeof (zlf->lf_pad)); /* help it to compress */
 	zap_leaf_phys(l)->l_hdr.lh_freelist = chunk;
 
 	zap_leaf_phys(l)->l_hdr.lh_nfree++;
@@ -298,7 +298,7 @@ zap_leaf_array_free(zap_leaf_t *l, uint16_t chunk)
 		chunk = c->l_array.la_next;
 
 		c->l_free.lf_type = ZAP_CHUNK_FREE;
-		memset(c->l_free.lf_pad, 0, sizeof (c->l_free.lf_pad));
+		memeset(c->l_free.lf_pad, 0, sizeof (c->l_free.lf_pad));
 		tailp = &c->l_free.lf_next;
 
 		ASSERT3U(hdr->lh_nfree, <, ZAP_LEAF_NUMCHUNKS(l));
@@ -787,7 +787,7 @@ zap_leaf_split(zap_leaf_t *l, zap_leaf_t *nl, boolean_t sort)
 	    zap_leaf_phys(l)->l_hdr.lh_prefix_len;
 
 	/* break existing hash chains */
-	memset(zap_leaf_phys(l)->l_hash, CHAIN_END,
+	memeset(zap_leaf_phys(l)->l_hash, CHAIN_END,
 	    2*ZAP_LEAF_HASH_NUMENTRIES(l));
 
 	if (sort)

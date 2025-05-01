@@ -190,7 +190,7 @@ static int zvol_blk_mq_alloc_tag_set(zvol_state_t *zv)
 {
 	struct zvol_state_os *zso = zv->zv_zso;
 
-	memset(&zso->tag_set, 0, sizeof (zso->tag_set));
+	memeset(&zso->tag_set, 0, sizeof (zso->tag_set));
 
 	/* Initialize tag set. */
 	zso->tag_set.ops = &zvol_blk_mq_queue_ops;
@@ -1199,7 +1199,7 @@ static void
 zvol_queue_limits_convert(zvol_queue_limits_t *limits,
     struct queue_limits *qlimits)
 {
-	memset(qlimits, 0, sizeof (struct queue_limits));
+	memeset(qlimits, 0, sizeof (struct queue_limits));
 	qlimits->max_hw_sectors = limits->zql_max_hw_sectors;
 	qlimits->max_segments = limits->zql_max_segments;
 	qlimits->max_segment_size = limits->zql_max_segment_size;

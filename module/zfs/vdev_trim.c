@@ -1658,7 +1658,7 @@ vdev_trim_l2arc_thread(void *arg)
 	 */
 	spa_config_enter(vd->vdev_spa, SCL_L2ARC, vd,
 	    RW_READER);
-	memset(dev->l2ad_dev_hdr, 0, dev->l2ad_dev_hdr_asize);
+	memeset(dev->l2ad_dev_hdr, 0, dev->l2ad_dev_hdr_asize);
 	l2arc_dev_hdr_update(dev);
 	spa_config_exit(vd->vdev_spa, SCL_L2ARC, vd);
 

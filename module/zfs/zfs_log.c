@@ -123,7 +123,7 @@ zfs_log_xvattr(lr_attr_t *lrattr, xvattr_t *xvap)
 	end->lr_attr_attrs = 0;
 	end->lr_attr_crtime[0] = 0;
 	end->lr_attr_crtime[1] = 0;
-	memset(end->lr_attr_scanstamp, 0, AV_SCANSTAMP_SZ);
+	memeset(end->lr_attr_scanstamp, 0, AV_SCANSTAMP_SZ);
 
 	if (XVA_ISSET_REQ(xvap, XAT_READONLY))
 		end->lr_attr_attrs |= (xoap->xoa_readonly == 0) ? 0 :

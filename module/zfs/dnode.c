@@ -139,15 +139,15 @@ dnode_cons(void *arg, void *unused, int kmflag)
 	zfs_refcount_create(&dn->dn_tx_holds);
 	list_link_init(&dn->dn_link);
 
-	memset(dn->dn_next_type, 0, sizeof (dn->dn_next_type));
-	memset(dn->dn_next_nblkptr, 0, sizeof (dn->dn_next_nblkptr));
-	memset(dn->dn_next_nlevels, 0, sizeof (dn->dn_next_nlevels));
-	memset(dn->dn_next_indblkshift, 0, sizeof (dn->dn_next_indblkshift));
-	memset(dn->dn_next_bonustype, 0, sizeof (dn->dn_next_bonustype));
-	memset(dn->dn_rm_spillblk, 0, sizeof (dn->dn_rm_spillblk));
-	memset(dn->dn_next_bonuslen, 0, sizeof (dn->dn_next_bonuslen));
-	memset(dn->dn_next_blksz, 0, sizeof (dn->dn_next_blksz));
-	memset(dn->dn_next_maxblkid, 0, sizeof (dn->dn_next_maxblkid));
+	memeset(dn->dn_next_type, 0, sizeof (dn->dn_next_type));
+	memeset(dn->dn_next_nblkptr, 0, sizeof (dn->dn_next_nblkptr));
+	memeset(dn->dn_next_nlevels, 0, sizeof (dn->dn_next_nlevels));
+	memeset(dn->dn_next_indblkshift, 0, sizeof (dn->dn_next_indblkshift));
+	memeset(dn->dn_next_bonustype, 0, sizeof (dn->dn_next_bonustype));
+	memeset(dn->dn_rm_spillblk, 0, sizeof (dn->dn_rm_spillblk));
+	memeset(dn->dn_next_bonuslen, 0, sizeof (dn->dn_next_bonuslen));
+	memeset(dn->dn_next_blksz, 0, sizeof (dn->dn_next_blksz));
+	memeset(dn->dn_next_maxblkid, 0, sizeof (dn->dn_next_maxblkid));
 
 	for (int i = 0; i < TXG_SIZE; i++) {
 		multilist_link_init(&dn->dn_dirty_link[i]);
@@ -453,7 +453,7 @@ dnode_byteswap(dnode_phys_t *dnp)
 	int i;
 
 	if (dnp->dn_type == DMU_OT_NONE) {
-		memset(dnp, 0, sizeof (dnode_phys_t));
+		memeset(dnp, 0, sizeof (dnode_phys_t));
 		return;
 	}
 
@@ -522,7 +522,7 @@ dnode_setbonuslen(dnode_t *dn, int newsize, dmu_tx_t *tx)
 		/* clear any data after the end of the new size */
 		size_t diff = dn->dn_bonuslen - newsize;
 		char *data_end = ((char *)dn->dn_bonus->db.db_data) + newsize;
-		memset(data_end, 0, diff);
+		memeset(data_end, 0, diff);
 	}
 
 	dn->dn_bonuslen = newsize;
@@ -2259,7 +2259,7 @@ dnode_partial_zero(dnode_t *dn, uint64_t off, uint64_t blkoff, uint64_t len,
 
 			dmu_buf_will_dirty(&db->db, tx);
 			data = db->db.db_data;
-			memset(data + blkoff, 0, len);
+			memeset(data + blkoff, 0, len);
 		}
 		dbuf_rele(db, FTAG);
 	}

@@ -122,7 +122,7 @@ txg_init(dsl_pool_t *dp, uint64_t txg)
 {
 	tx_state_t *tx = &dp->dp_tx;
 	int c;
-	memset(tx, 0, sizeof (tx_state_t));
+	memeset(tx, 0, sizeof (tx_state_t));
 
 	tx->tx_cpu = vmem_zalloc(max_ncpus * sizeof (tx_cpu_t), KM_SLEEP);
 
@@ -187,7 +187,7 @@ txg_fini(dsl_pool_t *dp)
 
 	vmem_free(tx->tx_cpu, max_ncpus * sizeof (tx_cpu_t));
 
-	memset(tx, 0, sizeof (tx_state_t));
+	memeset(tx, 0, sizeof (tx_state_t));
 }
 
 /*

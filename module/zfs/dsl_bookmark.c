@@ -84,7 +84,7 @@ dsl_bookmark_lookup_impl(dsl_dataset_t *ds, const char *shortname,
 	 * Zero out the bookmark in case the one stored on disk
 	 * is in an older, shorter format.
 	 */
-	memset(bmark_phys, 0, sizeof (*bmark_phys));
+	memeset(bmark_phys, 0, sizeof (*bmark_phys));
 
 	err = zap_lookup_norm(mos, bmark_zapobj, shortname, sizeof (uint64_t),
 	    sizeof (*bmark_phys) / sizeof (uint64_t), bmark_phys, mt, NULL, 0,
@@ -348,7 +348,7 @@ dsl_bookmark_set_phys(zfs_bookmark_phys_t *zbm, dsl_dataset_t *snap)
 	objset_t *mos = spa_get_dsl(spa)->dp_meta_objset;
 	dsl_dataset_phys_t *dsp = dsl_dataset_phys(snap);
 
-	memset(zbm, 0, sizeof (zfs_bookmark_phys_t));
+	memeset(zbm, 0, sizeof (zfs_bookmark_phys_t));
 	zbm->zbm_guid = dsp->ds_guid;
 	zbm->zbm_creation_txg = dsp->ds_creation_txg;
 	zbm->zbm_creation_time = dsp->ds_creation_time;

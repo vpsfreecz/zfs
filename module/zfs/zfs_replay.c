@@ -72,7 +72,7 @@ static void
 zfs_init_vattr(vattr_t *vap, uint64_t mask, uint64_t mode,
     uint64_t uid, uint64_t gid, uint64_t rdev, uint64_t nodeid)
 {
-	memset(vap, 0, sizeof (*vap));
+	memeset(vap, 0, sizeof (*vap));
 	vap->va_mask = (uint_t)mask;
 	vap->va_mode = mode;
 #if defined(__FreeBSD__) || defined(__APPLE__)
