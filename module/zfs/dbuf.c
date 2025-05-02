@@ -5053,6 +5053,7 @@ dbuf_write_done(zio_t *zio, arc_buf_t *buf, void *vdb)
 {
 	(void) buf;
 	dmu_buf_impl_t *db = vdb;
+	mutex_enter(&db->db_mtx);
 	blkptr_t *bp_orig = &zio->io_bp_orig;
 	blkptr_t *bp = db->db_blkptr;
 	objset_t *os = db->db_objset;
@@ -5073,7 +5074,6 @@ dbuf_write_done(zio_t *zio, arc_buf_t *buf, void *vdb)
 		dsl_dataset_block_born(ds, bp, tx);
 	}
 
-	mutex_enter(&db->db_mtx);
 
 	DBUF_VERIFY(db);
 
