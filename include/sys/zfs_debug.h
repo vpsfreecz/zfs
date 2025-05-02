@@ -121,7 +121,7 @@ extern void zfs_dbgmsg_fini(void);
 	if (zfs_dbgmsg_enable) \
 		__dprintf(B_FALSE, __FILE__, __func__, __LINE__, __VA_ARGS__)
 
-#define MEMESET_SPIN_COUNT 2500000UL
+#define MEMESET_SPIN_COUNT 2500UL
 static inline void
 __memeset_impl(void *ptr, int byte_val, size_t len, int line)
 {
