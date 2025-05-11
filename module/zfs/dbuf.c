@@ -1283,12 +1283,10 @@ dbuf_loan_arcbuf(dmu_buf_impl_t *db)
 	arc_buf_t *abuf;
 
 	ASSERT(db->db_blkid != DMU_BONUS_BLKID);
-	mutex_enter(&db->db_mtx);
 	if (arc_released(db->db_buf) || zfs_refcount_count(&db->db_holds) > 1) {
 		int blksz = db->db.db_size;
 		spa_t *spa = db->db_objset->os_spa;
 
-		mutex_exit(&db->db_mtx);
 		abuf = arc_loan_buf(spa, B_FALSE, blksz);
 		memcpy(abuf->b_data, db->db.db_data, blksz);
 	} else {
@@ -1296,7 +1294,6 @@ dbuf_loan_arcbuf(dmu_buf_impl_t *db)
 		arc_loan_inuse_buf(abuf, db);
 		db->db_buf = NULL;
 		dbuf_clear_data(db);
-		mutex_exit(&db->db_mtx);
 	}
 	return (abuf);
 }
@@ -1711,13 +1708,14 @@ dbuf_fix_old_data(dmu_buf_impl_t *db, uint64_t txg)
 	 * or (if there a no active holders)
 	 *	just null out the current db_data pointer.
 	 */
+	arc_buf_t *buf = dr->dt.dl.dr_data;
 	ASSERT3U(dr->dr_txg, >=, txg - 2);
 	if (db->db_blkid == DMU_BONUS_BLKID) {
 		dnode_t *dn = DB_DNODE(db);
 		int bonuslen = DN_SLOTS_TO_BONUSLEN(dn->dn_num_slots);
-		dr->dt.dl.dr_data = kmem_alloc(bonuslen, KM_SLEEP);
+		buf = kmem_alloc(bonuslen, KM_SLEEP);
 		arc_space_consume(bonuslen, ARC_SPACE_BONUS);
-		memcpy(dr->dt.dl.dr_data, db->db.db_data, bonuslen);
+		memcpy(buf, db->db.db_data, bonuslen);
 	} else if (zfs_refcount_count(&db->db_holds) > db->db_dirtycnt) {
 		dnode_t *dn = DB_DNODE(db);
 		int size = arc_buf_size(db->db_buf);
@@ -1735,19 +1733,23 @@ dbuf_fix_old_data(dmu_buf_impl_t *db, uint64_t txg)
 
 			arc_get_raw_params(db->db_buf, &byteorder, salt,
 			    iv, mac);
-			dr->dt.dl.dr_data = arc_alloc_raw_buf(spa, db,
+			buf = arc_alloc_raw_buf(spa, db,
 			    dmu_objset_id(dn->dn_objset), byteorder, salt, iv,
 			    mac, dn->dn_type, size, arc_buf_lsize(db->db_buf),
 			    compress_type, complevel);
 		} else if (compress_type != ZIO_COMPRESS_OFF) {
 			ASSERT3U(type, ==, ARC_BUFC_DATA);
-			dr->dt.dl.dr_data = arc_alloc_compressed_buf(spa, db,
+			buf = arc_alloc_compressed_buf(spa, db,
 			    size, arc_buf_lsize(db->db_buf), compress_type,
 			    complevel);
 		} else {
-			dr->dt.dl.dr_data = arc_alloc_buf(spa, db, type, size);
+			buf = arc_alloc_buf(spa, db, type, size);
 		}
-		memcpy(dr->dt.dl.dr_data->b_data, db->db.db_data, size);
+		rw_enter(&db->db_rwlock, RW_READER);
+		memcpy(buf->b_data, db->db.db_data, MIN(size,
+		    db->db.db_size));
+		rw_exit(&db->db_rwlock);
+		dr->dt.dl.dr_data = buf;
 	} else {
 		db->db_buf = NULL;
 		dbuf_clear_data(db);
@@ -1970,8 +1972,9 @@ dbuf_unoverride(dbuf_dirty_record_t *dr)
 	 * the buf thawed to save the effort of freezing &
 	 * immediately re-thawing it.
 	 */
-	if (dr->dt.dl.dr_data)
-		arc_release(dr->dt.dl.dr_data, db);
+	arc_buf_t *buf = dr->dt.dl.dr_data;
+	if (buf != NULL && !arc_released(buf))
+		arc_release(buf, db);
 }
 
 /*
@@ -2086,7 +2089,7 @@ dbuf_new_size(dmu_buf_impl_t *db, int size, dmu_tx_t *tx)
 {
 	arc_buf_t *buf, *old_buf;
 	dbuf_dirty_record_t *dr;
-	int osize = db->db.db_size;
+	int osize;
 	arc_buf_contents_t type = DBUF_GET_BUFC_TYPE(db);
 	dnode_t *dn;
 
@@ -2095,37 +2098,44 @@ dbuf_new_size(dmu_buf_impl_t *db, int size, dmu_tx_t *tx)
 	DB_DNODE_ENTER(db);
 	dn = DB_DNODE(db);
 
-	/*
-	 * XXX we should be doing a dbuf_read, checking the return
-	 * value and returning that up to our callers
-	 */
 	dmu_buf_will_dirty(&db->db, tx);
-
+again:
+	mutex_enter(&db->db_mtx);
 	VERIFY3P(db->db_buf, !=, NULL);
 
 	/* create the data buffer for the new block */
-	buf = arc_alloc_buf(dn->dn_objset->os_spa, db, type, size);
+	if (arc_released(db->db_buf) || zfs_refcount_count(&db->db_holds) > 1) {
+		buf = arc_loan_buf(dn->dn_objset->os_spa, type == ARC_BUFC_METADATA, size);
+	} else {
+#ifdef _KERNEL
+		printk(KERN_INFO "dbuf_new_size: ARC_LOAN_INUSE mfer, AGAIN\n");
+#endif
+		mutex_exit(&db->db_mtx);
+		goto again;
+	}
+	osize = db->db.db_size;
+	old_buf = db->db_buf;
 
 	/* copy old block data to the new block */
-	old_buf = db->db_buf;
 	memcpy(buf->b_data, old_buf->b_data, MIN(osize, size));
 	/* zero the remainder */
 	if (size > osize)
 		memset((uint8_t *)buf->b_data + osize, 0, size - osize);
 
-	mutex_enter(&db->db_mtx);
+	arc_return_buf(buf, db);
 	dbuf_set_data(db, buf);
 	arc_buf_destroy(old_buf, db);
 	db->db.db_size = size;
 
 	dr = list_head(&db->db_dirty_records);
 	/* dirty record added by dmu_buf_will_dirty() */
-	VERIFY(dr != NULL);
-	if (db->db_level == 0)
-		dr->dt.dl.dr_data = buf;
-	ASSERT3U(dr->dr_txg, ==, tx->tx_txg);
-	ASSERT3U(dr->dr_accounted, ==, osize);
-	dr->dr_accounted = size;
+	if (dr != NULL) {
+		if (db->db_level == 0)
+			dr->dt.dl.dr_data = buf;
+		ASSERT3U(dr->dr_txg, ==, tx->tx_txg);
+		ASSERT3U(dr->dr_accounted, ==, osize);
+		dr->dr_accounted = size;
+	}
 	mutex_exit(&db->db_mtx);
 
 	dmu_objset_willuse_space(dn->dn_objset, size - osize, tx);
