@@ -1412,7 +1412,7 @@ dbuf_read_done(zio_t *zio, const zbookmark_phys_t *zb, const blkptr_t *bp,
 		/* freed in flight */
 		ASSERT(zio == NULL || zio->io_error == 0);
 		arc_release(buf, db);
-		memset(buf->b_data, 0, db->db.db_size);
+		memset(buf->b_data, 0, arc_buf_size(buf));
 		arc_buf_freeze(buf);
 		db->db_freed_in_flight = FALSE;
 		dbuf_set_data(db, buf);
@@ -1499,7 +1499,7 @@ dbuf_read_hole(dmu_buf_impl_t *db, dnode_t *dn, blkptr_t *bp)
 
 	if (is_hole) {
 		db_data = dbuf_alloc_arcbuf(db);
-		memset(db_data->b_data, 0, db->db.db_size);
+		memset(db_data->b_data, 0, arc_buf_size(db_data));
 
 		if (bp != NULL && db->db_level > 0 && BP_IS_HOLE(bp) &&
 		    BP_GET_LOGICAL_BIRTH(bp) != 0) {
@@ -1747,7 +1747,11 @@ dbuf_fix_old_data(dmu_buf_impl_t *db, uint64_t txg)
 		} else {
 			dr->dt.dl.dr_data = arc_alloc_buf(spa, db, type, size);
 		}
+		uint64_t tocpy = MIN(size, db->db.db_size);
 		memcpy(dr->dt.dl.dr_data->b_data, db->db.db_data, size);
+		if (tocpy < size)
+			memset((uint8_t *)dr->dt.dl.dr_data->b_data + tocpy, 0,
+			    size - tocpy);
 	} else {
 		db->db_buf = NULL;
 		dbuf_clear_data(db);
@@ -3135,7 +3139,10 @@ dbuf_assign_arcbuf(dmu_buf_impl_t *db, arc_buf_t *buf, dmu_tx_t *tx)
 		ASSERT(!arc_is_encrypted(buf));
 		mutex_exit(&db->db_mtx);
 		(void) dbuf_dirty(db, tx);
+
+		ASSERT3U(arc_buf_size(buf), ==, db->db.db_size);
 		memcpy(db->db.db_data, buf->b_data, db->db.db_size);
+
 		arc_buf_destroy(buf, db);
 		return;
 	}
@@ -3879,7 +3886,12 @@ dbuf_hold_copy(dnode_t *dn, dmu_buf_impl_t *db)
 		db_data = arc_alloc_buf(dn->dn_objset->os_spa, db,
 		    DBUF_GET_BUFC_TYPE(db), db->db.db_size);
 	}
-	memcpy(db_data->b_data, data->b_data, arc_buf_size(data));
+
+	uint64_t tocpy = MIN(arc_buf_size(data), arc_buf_size(db_data));
+	memcpy(db_data->b_data, data->b_data, tocpy);
+	if (tocpy < arc_buf_size(db_data))
+		memset((uint8_t *)db_data->b_data + tocpy, 0,
+		    arc_buf_size(db_data) - tocpy);
 
 	dbuf_set_data(db, db_data);
 }
@@ -4822,7 +4834,11 @@ dbuf_sync_leaf(dbuf_dirty_record_t *dr, dmu_tx_t *tx)
 		} else {
 			*datap = arc_alloc_buf(os->os_spa, db, type, psize);
 		}
+		uint64_t tocpy = MIN(arc_buf_size(*datap), psize);
 		memcpy((*datap)->b_data, db->db.db_data, psize);
+		if (tocpy < arc_buf_size(*datap))
+			memset((uint8_t *)(*datap)->b_data + tocpy, 0,
+			    arc_buf_size(*datap) - tocpy);
 	}
 	db->db_data_pending = dr;
 
