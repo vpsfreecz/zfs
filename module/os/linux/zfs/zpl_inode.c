@@ -204,8 +204,7 @@ zpl_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool flag)
 			(void) zfs_remove(ITOZ(dir), dname(dentry), cr, 0);
 		} else {
 			VERIFY0(insert_inode_locked(ZTOI(zp)));
-			d_instantiate(dentry, ZTOI(zp));
-			unlock_new_inode(ZTOI(zp));
+			d_instantiate_new(dentry, ZTOI(zp));
 		}
 	}
 
