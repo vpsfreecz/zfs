@@ -2081,13 +2081,55 @@ dbuf_free_range(dnode_t *dn, uint64_t start_blkid, uint64_t end_blkid,
 	kmem_free(db_search, sizeof (dmu_buf_impl_t));
 }
 
+static void
+dbuf_hold_copy_impl(dnode_t *dn, dmu_buf_impl_t *db, arc_buf_t *data, arc_buf_t **ret)
+{
+	/*
+	 * db_size can be larger than data buf size due to dbuf_new_size
+	 */
+	int db_size = db->db.db_size;
+	int size = arc_buf_size(data);
+	int lsize = arc_buf_lsize(data);
+	arc_buf_t *db_data;
+	enum zio_compress compress_type = arc_get_compression(data);
+	uint8_t complevel = arc_get_complevel(data);
+
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+
+	if (arc_is_encrypted(data)) {
+		boolean_t byteorder;
+		uint8_t salt[ZIO_DATA_SALT_LEN];
+		uint8_t iv[ZIO_DATA_IV_LEN];
+		uint8_t mac[ZIO_DATA_MAC_LEN];
+
+		arc_get_raw_params(data, &byteorder, salt, iv, mac);
+		db_data = arc_alloc_raw_buf(dn->dn_objset->os_spa, db,
+		    dmu_objset_id(dn->dn_objset), byteorder, salt, iv, mac,
+		    dn->dn_type, size, lsize, compress_type, complevel);
+	} else if (compress_type != ZIO_COMPRESS_OFF) {
+		db_data = arc_alloc_compressed_buf(
+		    dn->dn_objset->os_spa, db, size, lsize, compress_type,
+		    complevel);
+	} else {
+		db_data = arc_alloc_buf(dn->dn_objset->os_spa, db,
+		    DBUF_GET_BUFC_TYPE(db), db_size);
+	}
+	memcpy(db_data->b_data, data->b_data, MIN(db_size, size));
+	if (db_size > size) {
+		/* zero out the rest of the buffer */
+		memset(db_data->b_data + size, 0, db_size - size);
+	}
+
+	if (ret)
+		*ret = db_data;
+}
+
 void
 dbuf_new_size(dmu_buf_impl_t *db, int size, dmu_tx_t *tx)
 {
 	arc_buf_t *buf, *old_buf;
 	dbuf_dirty_record_t *dr;
-	int osize = db->db.db_size;
-	arc_buf_contents_t type = DBUF_GET_BUFC_TYPE(db);
+	int osize;
 	dnode_t *dn;
 
 	ASSERT(db->db_blkid != DMU_BONUS_BLKID);
@@ -2103,31 +2145,31 @@ dbuf_new_size(dmu_buf_impl_t *db, int size, dmu_tx_t *tx)
 
 	VERIFY3P(db->db_buf, !=, NULL);
 
-	/* create the data buffer for the new block */
-	buf = arc_alloc_buf(dn->dn_objset->os_spa, db, type, size);
-
-	/* copy old block data to the new block */
-	old_buf = db->db_buf;
-	memcpy(buf->b_data, old_buf->b_data, MIN(osize, size));
-	/* zero the remainder */
-	if (size > osize)
-		memset((uint8_t *)buf->b_data + osize, 0, size - osize);
-
 	mutex_enter(&db->db_mtx);
-	dbuf_set_data(db, buf);
-	arc_buf_destroy(old_buf, db);
+	ASSERT(db->db_state == DB_CACHED);
+	osize =  db->db.db_size;
+	old_buf = db->db_buf;
 	db->db.db_size = size;
+	dbuf_hold_copy_impl(dn, db, db->db_buf, &buf);
+	dbuf_set_data(db, buf);
 
 	dr = list_head(&db->db_dirty_records);
 	/* dirty record added by dmu_buf_will_dirty() */
 	VERIFY(dr != NULL);
-	if (db->db_level == 0)
+	if (db->db_level == 0) {
+		if ((db->db.db_object != DMU_META_DNODE_OBJECT) &&
+		    arc_released(old_buf)) {
+			ASSERT(db->db_blkid != DMU_BONUS_BLKID);
+			arc_release(buf, db);
+		}
 		dr->dt.dl.dr_data = buf;
+	}
 	ASSERT3U(dr->dr_txg, ==, tx->tx_txg);
 	ASSERT3U(dr->dr_accounted, ==, osize);
 	dr->dr_accounted = size;
 	mutex_exit(&db->db_mtx);
 
+	arc_buf_destroy(old_buf, db);
 	dmu_objset_willuse_space(dn->dn_objset, size - osize, tx);
 	DB_DNODE_EXIT(db);
 }
@@ -3854,33 +3896,14 @@ dbuf_prefetch(dnode_t *dn, int64_t level, uint64_t blkid, zio_priority_t prio,
 noinline static void
 dbuf_hold_copy(dnode_t *dn, dmu_buf_impl_t *db)
 {
-	dbuf_dirty_record_t *dr = db->db_data_pending;
-	arc_buf_t *data = dr->dt.dl.dr_data;
+        dbuf_dirty_record_t *dr = db->db_data_pending;
+        arc_buf_t *datap = dr->dt.dl.dr_data;
 	arc_buf_t *db_data;
-	enum zio_compress compress_type = arc_get_compression(data);
-	uint8_t complevel = arc_get_complevel(data);
 
-	if (arc_is_encrypted(data)) {
-		boolean_t byteorder;
-		uint8_t salt[ZIO_DATA_SALT_LEN];
-		uint8_t iv[ZIO_DATA_IV_LEN];
-		uint8_t mac[ZIO_DATA_MAC_LEN];
+	ASSERT0(db->db_level);
+	ASSERT(MUTEX_HELD(&db->db_mtx));
 
-		arc_get_raw_params(data, &byteorder, salt, iv, mac);
-		db_data = arc_alloc_raw_buf(dn->dn_objset->os_spa, db,
-		    dmu_objset_id(dn->dn_objset), byteorder, salt, iv, mac,
-		    dn->dn_type, arc_buf_size(data), arc_buf_lsize(data),
-		    compress_type, complevel);
-	} else if (compress_type != ZIO_COMPRESS_OFF) {
-		db_data = arc_alloc_compressed_buf(
-		    dn->dn_objset->os_spa, db, arc_buf_size(data),
-		    arc_buf_lsize(data), compress_type, complevel);
-	} else {
-		db_data = arc_alloc_buf(dn->dn_objset->os_spa, db,
-		    DBUF_GET_BUFC_TYPE(db), db->db.db_size);
-	}
-	memcpy(db_data->b_data, data->b_data, arc_buf_size(data));
-
+	dbuf_hold_copy_impl(dn, db, datap, &db_data);
 	dbuf_set_data(db, db_data);
 }
 
@@ -4787,42 +4810,7 @@ dbuf_sync_leaf(dbuf_dirty_record_t *dr, dmu_tx_t *tx)
 	if (*datap != NULL && *datap == db->db_buf &&
 	    dn->dn_object != DMU_META_DNODE_OBJECT &&
 	    zfs_refcount_count(&db->db_holds) > 1) {
-		/*
-		 * If this buffer is currently "in use" (i.e., there
-		 * are active holds and db_data still references it),
-		 * then make a copy before we start the write so that
-		 * any modifications from the open txg will not leak
-		 * into this write.
-		 *
-		 * NOTE: this copy does not need to be made for
-		 * objects only modified in the syncing context (e.g.
-		 * DNONE_DNODE blocks).
-		 */
-		int psize = arc_buf_size(*datap);
-		int lsize = arc_buf_lsize(*datap);
-		arc_buf_contents_t type = DBUF_GET_BUFC_TYPE(db);
-		enum zio_compress compress_type = arc_get_compression(*datap);
-		uint8_t complevel = arc_get_complevel(*datap);
-
-		if (arc_is_encrypted(*datap)) {
-			boolean_t byteorder;
-			uint8_t salt[ZIO_DATA_SALT_LEN];
-			uint8_t iv[ZIO_DATA_IV_LEN];
-			uint8_t mac[ZIO_DATA_MAC_LEN];
-
-			arc_get_raw_params(*datap, &byteorder, salt, iv, mac);
-			*datap = arc_alloc_raw_buf(os->os_spa, db,
-			    dmu_objset_id(os), byteorder, salt, iv, mac,
-			    dn->dn_type, psize, lsize, compress_type,
-			    complevel);
-		} else if (compress_type != ZIO_COMPRESS_OFF) {
-			ASSERT3U(type, ==, ARC_BUFC_DATA);
-			*datap = arc_alloc_compressed_buf(os->os_spa, db,
-			    psize, lsize, compress_type, complevel);
-		} else {
-			*datap = arc_alloc_buf(os->os_spa, db, type, psize);
-		}
-		memcpy((*datap)->b_data, db->db.db_data, psize);
+		dbuf_hold_copy_impl(dn, db, *datap, NULL);
 	}
 	db->db_data_pending = dr;
 
