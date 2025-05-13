@@ -3859,6 +3859,7 @@ dbuf_hold_copy(dnode_t *dn, dmu_buf_impl_t *db)
 	arc_buf_t *db_data;
 	enum zio_compress compress_type = arc_get_compression(data);
 	uint8_t complevel = arc_get_complevel(data);
+	uint64_t cpysz;
 
 	if (arc_is_encrypted(data)) {
 		boolean_t byteorder;
@@ -3879,7 +3880,12 @@ dbuf_hold_copy(dnode_t *dn, dmu_buf_impl_t *db)
 		db_data = arc_alloc_buf(dn->dn_objset->os_spa, db,
 		    DBUF_GET_BUFC_TYPE(db), db->db.db_size);
 	}
-	memcpy(db_data->b_data, data->b_data, arc_buf_size(data));
+
+	cpysz = MIN(arc_buf_size(data), arc_buf_size(db_data));
+	memcpy(db_data->b_data, data->b_data, cpysz);
+	if (cpysz < arc_buf_size(db_data))
+		memset(db_data->b_data + cpysz, 0,
+		    arc_buf_size(db_data) - cpysz);
 
 	dbuf_set_data(db, db_data);
 }
@@ -4798,8 +4804,10 @@ dbuf_sync_leaf(dbuf_dirty_record_t *dr, dmu_tx_t *tx)
 		 * objects only modified in the syncing context (e.g.
 		 * DNONE_DNODE blocks).
 		 */
-		int psize = arc_buf_size(*datap);
-		int lsize = arc_buf_lsize(*datap);
+		uint64_t psize = arc_buf_size(*datap);
+		uint64_t lsize = arc_buf_lsize(*datap);
+		uint64_t cpysz;
+
 		arc_buf_contents_t type = DBUF_GET_BUFC_TYPE(db);
 		enum zio_compress compress_type = arc_get_compression(*datap);
 		uint8_t complevel = arc_get_complevel(*datap);
@@ -4822,7 +4830,11 @@ dbuf_sync_leaf(dbuf_dirty_record_t *dr, dmu_tx_t *tx)
 		} else {
 			*datap = arc_alloc_buf(os->os_spa, db, type, psize);
 		}
-		memcpy((*datap)->b_data, db->db.db_data, psize);
+		cpysz = MIN(arc_buf_size(*datap), arc_buf_size(db->db_buf));
+		memcpy((*datap)->b_data, db->db.db_data, cpysz);
+		if (cpysz < arc_buf_size(*datap))
+			memset((*datap)->b_data + cpysz, 0,
+			    arc_buf_size(*datap) - cpysz);
 	}
 	db->db_data_pending = dr;
 
