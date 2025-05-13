@@ -6627,14 +6627,13 @@ arc_write_ready(zio_t *zio)
 	ASSERT(!HDR_SHARED_DATA(hdr));
 	ASSERT(!arc_buf_is_shared(buf));
 
-	callback->awcb_ready(zio, buf, callback->awcb_private);
-
 	if (HDR_IO_IN_PROGRESS(hdr)) {
 		ASSERT(zio->io_flags & ZIO_FLAG_REEXECUTED);
 	} else {
 		arc_hdr_set_flags(hdr, ARC_FLAG_IO_IN_PROGRESS);
 		add_reference(hdr, hdr); /* For IO_IN_PROGRESS. */
 	}
+	callback->awcb_ready(zio, buf, callback->awcb_private);
 
 	if (BP_IS_PROTECTED(bp)) {
 		/* ZIL blocks are written through zio_rewrite */
