@@ -325,8 +325,9 @@ extern void zfs_xvattr_set(znode_t *zp, xvattr_t *xvap, dmu_tx_t *tx);
 extern void zfs_upgrade(zfsvfs_t *zfsvfs, dmu_tx_t *tx);
 extern void zfs_log_setsaxattr(zilog_t *zilog, dmu_tx_t *tx, int txtype,
     znode_t *zp, const char *name, const void *value, size_t size);
-
 extern void zfs_znode_update_vfs(struct znode *);
+extern void zfs_log_tmpfile_link(zilog_t *zilog, dmu_tx_t *tx,
+    znode_t *dzp, znode_t *zp, const char *name);
 
 #endif
 #ifdef	__cplusplus

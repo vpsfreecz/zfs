@@ -3666,10 +3666,12 @@ top:
 	    zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
 		zil_commit(zilog, 0);
 
-	if (szp->z_is_tmpfile && szp->z_unlinked &&
-	    (zfsvfs->z_os->os_sync != ZFS_SYNC_DISABLED))
-		txg_wait_synced(dmu_objset_pool(zfsvfs->z_os), txg);
-
+	if (szp->z_is_tmpfile) {
+		if (zfsvfs->z_xattr_sa)
+			zfs_log_tmpfile_link(zilog, tx, tzp, szp, name);
+		else if (zfsvfs->z_os->os_sync != ZFS_SYNC_DISABLED)
+			txg_wait_synced(dmu_objset_pool(zfsvfs->z_os), txg);
+	}
 	zfs_znode_update_vfs(tdzp);
 	zfs_znode_update_vfs(szp);
 	zfs_exit(zfsvfs, FTAG);
