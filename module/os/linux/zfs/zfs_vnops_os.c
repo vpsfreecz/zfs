@@ -3645,16 +3645,11 @@ top:
 
 	if (error == 0) {
 		uint64_t txtype = TX_LINK;
-		/*
-		 * tmpfile is created to be in z_unlinkedobj, so remove it.
-		 * Also, we don't log in ZIL, because all previous file
-		 * operation on the tmpfile are ignored by ZIL. Instead we
-		 * always wait for txg to sync to make sure all previous
-		 * operation are sync safe.
-		 */
 		if (is_tmpfile) {
+			/* remove from unlinked set */
 			VERIFY(zap_remove_int(zfsvfs->z_os,
 			    zfsvfs->z_unlinkedobj, szp->z_id, tx) == 0);
+			zfs_log_link_tmpfile(zilog, tx, tdzp, szp, name);
 		} else {
 			if (flags & FIGNORECASE)
 				txtype |= TX_CI;
@@ -3669,12 +3664,12 @@ top:
 
 	zfs_dirent_unlock(dl);
 
-	if (!is_tmpfile && zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
+	if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
 		zil_commit(zilog, 0);
 
-	if (is_tmpfile && zfsvfs->z_os->os_sync != ZFS_SYNC_DISABLED)
+	if (is_tmpfile && !zfsvfs->z_xattr_sa &&
+	    zfsvfs->z_os->os_sync != ZFS_SYNC_DISABLED)
 		txg_wait_synced(dmu_objset_pool(zfsvfs->z_os), txg);
-
 	zfs_znode_update_vfs(tdzp);
 	zfs_znode_update_vfs(szp);
 	zfs_exit(zfsvfs, FTAG);
