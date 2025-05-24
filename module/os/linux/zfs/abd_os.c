@@ -228,32 +228,6 @@ abd_free_struct_impl(abd_t *abd)
 
 static unsigned zfs_abd_scatter_max_order = ABD_MAX_ORDER - 1;
 
-/*
- * Mark zfs data pages so they can be excluded from kernel crash dumps
- */
-#ifdef _LP64
-#define	ABD_FILE_CACHE_PAGE	0x2F5ABDF11ECAC4E
-
-static inline void
-abd_mark_zfs_page(struct page *page)
-{
-	get_page(page);
-	SetPagePrivate(page);
-	set_page_private(page, ABD_FILE_CACHE_PAGE);
-}
-
-static inline void
-abd_unmark_zfs_page(struct page *page)
-{
-	set_page_private(page, 0UL);
-	ClearPagePrivate(page);
-	put_page(page);
-}
-#else
-#define	abd_mark_zfs_page(page)
-#define	abd_unmark_zfs_page(page)
-#endif /* _LP64 */
-
 #ifndef CONFIG_HIGHMEM
 
 #ifndef __GFP_RECLAIM

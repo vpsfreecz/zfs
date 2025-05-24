@@ -51,6 +51,51 @@
  */
 static unsigned int zfs_fallocate_reserve_percent = 110;
 
+#ifdef HAVE_VFS_RELEASE_FOLIO
+static bool
+zpl_release_folio(struct folio *folio, gfp_t gfp)
+{
+	struct page *page = &folio->page;
+	if (PageDirty(page) || PageWriteback(page))
+		return false;
+	/*
+	 * If ABD or ZFS UIO have marked this page in some private fashion,
+	 * refuse to release it. We must not let the kernel reclaim it
+	 * while ZFS is still relying on it.
+	 */
+	if (is_abd_marked_zfs_page(page) || IS_ZFS_MARKED_PAGE(page))
+		return false;
+	/*
+	 * If PagePrivate was set, clear and drop our reference; that means
+	 * we had 'get_page()' somewhere for it.
+	 */
+	if (PagePrivate(page)) {
+		ClearPagePrivate(page);
+		put_page(page);
+	}
+	return true;
+}
+#endif
+
+#ifdef HAVE_VFS_INVALIDATE_FOLIO
+static bool
+zpl_invalidate_folio(struct folio *folio, size_t offset, size_t length)
+{
+	if (PageDirty(page) || PageWriteback(page))
+		return 0;
+
+	if (is_abd_marked_zfs_page(page) || IS_ZFS_MARKED_PAGE(page))
+		return 0;
+
+	if (PagePrivate(page)) {
+		ClearPagePrivate(page);
+		put_page(page);
+	}
+
+	return 1;
+}
+#endif
+
 static int
 zpl_open(struct inode *ip, struct file *filp)
 {
@@ -527,30 +572,28 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 
 	/*
 	 * We don't want to run write_cache_pages() in SYNC mode here, because
-	 * that would make putpage() wait for a single page to be committed to
-	 * disk every single time, resulting in atrocious performance. Instead
-	 * we run it once in non-SYNC mode so that the ZIL gets all the data,
-	 * and then we commit it all in one go.
+	 * that would make putpage() (zpl_putpage / zpl_putfolio) wait for
+	 * a single page to be committed to disk each time, killing performance.
 	 */
-	boolean_t for_sync = (sync_mode == WB_SYNC_ALL);
-	wbc->sync_mode = WB_SYNC_NONE;
-	result = zpl_write_cache_pages(mapping, wbc, &for_sync);
-	if (sync_mode != wbc->sync_mode) {
-		if ((result = zpl_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
-			return (result);
-		if (zfsvfs->z_log != NULL)
-			zil_commit(zfsvfs->z_log, zp->z_id);
-		zpl_exit(zfsvfs, FTAG);
+	{
+		boolean_t for_sync = (sync_mode == WB_SYNC_ALL);
 
-		/*
-		 * We need to call write_cache_pages() again (we can't just
-		 * return after the commit) because the previous call in
-		 * non-SYNC mode does not guarantee that we got all the dirty
-		 * pages (see the implementation of write_cache_pages() for
-		 * details). That being said, this is a no-op in most cases.
-		 */
-		wbc->sync_mode = sync_mode;
+		wbc->sync_mode = WB_SYNC_NONE;
 		result = zpl_write_cache_pages(mapping, wbc, &for_sync);
+		if (sync_mode != wbc->sync_mode) {
+			if ((result = zpl_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+				return (result);
+			if (zfsvfs->z_log != NULL)
+				zil_commit(zfsvfs->z_log, zp->z_id);
+			zpl_exit(zfsvfs, FTAG);
+
+			/*
+			 * We call it again, because write_cache_pages() in
+			 * non-SYNC mode may not have written out all pages.
+			 */
+			wbc->sync_mode = sync_mode;
+			result = zpl_write_cache_pages(mapping, wbc, &for_sync);
+		}
 	}
 	return (result);
 }
@@ -1076,6 +1119,13 @@ const struct address_space_operations zpl_address_space_operations = {
 	.migrate_folio	= migrate_folio,
 #elif defined(HAVE_VFS_MIGRATEPAGE)
 	.migratepage	= migrate_page,
+#endif
+
+#ifdef HAVE_VFS_RELEASE_FOLIO
+	.release_folio	= zpl_release_folio,
+#endif
+#ifdef HAVE_VFS_INVALIDATE_FOLIO
+	.invalidate_folio = zpl_invalidate_folio,
 #endif
 };
 

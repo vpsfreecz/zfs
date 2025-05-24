@@ -210,4 +210,40 @@ zfs_uio_iov_iter_init(zfs_uio_t *uio, struct iov_iter *iter, offset_t offset,
 	(zfs_uio_iov_iter_type((iter)) == ITER_IOVEC)
 #endif
 
+#if defined(HAVE_ZERO_PAGE_GPL_ONLY) || !defined(_LP64)
+#define	ZFS_MARKED_PAGE		0x0
+#define	IS_ZFS_MARKED_PAGE(_p)	0
+#define	zfs_mark_page(_p)
+#define	zfs_unmark_page(_p)
+#define	IS_ZERO_PAGE(_p)	0
+
+#else
+/*
+ * Mark pages to know if they were allocated to replace ZERO_PAGE() for
+ * Direct I/O writes.
+ */
+#define	ZFS_MARKED_PAGE		0x5a465350414745 /* ASCII: ZFSPAGE */
+#define	IS_ZFS_MARKED_PAGE(_p) \
+	(page_private(_p) == (unsigned long)ZFS_MARKED_PAGE)
+#define	IS_ZERO_PAGE(_p) ((_p) == ZERO_PAGE(0))
+
+static inline void
+zfs_mark_page(struct page *page)
+{
+	ASSERT3P(page, !=, NULL);
+	get_page(page);
+	SetPagePrivate(page);
+	set_page_private(page, ZFS_MARKED_PAGE);
+}
+
+static inline void
+zfs_unmark_page(struct page *page)
+{
+	ASSERT3P(page, !=, NULL);
+	set_page_private(page, 0UL);
+	ClearPagePrivate(page);
+	put_page(page);
+}
+#endif /* HAVE_ZERO_PAGE_GPL_ONLY || !_LP64 */
+
 #endif /* SPL_UIO_H */
