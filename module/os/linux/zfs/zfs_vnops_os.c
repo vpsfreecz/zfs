@@ -247,7 +247,7 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
 		uint64_t nbytes = MIN(PAGE_SIZE - off, len);
 
-		struct page *pp = find_lock_page(mp, start >> PAGE_SHIFT);
+		struct page *pp = grab_cache_page(mp, start >> PAGE_SHIFT);
 		if (pp) {
 			if (mapping_writably_mapped(mp))
 				flush_dcache_page(pp);
@@ -297,7 +297,7 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
 		uint64_t bytes = MIN(PAGE_SIZE - off, len);
 
-		struct page *pp = find_lock_page(mp, start >> PAGE_SHIFT);
+		struct page *pp = grab_cache_page(mp, start >> PAGE_SHIFT);
 		if (pp) {
 
 			/*
@@ -306,7 +306,7 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 			 * In this case we must try and fill the page.
 			 */
 			if (unlikely(!PageUptodate(pp))) {
-				error = zfs_fillpage(ip, pp);
+				error = zfs_getpage(ip, pp);
 				if (error) {
 					unlock_page(pp);
 					put_page(pp);
@@ -316,8 +316,6 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 
 			ASSERT(PageUptodate(pp) || PageDirty(pp));
 
-			unlock_page(pp);
-
 			void *pb = kmap(pp);
 			error = zfs_uiomove(pb + off, bytes, UIO_READ, uio);
 			kunmap(pp);
@@ -326,6 +324,7 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 				flush_dcache_page(pp);
 
 			mark_page_accessed(pp);
+			unlock_page(pp);
 			put_page(pp);
 		} else {
 			error = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl),
@@ -4091,6 +4090,7 @@ zfs_fillpage(struct inode *ip, struct page *pp)
 	} else {
 		ClearPageError(pp);
 		SetPageUptodate(pp);
+		mark_page_accessed(pp);
 	}
 
 	return (error);

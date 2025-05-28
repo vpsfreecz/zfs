@@ -56,6 +56,13 @@ static bool
 zpl_release_folio(struct folio *folio, gfp_t gfp)
 {
 	struct page *page = &folio->page;
+
+	if (folio_mapped(folio))
+		return false;
+
+	if (folio_test_dirty(folio) || folio_test_writeback(folio))
+		return false;
+
 	if (PageDirty(page) || PageWriteback(page))
 		return false;
 	/*
@@ -81,6 +88,12 @@ zpl_release_folio(struct folio *folio, gfp_t gfp)
 static bool
 zpl_invalidate_folio(struct folio *folio, size_t offset, size_t length)
 {
+	if (folio_mapped(folio))
+		return false;
+
+	if (folio_test_dirty(folio) || folio_test_writeback(folio))
+		return false;
+
 	if (PageDirty(page) || PageWriteback(page))
 		return 0;
 

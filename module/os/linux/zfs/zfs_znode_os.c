@@ -473,6 +473,7 @@ zfs_znode_update_vfs(znode_t *zp)
 	struct inode	*ip;
 	uint32_t	blksize;
 	u_longlong_t	i_blocks;
+	uint64_t	osize;
 
 	ASSERT(zp != NULL);
 	ip = ZTOI(zp);
@@ -484,9 +485,14 @@ zfs_znode_update_vfs(znode_t *zp)
 	dmu_object_size_from_db(sa_get_db(zp->z_sa_hdl), &blksize, &i_blocks);
 
 	spin_lock(&ip->i_lock);
+	osize = i_size_read(ip);
 	ip->i_mode = zp->z_mode;
 	ip->i_blocks = i_blocks;
 	i_size_write(ip, zp->z_size);
+	if (osize < zp->z_size)
+		pagecache_isize_extended(ip, osize, zp->z_size);
+	if (osize != zp->z_size)
+		truncate_setsize(ip, zp->z_size);
 	spin_unlock(&ip->i_lock);
 }
 
@@ -1797,13 +1803,7 @@ log:
 	error = 0;
 
 out:
-	/*
-	 * Truncate the page cache - for file truncate operations, use
-	 * the purpose-built API for truncations.  For punching operations,
-	 * the truncation is handled under a range lock in zfs_free_range.
-	 */
-	if (len == 0)
-		truncate_setsize(ZTOI(zp), off);
+
 	return (error);
 }
 
