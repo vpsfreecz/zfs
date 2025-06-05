@@ -3676,8 +3676,18 @@ top:
 	    zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
 		zil_commit(zilog, 0);
 
-	if (szp->z_is_tmpfile && zfsvfs->z_os->os_sync != ZFS_SYNC_DISABLED)
-		txg_wait_synced(dmu_objset_pool(zfsvfs->z_os), txg);
+	if (error == 0 && szp->z_is_tmpfile &&
+	    zfsvfs->z_os->os_sync != ZFS_SYNC_DISABLED) {
+		txg_wait_flag_t wait_flags =
+		    spa_get_failmode(dmu_objset_spa(zfsvfs->z_os)) ==
+		    ZIO_FAILURE_MODE_CONTINUE ? TXG_WAIT_SUSPEND : 0;
+		int werr = txg_wait_synced_flags(dmu_objset_pool(zfsvfs->z_os),
+		    txg, wait_flags);
+		if (werr != 0) {
+			ASSERT3U(werr, ==, ESHUTDOWN);
+			error = SET_ERROR(EIO);
+		}
+	}
 
 	zfs_znode_update_vfs(tdzp);
 	zfs_znode_update_vfs(szp);
