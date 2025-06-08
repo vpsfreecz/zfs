@@ -1144,6 +1144,9 @@ zfs_make_xattrdir(znode_t *zp, vattr_t *vap, znode_t **xzpp, cred_t *cr)
 	}
 	zfs_mknode(zp, vap, tx, cr, IS_XATTR, &xzp, &acl_ids);
 
+	VERIFY0(insert_inode_locked(ZTOI(xzp)));
+	unlock_new_inode(ZTOI(xzp));
+
 	if (fuid_dirtied)
 		zfs_fuid_sync(zfsvfs, tx);
 
