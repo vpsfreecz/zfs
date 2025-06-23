@@ -1829,9 +1829,10 @@ ztest_tx_assign(dmu_tx_t *tx, uint64_t txg_how, const char *tag)
 		if (error == ERESTART) {
 			ASSERT3U(txg_how, ==, DMU_TX_NOWAIT);
 			dmu_tx_wait(tx);
-		} else {
-			ASSERT3U(error, ==, ENOSPC);
+		} else if (error == ENOSPC) {
 			ztest_record_enospc(tag);
+		} else {
+			ASSERT(error == EDQUOT || error == EIO);
 		}
 		dmu_tx_abort(tx);
 		return (0);
