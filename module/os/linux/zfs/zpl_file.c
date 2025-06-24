@@ -730,8 +730,12 @@ out_unmark:
 static long
 zpl_fallocate(struct file *filp, int mode, loff_t offset, loff_t len)
 {
-	return zpl_fallocate_common(file_inode(filp),
+	long ret;
+	filemap_invalidate_lock(file_inode(filp)->i_mapping);
+	ret = zpl_fallocate_common(file_inode(filp),
 	    mode, offset, len);
+	filemap_invalidate_unlock(file_inode(filp)->i_mapping);
+	return (ret);
 }
 
 static int
