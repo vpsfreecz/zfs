@@ -48,4 +48,11 @@ typedef struct spl_fid {
 #define	fid_len		un._fid.len
 #define	fid_data	un._fid.data
 
+#ifndef HAVE_VFS_FILEMAP_INVALIDATE_LOCK
+#define filemap_invalidate_lock(mapping)	\
+	mutex_lock_nested(&(mapping)->invalidate_lock.mutex, I_MUTEX_CHILD)
+#define filemap_invalidate_unlock(mapping)	\
+	mutex_unlock(&(mapping)->invalidate_lock.mutex)
+#endif
+
 #endif /* SPL_ZFS_H */

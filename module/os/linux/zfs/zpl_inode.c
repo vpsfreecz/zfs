@@ -597,6 +597,8 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 		    zpl_inode_timestamp_truncate(ia->ia_atime, ip));
 
 	cookie = spl_fstrans_mark();
+	if (vap->va_mask & ATTR_SIZE)
+		filemap_invalidate_lock(ip->i_mapping);
 #ifdef HAVE_USERNS_IOPS_SETATTR
 	error = -zfs_setattr(ITOZ(ip), vap, 0, cr, user_ns);
 #elif defined(HAVE_IDMAP_IOPS_SETATTR)
@@ -606,7 +608,8 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 #endif
 	if (!error && (ia->ia_valid & ATTR_MODE))
 		error = zpl_chmod_acl(ip);
-
+	if (vap->va_mask & ATTR_SIZE)
+		filemap_invalidate_unlock(ip->i_mapping);
 	spl_fstrans_unmark(cookie);
 	kmem_free(vap, sizeof (vattr_t));
 	crfree(cr);

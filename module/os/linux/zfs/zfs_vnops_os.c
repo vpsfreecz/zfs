@@ -233,6 +233,75 @@ zfs_close(struct inode *ip, int flag, cred_t *cr)
 
 static int zfs_fillpage(struct inode *ip, struct page *pp);
 
+#ifdef HAVE_WRITEPAGE_T_FOLIO
+void
+update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
+{
+	struct inode *ip = ZTOI(zp);
+	struct address_space *mp = ip->i_mapping;
+	int64_t	off = start & (PAGE_SIZE - 1);
+
+	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
+		uint64_t nbytes = MIN(PAGE_SIZE - off, len);
+		pgoff_t index = start >> PAGE_SHIFT;
+
+		/*
+		* Use pagecache_get_page(): exported by every kernel that
+		* understands folios.  FGP_LOCK asks the MM to return the
+		* object locked; if a back‑port ignores FGP_LOCK we fall
+		* back to folio_lock().
+		*/
+		struct page *page = pagecache_get_page(mp, index,
+			FGP_ACCESSED | FGP_LOCK, GFP_KERNEL);
+
+		if (!page) {
+			len -= nbytes;
+			off = 0;
+			continue;
+		}
+
+		struct folio *folio = page_folio(page);
+		if (!folio_test_locked(folio))	 /* older back‑port */
+			folio_lock(folio);
+
+		/* pre‑flush dcache if this mapping is mmap‑writable */
+#if defined(flush_dcache_folio)
+		if (mapping_writably_mapped(mp))
+			flush_dcache_folio(folio);
+#else
+		if (mapping_writably_mapped(mp))
+			flush_dcache_page(&folio->page);
+#endif
+		/*
+			* Bring the folio uptodate if necessary.
+			* zfs_fill_folio() already sets error/uptodate flags.
+			*/
+		int error = 0;
+		if (!folio_test_uptodate(folio))
+			error = zfs_fill_folio(ip, folio);
+
+		if (error) {
+			folio_clear_uptodate(folio);
+		} else {
+#if defined(flush_dcache_folio)
+			if (mapping_writably_mapped(mp))
+				flush_dcache_folio(folio);
+#else
+			if (mapping_writably_mapped(mp))
+				flush_dcache_page(&folio->page);
+#endif
+			folio_mark_accessed(folio);
+		}
+		mapping_set_error(mp, -error);
+
+		folio_unlock(folio);
+		folio_put(folio);
+
+		len -= nbytes;
+		off = 0;
+	}
+}
+#else /* !HAVE_WRITEPAGE_T_FOLIO */
 /*
  * When a file is memory mapped, we must keep the IO data synchronized
  * between the DMU cache and the memory mapped pages.  Update all mapped
@@ -278,12 +347,81 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 		off = 0;
 	}
 }
-
+#endif /* !HAVE_WRITEPAGE_T_FOLIO */
 /*
  * When a file is memory mapped, we must keep the I/O data synchronized
  * between the DMU cache and the memory mapped pages.  Preferentially read
  * from memory mapped pages, otherwise fallback to reading through the dmu.
  */
+#ifdef HAVE_VFS_READ_FOLIO
+int
+mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
+{
+	struct inode *ip = ZTOI(zp);
+	struct address_space *mp = ip->i_mapping;
+	loff_t pos = uio->uio_loffset;
+	size_t off = pos & (PAGE_SIZE - 1);
+	int len = nbytes;
+	int error = 0;
+
+	for (pos &= PAGE_MASK; len > 0; pos += PAGE_SIZE) {
+		size_t bytes = MIN(PAGE_SIZE - off, len);
+		pgoff_t index = pos >> PAGE_SHIFT;
+
+		/* Cached? – grab locked page, convert to folio */
+		struct page *page = pagecache_get_page(mp, index,
+		    FGP_LOCK | FGP_ACCESSED, GFP_KERNEL);
+		if (page) {
+			struct folio *folio = page_folio(page);
+			if (!folio_test_locked(folio))
+				folio_lock(folio);
+
+			if (unlikely(!folio_test_uptodate(folio))) {
+				error = zfs_fill_folio(ip, folio);
+				if (error) {
+					folio_unlock(folio);
+					folio_put(folio);
+					return (error);
+				}
+			}
+
+#if defined(flush_dcache_folio)
+			if (mapping_writably_mapped(mp))
+				flush_dcache_folio(folio);
+#else
+			if (mapping_writably_mapped(mp))
+				flush_dcache_page(page);
+#endif
+
+			void *va = kmap_local_folio(folio, 0);
+			error = zfs_uiomove((char *)va + off, bytes,
+			    UIO_READ, uio);
+			kunmap_local(va);
+
+#if defined(flush_dcache_folio)
+			if (mapping_writably_mapped(mp))
+				flush_dcache_folio(folio);
+#else
+			if (mapping_writably_mapped(mp))
+				flush_dcache_page(page);
+#endif
+			folio_mark_accessed(folio);
+			folio_unlock(folio);
+			folio_put(folio);
+		} else {
+			error = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl),
+			    uio, bytes);
+		}
+
+		len -= bytes;
+		off  = 0;
+		if (error)
+			break;
+	}
+
+	return (error);
+}
+#else  /* !HAVE_VFS_READ_FOLIO */
 int
 mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 {
@@ -341,6 +479,7 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 
 	return (error);
 }
+#endif /* !HAVE_VFS_READ_FOLIO */
 #endif /* _KERNEL */
 
 static unsigned long zfs_delete_blocks = DMU_MAX_DELETEBLKCNT;
@@ -3936,6 +4075,65 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 	return (err);
 }
 
+
+/*
+ * Native folio variant of zfs_putpage().
+ *   - The folio is already LOCKED and has its refcount elevated.
+ *   - We mark it for write‑back, write the dirty bytes through the DMU,
+ *     clear the dirty bit, and finally unlock & end write‑back.
+ */
+int
+zfs_putfolio(struct inode *ip, struct folio *folio,
+    struct writeback_control *wbc, boolean_t for_sync)
+{
+	znode_t *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ITOZSB(ip);
+	loff_t isize = i_size_read(ip);
+	u_offset_t io_off = folio_pos(folio);
+	size_t io_len = folio_size(folio);
+	int error = 0;
+
+	if (!folio_test_dirty(folio) || io_off >= isize) {
+		folio_unlock(folio);
+		return (0);
+	}
+
+	if (io_off + io_len > isize)
+		io_len = isize - io_off;
+
+	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0) {
+		folio_unlock(folio);
+		return (error);
+	}
+
+	zfs_locked_range_t *lr = zfs_rangelock_enter(&zp->z_rangelock,
+	    io_off, io_len, RL_WRITER);
+
+	folio_start_writeback(folio);
+	folio_unlock(folio);
+
+	migrate_disable();
+	void *va = kmap_local_folio(folio, 0);
+	error = zfs_write_simple(zp, va, io_len, io_off, NULL);
+	kunmap_local(va);
+	migrate_enable();
+
+	if (error == 0) {
+		dataset_kstats_update_write_kstats(&zfsvfs->z_kstat, io_len);
+		folio_clear_dirty(folio);
+		folio_mark_uptodate(folio);
+		if (for_sync && zfsvfs->z_log)
+			zil_commit(zfsvfs->z_log, zp->z_id);
+	}
+	mapping_set_error(folio->mapping, -error);
+	folio_end_writeback(folio);
+
+	zfs_rangelock_exit(lr);
+	zfs_exit(zfsvfs, FTAG);
+
+	return (error);
+}
+
 /*
  * Update the system attributes when the inode has been dirtied.  For the
  * moment we only update the mode, atime, mtime, and ctime.
@@ -4163,6 +4361,44 @@ zfs_getpage(struct inode *ip, struct page *pp)
 
 	return (error);
 }
+
+#ifdef HAVE_VFS_READ_FOLIO
+int
+zfs_fill_folio(struct inode *ip, struct folio *folio)
+{
+	znode_t  *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ITOZSB(ip);
+	loff_t isize = i_size_read(ip);
+	u_offset_t io_off = folio_pos(folio);
+	size_t io_len = folio_size(folio);
+
+	ASSERT3U(io_off, <, isize);
+
+	if (io_off + io_len > isize)
+		io_len = isize - io_off; /* last folio */
+
+	migrate_disable();
+	void *va = kmap_local_folio(folio, 0); /* map whole folio */
+	int error = dmu_read(zfsvfs->z_os, zp->z_id,
+			     io_off, io_len, va, DMU_READ_PREFETCH);
+
+	if (io_len != folio_size(folio))
+		memset((char *)va + io_len, 0,
+		       folio_size(folio) - io_len); /* zero tail */
+	kunmap_local(va);
+	migrate_enable();
+
+	if (error) {
+		if (error == ECKSUM)
+			error = SET_ERROR(EIO);
+		folio_clear_uptodate(folio);
+	} else {
+		folio_mark_uptodate(folio);
+	}
+	mapping_set_error(folio->mapping, -error);
+	return (error);
+}
+#endif /* HAVE_VFS_READ_FOLIO */
 
 /*
  * Check ZFS specific permissions to memory map a section of a file.
