@@ -422,7 +422,54 @@ zpl_readpage_common(struct page *pp)
 static int
 zpl_read_folio(struct file *filp, struct folio *folio)
 {
-	return (zpl_readpage_common(&folio->page));
+	struct inode *ip = folio->mapping->host;
+	zfsvfs_t *zfsvfs = ITOZSB(ip);
+	znode_t *zp = ITOZ(ip);
+	loff_t isize = i_size_read(ip);
+	u_offset_t io_off = folio_pos(folio);
+	size_t io_len = folio_size(folio);
+	int error  = 0;
+
+	if (io_off >= isize) {
+		folio_zero_segment(folio, 0, io_len);
+		folio_mark_uptodate(folio);
+		folio_unlock(folio);
+		return 0;
+	}
+
+	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+		goto out_unlock;
+
+	if (io_off + io_len > isize)
+		io_len = isize - io_off;
+
+	/* replicate rangelock dance from zfs_getpage() */
+	zfs_locked_range_t *lr =
+	    zfs_rangelock_tryenter(&zp->z_rangelock, io_off, io_len,
+				   RL_READER);
+	if (lr == NULL) {
+		folio_get(folio);
+		folio_unlock(folio);
+		lr = zfs_rangelock_enter(&zp->z_rangelock,
+					 io_off, io_len, RL_READER);
+		folio_lock(folio);
+		folio_put(folio);
+	}
+
+	error = zfs_fill_folio(ip, folio);
+	zfs_rangelock_exit(lr);
+
+	if (error == 0)
+		dataset_kstats_update_read_kstats(&zfsvfs->z_kstat,
+						   folio_size(folio));
+
+	zfs_exit(zfsvfs, FTAG);
+
+out_unlock:
+	if (error)
+		error = -error; /* VFS expects negative errno */
+	folio_unlock(folio);
+	return error;
 }
 #else
 static int
@@ -432,11 +479,13 @@ zpl_readpage(struct file *filp, struct page *pp)
 }
 #endif
 
+#ifndef HAVE_VFS_READ_FOLIO
 static int
 zpl_readpage_filler(void *data, struct page *pp)
 {
 	return (zpl_readpage_common(pp));
 }
+#endif
 
 /*
  * Populate a set of pages with data for the Linux page cache.  This
@@ -450,6 +499,19 @@ zpl_readpages(struct file *filp, struct address_space *mapping,
     struct list_head *pages, unsigned nr_pages)
 {
 	return (read_cache_pages(mapping, pages, zpl_readpage_filler, NULL));
+}
+#elif defined(HAVE_VFS_READ_FOLIO)
+static void
+zpl_readahead(struct readahead_control *rac)
+{
+	struct file  *filp  = rac->file;
+	struct folio *folio;
+
+	while ((folio = readahead_folio(rac)))
+	{
+		(void) zpl_read_folio(filp, folio);
+		folio_put(folio);
+	}
 }
 #else
 static void
@@ -487,9 +549,17 @@ zpl_putpage(struct page *pp, struct writeback_control *wbc, void *data)
 
 #ifdef HAVE_WRITEPAGE_T_FOLIO
 static int
-zpl_putfolio(struct folio *pp, struct writeback_control *wbc, void *data)
+zpl_putfolio(struct folio *folio, struct writeback_control *wbc, void *data)
 {
-	return (zpl_putpage(&pp->page, wbc, data));
+	boolean_t *for_sync = data;
+	struct inode *ip = folio->mapping->host;
+	fstrans_cookie_t cookie;
+
+	cookie = spl_fstrans_mark();
+	int err = zfs_putfolio(ip, folio, wbc, *for_sync);
+	spl_fstrans_unmark(cookie);
+
+	return (err ? -err : 0);
 }
 #endif
 

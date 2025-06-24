@@ -79,8 +79,15 @@ extern int zfs_space(znode_t *zp, int cmd, flock64_t *bfp, int flag,
     offset_t offset, cred_t *cr);
 extern int zfs_fid(struct inode *ip, fid_t *fidp);
 extern int zfs_getpage(struct inode *ip, struct page *pp);
+#ifdef HAVE_VFS_READ_FOLIO
+extern int zfs_fill_folio(struct inode *ip, struct folio *folio);
+#endif
 extern int zfs_putpage(struct inode *ip, struct page *pp,
     struct writeback_control *wbc, boolean_t for_sync);
+#ifdef HAVE_WRITEPAGE_T_FOLIO
+extern int zfs_putfolio(struct inode *ip, struct folio *folio,
+    struct writeback_control *wbc, boolean_t for_sync);
+#endif
 extern int zfs_dirty_inode(struct inode *ip, int flags);
 extern int zfs_map(struct inode *ip, offset_t off, caddr_t *addrp,
     size_t len, unsigned long vm_flags);
