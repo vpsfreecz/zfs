@@ -1568,9 +1568,19 @@ zfs_zero_partial_page(znode_t *zp, uint64_t start, uint64_t len)
 		if (mapping_writably_mapped(mp))
 			flush_dcache_page(pp);
 
+		if (IS_ENABLED(CONFIG_PREEMPT_RT))
+			migrate_disable();
+		else
+			preempt_disable();
+		pagefault_disable();
 		pb = kmap(pp);
 		memset(pb + off, 0, len);
 		kunmap(pp);
+		pagefault_enable();
+		if (IS_ENABLED(CONFIG_PREEMPT_RT))
+			migrate_enable();
+		else
+			preempt_enable();
 
 		if (mapping_writably_mapped(mp))
 			flush_dcache_page(pp);

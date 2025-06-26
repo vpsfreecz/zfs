@@ -252,10 +252,20 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 			if (mapping_writably_mapped(mp))
 				flush_dcache_page(pp);
 
+			if (IS_ENABLED(CONFIG_PREEMPT_RT))
+				migrate_disable();
+			else
+				preempt_disable();
+			pagefault_disable();
 			void *pb = kmap(pp);
 			int error = dmu_read(os, zp->z_id, start + off,
 			    nbytes, pb + off, DMU_READ_PREFETCH);
 			kunmap(pp);
+			pagefault_enable();
+			if (IS_ENABLED(CONFIG_PREEMPT_RT))
+				migrate_enable();
+			else
+				preempt_enable();
 
 			if (error) {
 				SetPageError(pp);
@@ -318,9 +328,19 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 
 			unlock_page(pp);
 
+			if (IS_ENABLED(CONFIG_PREEMPT_RT))
+				migrate_disable();
+			else
+				preempt_disable();
+			pagefault_disable();
 			void *pb = kmap(pp);
 			error = zfs_uiomove(pb + off, bytes, UIO_READ, uio);
 			kunmap(pp);
+			pagefault_enable();
+			if (IS_ENABLED(CONFIG_PREEMPT_RT))
+				migrate_enable();
+			else
+				preempt_enable();
 
 			if (mapping_writably_mapped(mp))
 				flush_dcache_page(pp);
@@ -3890,10 +3910,20 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 		return (err);
 	}
 
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		migrate_disable();
+	else
+		preempt_disable();
+	pagefault_disable();
 	va = kmap(pp);
 	ASSERT3U(pglen, <=, PAGE_SIZE);
 	dmu_write(zfsvfs->z_os, zp->z_id, pgoff, pglen, va, tx);
 	kunmap(pp);
+	pagefault_enable();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		migrate_enable();
+	else
+		preempt_enable();
 
 	SA_ADD_BULK_ATTR(bulk, cnt, SA_ZPL_MTIME(zfsvfs), NULL, &mtime, 16);
 	SA_ADD_BULK_ATTR(bulk, cnt, SA_ZPL_CTIME(zfsvfs), NULL, &ctime, 16);
@@ -4085,12 +4115,22 @@ zfs_fillpage(struct inode *ip, struct page *pp)
 	if (io_off + io_len > i_size)
 		io_len = i_size - io_off;
 
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		migrate_disable();
+	else
+		preempt_disable();
+	pagefault_disable();
 	void *va = kmap(pp);
 	int error = dmu_read(zfsvfs->z_os, zp->z_id, io_off,
 	    io_len, va, DMU_READ_PREFETCH);
 	if (io_len != PAGE_SIZE)
 		memset((char *)va + io_len, 0, PAGE_SIZE - io_len);
 	kunmap(pp);
+	pagefault_enable();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		migrate_enable();
+	else
+		preempt_enable();
 
 	if (error) {
 		/* convert checksum errors into IO errors */
