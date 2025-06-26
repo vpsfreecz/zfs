@@ -241,42 +241,12 @@ static int zfs_fillpage(struct inode *ip, struct page *pp);
 void
 update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 {
-	struct address_space *mp = ZTOI(zp)->i_mapping;
-	int64_t off = start & (PAGE_SIZE - 1);
+        struct inode *ip = ZTOI(zp);
+        struct address_space *mapping = ip->i_mapping;
+        loff_t end = (loff_t)start + len - 1;
 
-	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
-		uint64_t nbytes = MIN(PAGE_SIZE - off, len);
-
-		struct page *pp = find_lock_page(mp, start >> PAGE_SHIFT);
-		if (pp) {
-			if (mapping_writably_mapped(mp))
-				flush_dcache_page(pp);
-
-			void *pb = kmap(pp);
-			int error = dmu_read(os, zp->z_id, start + off,
-			    nbytes, pb + off, DMU_READ_PREFETCH);
-			kunmap(pp);
-
-			if (error) {
-				SetPageError(pp);
-				ClearPageUptodate(pp);
-			} else {
-				ClearPageError(pp);
-				SetPageUptodate(pp);
-
-				if (mapping_writably_mapped(mp))
-					flush_dcache_page(pp);
-
-				mark_page_accessed(pp);
-			}
-
-			unlock_page(pp);
-			put_page(pp);
-		}
-
-		len -= nbytes;
-		off = 0;
-	}
+        unmap_mapping_range(mapping, start, len, 0);
+        truncate_inode_pages_range(mapping, start, end);
 }
 
 /*
@@ -330,6 +300,8 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 		} else {
 			error = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl),
 			    uio, bytes, DMU_READ_PREFETCH);
+			if (error)
+				return (error);
 		}
 
 		len -= bytes;
@@ -4155,6 +4127,7 @@ zfs_getpage(struct inode *ip, struct page *pp)
 		 * zfs_write() -> update_pages(). update_pages() holds both the
 		 * rangelock and the page lock.
 		 */
+		ClearPageUptodate(pp);
 		get_page(pp);
 		unlock_page(pp);
 		lr = zfs_rangelock_enter(&zp->z_rangelock, io_off,
