@@ -330,6 +330,8 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 		} else {
 			error = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl),
 			    uio, bytes, DMU_READ_PREFETCH);
+			if (error)
+				return (error);
 		}
 
 		len -= bytes;
@@ -4155,6 +4157,7 @@ zfs_getpage(struct inode *ip, struct page *pp)
 		 * zfs_write() -> update_pages(). update_pages() holds both the
 		 * rangelock and the page lock.
 		 */
+		ClearPageUptodate(pp);
 		get_page(pp);
 		unlock_page(pp);
 		lr = zfs_rangelock_enter(&zp->z_rangelock, io_off,
