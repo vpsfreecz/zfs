@@ -965,7 +965,7 @@ zfs_drop_nlink_locked(znode_t *zp, dmu_tx_t *tx, boolean_t *unlinkedp)
 		return (SET_ERROR(ENOTEMPTY));
 
 	if (ZTOI(zp)->i_nlink <= zp_is_dir) {
-		zfs_panic_recover("zfs: link count on %lu is %u, "
+		pr_err("zfs: link count on %lu is %u, "
 		    "should be at least %u", zp->z_id,
 		    (int)ZTOI(zp)->i_nlink, zp_is_dir + 1);
 		set_nlink(ZTOI(zp), zp_is_dir + 1);
