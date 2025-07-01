@@ -44,6 +44,7 @@
 #ifdef HAVE_VFS_FILEMAP_DIRTY_FOLIO
 #include <linux/writeback.h>
 #endif
+#include <linux/mm_compat.h>
 
 /*
  * When using fallocate(2) to preallocate space, inflate the requested
@@ -400,6 +401,7 @@ zpl_mmap(struct file *filp, struct vm_area_struct *vma)
 	return (error);
 }
 
+#if 0
 /*
  * Populate a page with data for the Linux page cache.  This function is
  * only used to support mmap(2).  There will be an identical copy of the
@@ -420,12 +422,30 @@ zpl_readpage_common(struct page *pp)
 
 	return (error);
 }
+#else
+static inline int
+zpl_read_folio_common(struct folio *folio)
+{
+        fstrans_cookie_t cookie = spl_fstrans_mark();
+        int ret = -zfs_get_folio(folio_mapping(folio)->host, folio);
+        spl_fstrans_unmark(cookie);
+        return ret; /* 0 or negative errno */
+}
+#endif
 
 #ifdef HAVE_VFS_READ_FOLIO
 static int
 zpl_read_folio(struct file *filp, struct folio *folio)
 {
-	return (zpl_readpage_common(&folio->page));
+        fstrans_cookie_t cookie;
+        int err;
+
+        ASSERT(folio_test_locked(folio));
+
+        cookie = spl_fstrans_mark();
+        err = -zfs_get_folio(filp->f_mapping->host, folio);
+        spl_fstrans_unmark(cookie);
+        return err;
 }
 #else
 static int
@@ -435,11 +455,13 @@ zpl_readpage(struct file *filp, struct page *pp)
 }
 #endif
 
+#if 0
 static int
 zpl_readpage_filler(void *data, struct page *pp)
 {
 	return (zpl_readpage_common(pp));
 }
+#endif
 
 /*
  * Populate a set of pages with data for the Linux page cache.  This
@@ -455,6 +477,7 @@ zpl_readpages(struct file *filp, struct address_space *mapping,
 	return (read_cache_pages(mapping, pages, zpl_readpage_filler, NULL));
 }
 #else
+#if 0
 static void
 zpl_readahead(struct readahead_control *ractl)
 {
@@ -469,8 +492,22 @@ zpl_readahead(struct readahead_control *ractl)
 			break;
 	}
 }
+#else
+static void
+zpl_readahead(struct readahead_control *rac)
+{
+	struct folio *folio;
+
+	while ((folio = readahead_folio(rac)) != NULL) {
+		int err = zpl_read_folio_common(folio);
+                if (err)
+			break; /* stop on first failure */
+	}
+}
+#endif
 #endif
 
+#if 0
 static int
 zpl_putpage(struct page *pp, struct writeback_control *wbc, void *data)
 {
@@ -571,6 +608,132 @@ zpl_writepage(struct page *pp, struct writeback_control *wbc)
 
 	return (zpl_putpage(pp, wbc, &for_sync));
 }
+#else
+static int
+zpl_write_folio_common(struct folio *folio, struct writeback_control *wbc,
+    boolean_t for_sync)
+{
+	fstrans_cookie_t ck = spl_fstrans_mark();
+	struct inode *ip = folio->mapping->host;
+	int err = -zfs_put_folio(ip, folio, wbc, for_sync);
+	spl_fstrans_unmark(ck);
+	return err;
+}
+
+static int
+zpl_write_folio(struct folio *folio, struct writeback_control *wbc, void *data)
+{
+	boolean_t for_sync = (data ? *(boolean_t *)data : B_FALSE);
+	return zpl_write_folio_common(folio, wbc, for_sync);
+}
+
+static int
+zpl_writepage(struct page *pp, struct writeback_control *wbc)
+{
+	if (ITOZSB(pp->mapping->host)->z_os->os_sync == ZFS_SYNC_ALWAYS)
+		wbc->sync_mode = WB_SYNC_ALL;
+
+	boolean_t for_sync = (wbc->sync_mode == WB_SYNC_ALL);
+
+	return zpl_write_folio(page_folio(pp), wbc, &for_sync);
+}
+
+static int
+zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
+{
+	if (ITOZSB(mapping->host)->z_os->os_sync == ZFS_SYNC_ALWAYS)
+		wbc->sync_mode = WB_SYNC_ALL;
+
+	boolean_t for_sync = (wbc->sync_mode == WB_SYNC_ALL);
+
+	return write_cache_pages(mapping, wbc, zpl_write_folio, &for_sync);
+}
+
+static int
+zpl_write_begin_locked_folio(struct address_space *mapping, loff_t pos,
+    struct folio *folio)
+{
+	int err = 0;
+
+	if (mapping_writably_mapped(mapping)) {
+		/*
+		 * If the page is already dirty, we don't need to fill it.
+		 * This can happen if the page was written to before being
+		 * locked.
+		 */
+		if (folio_test_dirty(folio))
+			return 0;
+
+		flush_dcache_folio(folio);
+	}
+	/*
+	 * If the folio is not up to date, we need to fill it with data.
+	 * This can happen if the page was read from disk before being
+	 * locked, or if it was never read at all.
+	 */
+	if (!folio_test_uptodate(folio)) {
+		znode_t *zp = ITOZ(mapping->host);
+		err = zfs_fill_folio(zp, folio);
+	}
+	return err;
+}
+
+static int
+zpl_write_begin_folio(struct file *filp, struct address_space *mapping,
+    loff_t pos, unsigned int len, struct folio **foliop, void **fsdata)
+{
+	int err;
+	struct folio *folio = __filemap_get_folio(mapping, pos >> PAGE_SHIFT,
+	    FGP_LOCK | FGP_WRITE | FGP_CREAT, mapping_gfp_mask(mapping));
+
+	if (IS_ERR(folio))
+		return PTR_ERR(folio);
+
+	if (!folio)
+		return -ENOMEM;
+
+	err = zpl_write_begin_locked_folio(mapping, pos, folio);
+	if (err) {
+		folio_unlock(folio);
+		folio_put(folio);
+		return err;
+	}
+
+	*foliop = folio;
+	return 0;
+}
+
+static int
+zpl_write_end_folio(struct file *filp, struct address_space *mapping,
+    loff_t pos, unsigned int len, unsigned int copied, struct folio *folio,
+    void *fsdata)
+{
+	if (copied)
+		folio_mark_dirty(folio);
+
+	folio_unlock(folio);
+	folio_put(folio);
+	return copied;
+}
+
+static bool zpl_release_folio(struct folio *folio, gfp_t gfp_flags)
+{
+	return !folio_test_dirty(folio) &&
+	    !folio_test_writeback(folio) &&
+	    try_to_free_buffers(folio);
+}
+
+static void zpl_invalidate_folio(struct folio *folio,
+				 size_t offset, size_t length)
+{
+	if (offset || length < folio_size(folio))
+		return; /* partial - nothing to do */
+
+	folio_cancel_dirty(folio);
+	folio_clear_error(folio);
+	try_to_free_buffers(folio);
+}
+#endif
 
 /*
  * The flag combination which matches the behavior of zfs_space() is
@@ -1042,6 +1205,10 @@ const struct address_space_operations zpl_address_space_operations = {
 #endif
 	.writepage	= zpl_writepage,
 	.writepages	= zpl_writepages,
+	.write_begin	= zpl_write_begin_folio,
+	.write_end	= zpl_write_end_folio,
+	.invalidate_folio = zpl_invalidate_folio,
+	.release_folio	= zpl_release_folio,
 	.direct_IO	= zpl_direct_IO,
 #ifdef HAVE_VFS_SET_PAGE_DIRTY_NOBUFFERS
 	.set_page_dirty = __set_page_dirty_nobuffers,
@@ -1055,6 +1222,8 @@ const struct address_space_operations zpl_address_space_operations = {
 	.migratepage	= migrate_page,
 #endif
 };
+
+
 
 const struct file_operations zpl_file_operations = {
 	.open		= zpl_open,

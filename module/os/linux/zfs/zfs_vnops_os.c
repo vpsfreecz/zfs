@@ -231,8 +231,67 @@ zfs_close(struct inode *ip, int flag, cred_t *cr)
 
 #if defined(_KERNEL)
 
+#if 0
 static int zfs_fillpage(struct inode *ip, struct page *pp);
+#endif
 
+#if 1
+/*
+ * Refresh the folio cache for [start, start + len] by pulling the
+ * latest data from the ZFS DMU. Safe on kernels >= 6.6 (needs
+ * filemap_get_folio) and folio-correct on 6.12+ where a folio may span
+ * many base pages.
+ */
+void
+update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
+{
+	struct address_space *mapping = ZTOI(zp)->i_mapping;
+	loff_t pos = start;		     /* current file offset   */
+
+	while (len > 0) {
+		struct folio *folio = __filemap_get_folio(mapping,
+		    pos >> PAGE_SHIFT, FGP_LOCK | FGP_WRITE | FGP_ACCESSED, 0);
+
+		if (!folio || IS_ERR(folio)) {		   /* nothing cached here   */
+			size_t adv = PAGE_SIZE - (pos & (PAGE_SIZE - 1));
+			if (adv > len)
+				adv = len;
+			pos += adv;
+			len -= adv;
+			continue;
+		}
+
+		size_t fsz = folio_size(folio);
+		size_t inside = pos & (fsz - 1);
+		size_t nbytes = min_t(size_t, fsz - inside, len);
+
+		void *addr = kmap_local_folio(folio, 0);
+		int err = dmu_read(os, zp->z_id, pos, nbytes,
+		    (char *)addr + inside, 0);
+		kunmap_local(addr);
+
+		if (err) {
+			folio_set_error(folio);
+			folio_clear_uptodate(folio);
+		} else {
+			folio_clear_error(folio);
+			if (inside == 0 && nbytes == fsz)
+				folio_mark_uptodate(folio);
+
+			if (mapping_writably_mapped(mapping))
+				flush_dcache_folio(folio);
+
+			folio_mark_accessed(folio);
+		}
+
+		folio_unlock(folio);
+		folio_put(folio);
+
+		pos += nbytes;
+		len -= nbytes;
+	}
+}
+#else
 /*
  * When a file is memory mapped, we must keep the IO data synchronized
  * between the DMU cache and the memory mapped pages.  Update all mapped
@@ -278,7 +337,9 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 		off = 0;
 	}
 }
+#endif
 
+#if 0
 /*
  * When a file is memory mapped, we must keep the I/O data synchronized
  * between the DMU cache and the memory mapped pages.  Preferentially read
@@ -341,6 +402,69 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 
 	return (error);
 }
+#else
+int
+mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
+{
+	struct inode *ip = ZTOI(zp);
+	struct address_space *mapping = ip->i_mapping;
+	loff_t pos = uio->uio_loffset;
+	size_t left = nbytes;
+	int err = 0;
+
+	while (left) {
+		struct folio *folio = __filemap_get_folio(mapping,
+		    pos >> PAGE_SHIFT, FGP_LOCK | FGP_ACCESSED, 0);
+
+		if (folio && !IS_ERR(folio)) {
+			size_t fsz = folio_size(folio);
+			size_t inside = pos & (fsz - 1);
+			size_t bytes = min_t(size_t, fsz - inside, left);
+
+			if (!folio_test_uptodate(folio)) {
+				err = zfs_fill_folio(zp, folio);
+				if (err) {
+					folio_unlock(folio);
+					folio_put(folio);
+					break;
+				}
+			}
+
+			if (mapping_writably_mapped(mapping))
+				flush_dcache_folio(folio);
+
+			folio_unlock(folio);
+
+			void *addr = kmap_local_folio(folio, 0);
+			err = zfs_uiomove((char *)addr + inside, bytes,
+			    UIO_READ, uio);
+			kunmap_local(addr);
+
+			folio_mark_accessed(folio);
+			folio_put(folio);
+
+			if (err)
+				break;
+
+			pos += bytes;
+			left -= bytes;
+		} else {
+			size_t off_in_page = pos & (PAGE_SIZE - 1);
+			size_t bytes = min_t(size_t, PAGE_SIZE - off_in_page,
+			    left);
+
+			err = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl),
+			    uio, bytes);
+			if (err)
+				break;
+
+			pos += bytes;
+			left -= bytes;
+		}
+	}
+	return err;
+}
+#endif
 #endif /* _KERNEL */
 
 static unsigned long zfs_delete_blocks = DMU_MAX_DELETEBLKCNT;
@@ -3681,6 +3805,7 @@ top:
 	return (error);
 }
 
+#if 0
 static void
 zfs_putpage_sync_commit_cb(void *arg)
 {
@@ -3935,6 +4060,170 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 	zfs_exit(zfsvfs, FTAG);
 	return (err);
 }
+#else
+int
+zfs_put_folio(struct inode *ip, struct folio *folio,
+    struct writeback_control *wbc, boolean_t for_sync)
+{
+	znode_t	*zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ITOZSB(ip);
+	loff_t foff = folio_pos(folio);
+	loff_t isize = i_size_read(ip);
+	size_t wr_len; /* bytes we will write */
+	struct address_space *mapping;
+	dmu_tx_t *tx = NULL;
+	uint64_t mtime[2], ctime[2];
+	inode_timespec_t ts;
+	sa_bulk_attr_t bulk[3];
+	int cnt = 0, err = 0;
+
+	if ((err = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0) {
+		folio_unlock(folio);
+		return err;
+	}
+
+	if (foff >= isize) { /* Nothing to write */
+		folio_unlock(folio);
+		zfs_exit(zfsvfs, FTAG);
+		return 0;
+	}
+
+	wr_len = min_t(size_t, folio_size(folio),
+	    roundup(isize, PAGE_SIZE) - foff);
+	if (foff + wr_len > isize)
+		wr_len = isize - foff;
+
+	(void) folio_redirty_for_writepage(wbc, folio);
+	mapping = folio_mapping(folio);
+	folio_unlock(folio);
+
+	zfs_locked_range_t *lr = zfs_rangelock_enter(&zp->z_rangelock,
+	   foff, wr_len, RL_WRITER);
+
+	folio_lock(folio);
+	isize = i_size_read(ip);
+	foff = folio_pos(folio);
+	wr_len = min_t(size_t, folio_size(folio),
+	    isize - foff);
+
+	if (unlikely(mapping != folio_mapping(folio) ||
+	    !folio_test_dirty(folio))) {
+		folio_unlock(folio);
+		zfs_rangelock_exit(lr);
+		zfs_exit(zfsvfs, FTAG);
+		return 0;
+	}
+
+	if (folio_test_writeback(folio)) {
+		folio_unlock(folio);
+		zfs_rangelock_exit(lr);
+
+		if (wbc->sync_mode != WB_SYNC_NONE) {
+			if (atomic_load_32(&zp->z_async_writes_cnt) > 0)
+				zil_commit(zfsvfs->z_log, zp->z_id);
+#if 1
+			while (folio_test_writeback(folio)) {
+				folio_wait_bit(folio, PG_writeback);
+			}
+#else
+			wait_on_page_bit(&folio->page, PG_writeback);
+#endif
+		}
+		zfs_exit(zfsvfs, FTAG);
+		return 0;
+	}
+
+	if (!folio_clear_dirty_for_io(folio)) {
+		folio_unlock(folio);
+		zfs_rangelock_exit(lr);
+		zfs_exit(zfsvfs, FTAG);
+		return 0;
+	}
+
+	if (!for_sync)
+		atomic_inc_32(&zp->z_async_writes_cnt);
+
+	folio_start_writeback(folio);
+	folio_unlock(folio);
+
+	tx = dmu_tx_create(zfsvfs->z_os);
+	dmu_tx_hold_write(tx, zp->z_id, foff, wr_len);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
+	zfs_sa_upgrade_txholds(tx, zp);
+
+	err = dmu_tx_assign(tx, DMU_TX_WAIT);
+	if (err) {
+		dmu_tx_abort(tx);
+		folio_lock(folio);
+#if 1
+		filemap_dirty_folio(mapping, folio);
+#else
+		__set_page_dirty_nobuffers(&folio->page);
+#endif
+		folio_set_error(folio);
+		mapping_set_error(mapping, -err);
+		folio_unlock(folio);
+		folio_end_writeback(folio);
+		if (!for_sync)
+			atomic_dec_32(&zp->z_async_writes_cnt);
+		zfs_rangelock_exit(lr);
+		zfs_exit(zfsvfs, FTAG);
+		return err;
+	}
+
+	if (mapping_writably_mapped(mapping))
+		flush_dcache_folio(folio);
+
+	void *va = kmap_local_folio(folio, 0);
+	dmu_write(zfsvfs->z_os, zp->z_id, foff, wr_len, va, tx);
+	kunmap_local(va);
+
+	SA_ADD_BULK_ATTR(bulk, cnt, SA_ZPL_MTIME(zfsvfs), NULL, &mtime, 16);
+	SA_ADD_BULK_ATTR(bulk, cnt, SA_ZPL_CTIME(zfsvfs), NULL, &ctime, 16);
+	SA_ADD_BULK_ATTR(bulk, cnt, SA_ZPL_FLAGS(zfsvfs), NULL,
+			 &zp->z_pflags, 8);
+
+	ts = zpl_inode_get_mtime(ip);  ZFS_TIME_ENCODE(&ts, mtime);
+	ts = zpl_inode_get_ctime(ip);  ZFS_TIME_ENCODE(&ts, ctime);
+
+	zp->z_atime_dirty = B_FALSE;
+	zp->z_seq++;
+
+	err = sa_bulk_update(zp->z_sa_hdl, bulk, cnt, tx);
+
+	boolean_t commit = B_FALSE;
+	if (wbc->sync_mode != WB_SYNC_NONE) {
+		commit = B_TRUE; /* writepages() sync‑pass or fsync */
+	} else if (!for_sync &&
+		   atomic_load_32(&zp->z_sync_writes_cnt) > 0) {
+		commit = B_TRUE; /* active synchronous I/O elsewhere */
+	}
+
+	zfs_log_write(zfsvfs->z_log, tx, TX_WRITE,
+	    zp, foff, wr_len, commit, B_FALSE,
+	    /* folio path: we finish write-back ourselves */
+	    NULL, NULL);
+
+	dmu_tx_commit(tx);
+	/*
+	 * The data is now durable in the intent-log, so the VFS may
+	 * drop this folio.  Balance the async-write counter (if we
+	 * incremented it) and clear PG_writeback for **every** page
+	 * that the folio contains – otherwise truncate / evict will
+	 * wait for ever in folio_wait_writeback().
+	 * --------------------------------------------------------------
+	 */
+	if (!for_sync)
+		atomic_dec_32(&zp->z_async_writes_cnt);
+	folio_end_writeback(folio);
+	zfs_rangelock_exit(lr);
+	if (commit)
+		zil_commit(zfsvfs->z_log, zp->z_id);
+	dataset_kstats_update_write_kstats(&zfsvfs->z_kstat, wr_len);
+	zfs_exit(zfsvfs, FTAG);
+	return err;
+}
+#endif
 
 /*
  * Update the system attributes when the inode has been dirtied.  For the
@@ -4057,6 +4346,7 @@ zfs_inactive(struct inode *ip)
 		rw_exit(&zfsvfs->z_teardown_inactive_lock);
 }
 
+#if 0
 /*
  * Fill pages with data from the disk.
  */
@@ -4095,7 +4385,44 @@ zfs_fillpage(struct inode *ip, struct page *pp)
 
 	return (error);
 }
+#else
+int
+zfs_fill_folio(znode_t *zp, struct folio *folio)
+{
+	struct inode *ip = ZTOI(zp);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	loff_t i_size = i_size_read(ip);
+	loff_t off = folio_pos(folio);
+	size_t fsz = folio_size(folio);
+	size_t len = fsz;
+	int error;
 
+	if (off + len > i_size)
+		len = i_size - off;
+
+	void *addr = kmap_local_folio(folio, 0);
+	error = dmu_read(zfsvfs->z_os, zp->z_id, off, len, addr,
+	    DMU_READ_PREFETCH);
+	if (len != fsz)
+		memset((char *)addr + len, 0, fsz - len);
+	kunmap_local(addr);
+
+	if (error) {
+		if (error == ECKSUM)
+			error = SET_ERROR(EIO);
+		folio_set_error(folio);
+		folio_clear_uptodate(folio);
+	} else {
+		folio_clear_error(folio);
+		folio_mark_uptodate(folio);
+		if (mapping_writably_mapped(folio_mapping(folio)))
+			flush_dcache_folio(folio);
+	}
+	return error;
+}
+#endif
+
+#if 0
 /*
  * Uses zfs_fillpage to read data from the file and fill the page.
  *
@@ -4163,6 +4490,56 @@ zfs_getpage(struct inode *ip, struct page *pp)
 
 	return (error);
 }
+#else
+int
+zfs_get_folio(struct inode *ip, struct folio *folio)
+{
+	zfsvfs_t *zfsvfs = ITOZSB(ip);
+	znode_t *zp = ITOZ(ip);
+	loff_t i_size = i_size_read(ip);
+	loff_t io_off = folio_pos(folio); /* first byte in folio   */
+	size_t io_len = folio_size(folio); /* bytes in folio        */
+	int error;
+
+	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0) {
+		folio_unlock(folio);
+		return error;
+	}
+
+	ASSERT3U(io_off, <, i_size);
+	if (io_off + io_len > i_size)
+		io_len = i_size - io_off;
+
+	zfs_locked_range_t *lr = zfs_rangelock_tryenter(&zp->z_rangelock,
+	    io_off, io_len, RL_READER);
+
+	if (lr == NULL) {
+		/*
+		 * Avoid a dead-lock with update_pages(): drop the lock on
+		 * the folio while we wait for the range lock, then reacquire.
+		 */
+		folio_get(folio);
+		folio_unlock(folio);
+		lr = zfs_rangelock_enter(&zp->z_rangelock,
+		    io_off, io_len, RL_READER);
+		folio_lock(folio);
+		folio_put(folio);
+	}
+
+	error = zfs_fill_folio(zp, folio);
+
+	zfs_rangelock_exit(lr);
+
+	if (error == 0) {
+		dataset_kstats_update_read_kstats(&zfsvfs->z_kstat,
+		    folio_size(folio));
+	}
+
+	zfs_exit(zfsvfs, FTAG);
+	folio_unlock(folio);
+	return error;
+}
+#endif
 
 /*
  * Check ZFS specific permissions to memory map a section of a file.
@@ -4350,8 +4727,13 @@ EXPORT_SYMBOL(zfs_link);
 EXPORT_SYMBOL(zfs_inactive);
 EXPORT_SYMBOL(zfs_space);
 EXPORT_SYMBOL(zfs_fid);
-EXPORT_SYMBOL(zfs_getpage);
+#if 0
 EXPORT_SYMBOL(zfs_putpage);
+EXPORT_SYMBOL(zfs_getpage);
+#else
+EXPORT_SYMBOL(zfs_get_folio);
+EXPORT_SYMBOL(zfs_put_folio);
+#endif
 EXPORT_SYMBOL(zfs_dirty_inode);
 EXPORT_SYMBOL(zfs_map);
 

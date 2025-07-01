@@ -1540,6 +1540,7 @@ zfs_extend(znode_t *zp, uint64_t end)
 	return (0);
 }
 
+#if 0
 /*
  * zfs_zero_partial_page - Modeled after update_pages() but
  * with different arguments and semantics for use by zfs_freesp().
@@ -1582,6 +1583,57 @@ zfs_zero_partial_page(znode_t *zp, uint64_t start, uint64_t len)
 		put_page(pp);
 	}
 }
+#else
+/*
+ * zfs_zero_partial_folio - Zeroes a piece of a single folio for zp at offset
+ * pos and length len.
+ *
+ * Caller must acquire a range lock on the file for the region
+ * being zeroed in order that the ARC and page cache stay in sync.
+ */
+static void
+zfs_zero_partial_folio(struct address_space *mapping, loff_t pos, size_t len)
+{
+	while (len) {
+		struct folio *folio = __filemap_get_folio(mapping,
+		    pos >> PAGE_SHIFT, FGP_LOCK | FGP_WRITE | FGP_CREAT,
+		    mapping_gfp_mask(mapping));
+
+		if (!folio || IS_ERR(folio)) {
+			size_t adv = PAGE_SIZE - (pos & (PAGE_SIZE - 1));
+			if (adv > len)
+				adv = len;
+			pos += adv;
+			len -= adv;
+			continue;
+		}
+
+		size_t fsz = folio_size(folio);
+		size_t inside = pos & (fsz - 1);
+		size_t nbytes = min_t(size_t, fsz - inside, len);
+
+		void *addr = kmap_local_folio(folio, 0);
+		memset((char *)addr + inside, 0, nbytes);
+		kunmap_local(addr);
+
+		flush_dcache_folio(folio);
+
+		bool whole = (inside == 0 && nbytes == folio_size(folio));
+		if (whole || folio_test_uptodate(folio))
+			folio_mark_uptodate(folio);
+		else
+			folio_clear_uptodate(folio);
+
+		folio_mark_dirty(folio);
+
+		folio_unlock(folio);
+		folio_put(folio);
+
+		pos += nbytes;
+		len -= nbytes;
+	}
+}
+#endif
 
 /*
  * Free space in a file.
@@ -1622,6 +1674,7 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 	 * range lock in order to keep the ARC and page cache in sync.
 	 */
 	if (zn_has_cached_data(zp, off, off + len - 1)) {
+#if 0
 		loff_t first_page, last_page, page_len;
 		loff_t first_page_offset, last_page_offset;
 
@@ -1657,6 +1710,27 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 				zfs_zero_partial_page(zp, last_page_offset,
 				    page_len);
 		}
+#else
+		loff_t end = off + len;
+		struct address_space *mapping = ZTOI(zp)->i_mapping;
+                loff_t first_full = round_up(off, PAGE_SIZE);
+                loff_t last_full  = round_down(end, PAGE_SIZE);
+
+                if (last_full > first_full)
+                        truncate_inode_pages_range(mapping,
+                                                   first_full,
+                                                   last_full - 1);
+
+                if (off < first_full)
+                        zfs_zero_partial_folio(mapping,
+                                               off,
+                                               first_full - off);
+
+                if (last_full < end)
+                        zfs_zero_partial_folio(mapping,
+                                               last_full,
+                                               end - last_full);
+#endif
 	}
 	zfs_rangelock_exit(lr);
 
