@@ -36,6 +36,31 @@
 #include <linux/vfs_compat.h>
 #include <linux/writeback.h>
 #include <linux/xattr_compat.h>
+#include <linux/mm.h>
+#include <linux/fs.h>
+#include <linux/pagemap.h>
+
+#ifndef folio_test_uptodate
+#define folio_test_uptodate(folio) PageUptodate(&folio->page)
+#endif
+
+#ifndef folio_mark_uptodate
+#define folio_mark_uptodate(folio) SetPageUptodate(&folio->page)
+#endif
+#ifndef folio_clear_uptodate
+#define folio_clear_uptodate(folio) ClearPageUptodate(&folio->page)
+#endif
+
+#ifndef folio_set_error
+#define folio_set_error(folio)     SetPageError(&folio->page)
+#endif
+#ifndef folio_clear_error
+#define folio_clear_error(folio)   ClearPageError(&folio->page)
+#endif
+
+#ifndef folio_mark_dirty
+#define folio_mark_dirty(folio)    set_page_dirty(&folio->page)
+#endif
 
 /* zpl_inode.c */
 extern void zpl_vap_init(vattr_t *vap, struct inode *dir,
