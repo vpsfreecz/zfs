@@ -3957,7 +3957,8 @@ zfs_dirty_inode(struct inode *ip, int flags)
 	sa_bulk_attr_t	bulk[4];
 	int		error = 0;
 	int		cnt = 0;
-
+	boolean_t	waited = B_FALSE;
+top:
 	if (zfs_is_readonly(zfsvfs) || dmu_objset_is_snapshot(zfsvfs->z_os))
 		return (0);
 
@@ -3983,8 +3984,17 @@ zfs_dirty_inode(struct inode *ip, int flags)
 	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
 	zfs_sa_upgrade_txholds(tx, zp);
 
-	error = dmu_tx_assign(tx, DMU_TX_WAIT);
+	error = dmu_tx_assign(tx,
+	    (waited ? DMU_TX_NOTHROTTLE : 0) | DMU_TX_NOWAIT);
 	if (error) {
+		if (error == ERESTART) {
+			waited = B_TRUE;
+			dmu_tx_wait(tx);
+			dmu_tx_abort(tx);
+			zfs_exit(zfsvfs, FTAG);
+			/* Retry the transaction */
+			goto top;
+		}
 		dmu_tx_abort(tx);
 		goto out;
 	}
