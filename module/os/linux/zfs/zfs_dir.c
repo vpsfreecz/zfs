@@ -817,7 +817,8 @@ zfs_link_create(zfs_dirlock_t *dl, znode_t *zp, dmu_tx_t *tx, int flag)
 	mutex_enter(&zp->z_lock);
 
 	if (!(flag & ZRENAMING)) {
-		if (zp->z_unlinked) {	/* no new links to unlinked zp */
+		if (zp->z_unlinked && !zp->z_is_tmpfile) {
+			/* no new links to unlinked zp */
 			ASSERT(!(flag & (ZNEW | ZEXISTS)));
 			mutex_exit(&zp->z_lock);
 			return (SET_ERROR(ENOENT));
@@ -871,6 +872,7 @@ zfs_link_create(zfs_dirlock_t *dl, znode_t *zp, dmu_tx_t *tx, int flag)
 		zfs_tstamp_update_setup(zp, STATE_CHANGED, mtime,
 		    ctime);
 	}
+
 	error = sa_bulk_update(zp->z_sa_hdl, bulk, count, tx);
 	ASSERT(error == 0);
 
