@@ -45,13 +45,16 @@ zpl_inode_alloc(struct super_block *sb)
 	return (ip);
 }
 
-static void __maybe_unused
+#ifdef HAVE_SOPS_FREE_INODE
+static void
 zpl_inode_free(struct inode *ip)
 {
+	ASSERT(atomic_read(&ip->i_count) == 0);
 	zfs_inode_free(ip);
 }
+#endif
 
-static void __maybe_unused
+static void
 zpl_inode_destroy(struct inode *ip)
 {
 	ASSERT(atomic_read(&ip->i_count) == 0);
@@ -464,11 +467,10 @@ zpl_prune_sb(uint64_t nr_to_scan, void *arg)
 
 const struct super_operations zpl_super_operations = {
 	.alloc_inode		= zpl_inode_alloc,
-#ifdef HAVE_INODE_FREE
+#ifdef HAVE_SOPS_FREE_INODE
 	.free_inode		= zpl_inode_free,
-#else
-	.destroy_inode		= zpl_inode_destroy,
 #endif
+	.destroy_inode		= zpl_inode_destroy,
 	.dirty_inode		= zpl_dirty_inode,
 	.write_inode		= NULL,
 	.evict_inode		= zpl_evict_inode,

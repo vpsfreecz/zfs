@@ -369,11 +369,12 @@ zfs_inode_alloc(struct super_block *sb, struct inode **ip)
 void
 zfs_inode_free(struct inode *ip)
 {
-	znode_t *zp = ITOZ(ip);
-
-	kmem_cache_free(znode_cache, zp);
+	kmem_cache_free(znode_cache, ITOZ(ip));
 }
 
+/*
+ * Called in multiple places when an inode should be destroyed.
+ */
 void
 zfs_inode_destroy(struct inode *ip)
 {
@@ -395,8 +396,13 @@ zfs_inode_destroy(struct inode *ip)
 		nvlist_free(zp->z_xattr_cached);
 		zp->z_xattr_cached = NULL;
 	}
-
-#ifndef HAVE_INODE_FREE
+#ifndef HAVE_SOPS_FREE_INODE
+	/*
+	 * inode needs to be freed in RCU callback.  If we have
+	 * super_operations->free_inode, Linux kernel will do call_rcu
+	 * for us.  But if we don't have it, since call_rcu is GPL-only
+	 * symbol, we can only free synchronously and accept the risk.
+	 */
 	zfs_inode_free(ip);
 #endif
 }
