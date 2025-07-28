@@ -32,6 +32,7 @@
  */
 
 #include <sys/dmu.h>
+#include <sys/dbuf.h>
 #include <sys/dmu_objset.h>
 #include <sys/dmu_tx.h>
 #include <sys/dsl_dataset.h>
@@ -265,9 +266,11 @@ dsl_dir_hold_obj(dsl_pool_t *dp, uint64_t ddobj,
 			    &origin_bonus);
 			if (err != 0)
 				goto errout;
+			mutex_enter(&((dmu_buf_impl_t *)origin_bonus)->db_mtx);
 			origin_phys = origin_bonus->db_data;
 			dd->dd_origin_txg =
 			    origin_phys->ds_creation_txg;
+			mutex_exit(&((dmu_buf_impl_t *)origin_bonus)->db_mtx);
 			dmu_buf_rele(origin_bonus, FTAG);
 			if (dsl_dir_is_zapified(dd)) {
 				uint64_t obj;
@@ -969,6 +972,7 @@ dsl_dir_create_sync(dsl_pool_t *dp, dsl_dir_t *pds, const char *name,
 	}
 	VERIFY0(dmu_bonus_hold(mos, ddobj, FTAG, &dbuf));
 	dmu_buf_will_dirty(dbuf, tx);
+	mutex_enter(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 	ddphys = dbuf->db_data;
 
 	ddphys->dd_creation_time = gethrestime_sec();
@@ -985,6 +989,7 @@ dsl_dir_create_sync(dsl_pool_t *dp, dsl_dir_t *pds, const char *name,
 	if (spa_version(dp->dp_spa) >= SPA_VERSION_USED_BREAKDOWN)
 		ddphys->dd_flags |= DD_FLAG_USED_BREAKDOWN;
 
+	mutex_exit(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 	dmu_buf_rele(dbuf, FTAG);
 
 	return (ddobj);

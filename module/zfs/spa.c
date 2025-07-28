@@ -49,6 +49,7 @@
 #include <sys/zfs_context.h>
 #include <sys/fm/fs/zfs.h>
 #include <sys/spa_impl.h>
+#include <sys/dbuf.h>
 #include <sys/zio.h>
 #include <sys/zio_checksum.h>
 #include <sys/dmu.h>
@@ -2499,7 +2500,9 @@ load_nvlist(spa_t *spa, uint64_t obj, nvlist_t **value)
 	if (error)
 		return (error);
 
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	nvsize = *(uint64_t *)db->db_data;
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	dmu_buf_rele(db, FTAG);
 
 	packed = vmem_alloc(nvsize, KM_SLEEP);
@@ -9458,7 +9461,9 @@ spa_sync_nvlist(spa_t *spa, uint64_t obj, nvlist_t *nv, dmu_tx_t *tx)
 
 	VERIFY(0 == dmu_bonus_hold(spa->spa_meta_objset, obj, FTAG, &db));
 	dmu_buf_will_dirty(db, tx);
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	*(uint64_t *)db->db_data = nvsize;
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	dmu_buf_rele(db, FTAG);
 }
 

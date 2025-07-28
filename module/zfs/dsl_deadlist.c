@@ -28,6 +28,7 @@
 #include <sys/dmu.h>
 #include <sys/zap.h>
 #include <sys/zfs_context.h>
+#include <sys/dbuf.h>
 #include <sys/dsl_pool.h>
 #include <sys/dsl_dataset.h>
 
@@ -323,7 +324,9 @@ dsl_deadlist_open(dsl_deadlist_t *dl, objset_t *os, uint64_t object)
 	}
 
 	dl->dl_oldfmt = B_FALSE;
+	mutex_enter(&((dmu_buf_impl_t *)dl->dl_dbuf)->db_mtx);
 	dl->dl_phys = dl->dl_dbuf->db_data;
+	mutex_exit(&((dmu_buf_impl_t *)dl->dl_dbuf)->db_mtx);
 	dl->dl_havetree = B_FALSE;
 	dl->dl_havecache = B_FALSE;
 	return (0);
@@ -917,9 +920,11 @@ dsl_deadlist_merge(dsl_deadlist_t *dl, uint64_t obj, dmu_tx_t *tx)
 	zap_cursor_fini(&pzc);
 
 	VERIFY0(dmu_bonus_hold(dl->dl_os, obj, FTAG, &bonus));
-	dlp = bonus->db_data;
 	dmu_buf_will_dirty(bonus, tx);
+	mutex_enter(&((dmu_buf_impl_t *)bonus)->db_mtx);
+	dlp = bonus->db_data;
 	memset(dlp, 0, sizeof (*dlp));
+	mutex_exit(&((dmu_buf_impl_t *)bonus)->db_mtx);
 	dmu_buf_rele(bonus, FTAG);
 	mutex_exit(&dl->dl_lock);
 

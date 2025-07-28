@@ -24,6 +24,7 @@
  */
 
 #include <sys/zfs_context.h>
+#include <sys/dbuf.h>
 #include <sys/vnode.h>
 #include <sys/sa.h>
 #include <sys/zfs_acl.h>
@@ -84,16 +85,20 @@ zfs_sa_readlink(znode_t *zp, zfs_uio_t *uio)
 
 	bufsz = zp->z_size;
 	if (bufsz + ZFS_OLD_ZNODE_PHYS_SIZE <= db->db_size) {
+		mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 		error = zfs_uiomove((caddr_t)db->db_data +
 		    ZFS_OLD_ZNODE_PHYS_SIZE,
 		    MIN((size_t)bufsz, zfs_uio_resid(uio)), UIO_READ, uio);
+		mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	} else {
 		dmu_buf_t *dbp;
 		if ((error = dmu_buf_hold(ZTOZSB(zp)->z_os, zp->z_id,
 		    0, FTAG, &dbp, DMU_READ_NO_PREFETCH)) == 0) {
+			mutex_enter(&((dmu_buf_impl_t *)dbp)->db_mtx);
 			error = zfs_uiomove(dbp->db_data,
 			    MIN((size_t)bufsz, zfs_uio_resid(uio)), UIO_READ,
 			    uio);
+			mutex_exit(&((dmu_buf_impl_t *)dbp)->db_mtx);
 			dmu_buf_rele(dbp, FTAG);
 		}
 	}
@@ -108,8 +113,10 @@ zfs_sa_symlink(znode_t *zp, char *link, int len, dmu_tx_t *tx)
 	if (ZFS_OLD_ZNODE_PHYS_SIZE + len <= dmu_bonus_max()) {
 		VERIFY0(dmu_set_bonus(db, len + ZFS_OLD_ZNODE_PHYS_SIZE, tx));
 		if (len) {
+			mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 			memcpy((caddr_t)db->db_data +
 			    ZFS_OLD_ZNODE_PHYS_SIZE, link, len);
+			mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 		}
 	} else {
 		dmu_buf_t *dbp;
@@ -121,7 +128,9 @@ zfs_sa_symlink(znode_t *zp, char *link, int len, dmu_tx_t *tx)
 		dmu_buf_will_dirty(dbp, tx);
 
 		ASSERT3U(len, <=, dbp->db_size);
+		mutex_enter(&((dmu_buf_impl_t *)dbp)->db_mtx);
 		memcpy(dbp->db_data, link, len);
+		mutex_exit(&((dmu_buf_impl_t *)dbp)->db_mtx);
 		dmu_buf_rele(dbp, FTAG);
 	}
 }
@@ -152,9 +161,11 @@ zfs_sa_get_scanstamp(znode_t *zp, xvattr_t *xvap)
 		    ZFS_OLD_ZNODE_PHYS_SIZE;
 
 		if (len <= doi.doi_bonus_size) {
+			mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 			(void) memcpy(xoap->xoa_av_scanstamp,
 			    (caddr_t)db->db_data + ZFS_OLD_ZNODE_PHYS_SIZE,
 			    sizeof (xoap->xoa_av_scanstamp));
+			mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 		}
 	}
 	XVA_SET_RTN(xvap, XAT_AV_SCANSTAMP);
@@ -182,8 +193,10 @@ zfs_sa_set_scanstamp(znode_t *zp, xvattr_t *xvap, dmu_tx_t *tx)
 		    ZFS_OLD_ZNODE_PHYS_SIZE;
 		if (len > doi.doi_bonus_size)
 			VERIFY(dmu_set_bonus(db, len, tx) == 0);
+		mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 		(void) memcpy((caddr_t)db->db_data + ZFS_OLD_ZNODE_PHYS_SIZE,
 		    xoap->xoa_av_scanstamp, sizeof (xoap->xoa_av_scanstamp));
+		mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 
 		zp->z_pflags |= ZFS_BONUS_SCANSTAMP;
 		VERIFY(0 == sa_update(zp->z_sa_hdl, SA_ZPL_FLAGS(zfsvfs),
@@ -419,9 +432,11 @@ zfs_sa_upgrade(sa_handle_t *hdl, dmu_tx_t *tx)
 	/* if scanstamp then add scanstamp */
 
 	if (zp->z_pflags & ZFS_BONUS_SCANSTAMP) {
+		mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 		memcpy(scanstamp,
 		    (caddr_t)db->db_data + ZFS_OLD_ZNODE_PHYS_SIZE,
 		    AV_SCANSTAMP_SZ);
+		mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 		SA_ADD_BULK_ATTR(sa_attrs, count, SA_ZPL_SCANSTAMP(zfsvfs),
 		    NULL, scanstamp, AV_SCANSTAMP_SZ);
 		zp->z_pflags &= ~ZFS_BONUS_SCANSTAMP;

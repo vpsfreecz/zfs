@@ -27,6 +27,7 @@
 #include <sys/arc.h>
 #include <sys/bptree.h>
 #include <sys/dmu.h>
+#include <sys/dbuf.h>
 #include <sys/dmu_objset.h>
 #include <sys/dmu_tx.h>
 #include <sys/dmu_traverse.h>
@@ -74,12 +75,14 @@ bptree_alloc(objset_t *os, dmu_tx_t *tx)
 	 */
 	VERIFY3U(0, ==, dmu_bonus_hold(os, obj, FTAG, &db));
 	dmu_buf_will_dirty(db, tx);
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	bt = db->db_data;
 	bt->bt_begin = 0;
 	bt->bt_end = 0;
 	bt->bt_bytes = 0;
 	bt->bt_comp = 0;
 	bt->bt_uncomp = 0;
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	dmu_buf_rele(db, FTAG);
 
 	return (obj);
@@ -92,11 +95,13 @@ bptree_free(objset_t *os, uint64_t obj, dmu_tx_t *tx)
 	bptree_phys_t *bt;
 
 	VERIFY3U(0, ==, dmu_bonus_hold(os, obj, FTAG, &db));
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	bt = db->db_data;
 	ASSERT3U(bt->bt_begin, ==, bt->bt_end);
 	ASSERT0(bt->bt_bytes);
 	ASSERT0(bt->bt_comp);
 	ASSERT0(bt->bt_uncomp);
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	dmu_buf_rele(db, FTAG);
 
 	return (dmu_object_free(os, obj, tx));
@@ -110,8 +115,10 @@ bptree_is_empty(objset_t *os, uint64_t obj)
 	boolean_t rv;
 
 	VERIFY0(dmu_bonus_hold(os, obj, FTAG, &db));
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	bt = db->db_data;
 	rv = (bt->bt_begin == bt->bt_end);
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	dmu_buf_rele(db, FTAG);
 	return (rv);
 }
@@ -132,15 +139,17 @@ bptree_add(objset_t *os, uint64_t obj, blkptr_t *bp, uint64_t birth_txg,
 	ASSERT(dmu_tx_is_syncing(tx));
 
 	VERIFY3U(0, ==, dmu_bonus_hold(os, obj, FTAG, &db));
+	dmu_buf_will_dirty(db, tx);
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	bt = db->db_data;
 
 	bte = kmem_zalloc(sizeof (*bte), KM_SLEEP);
 	bte->be_birth_txg = birth_txg;
 	bte->be_bp = *bp;
 	dmu_write(os, obj, bt->bt_end * sizeof (*bte), sizeof (*bte), bte, tx);
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	kmem_free(bte, sizeof (*bte));
 
-	dmu_buf_will_dirty(db, tx);
 	bt->bt_end++;
 	bt->bt_bytes += bytes;
 	bt->bt_comp += comp;
@@ -204,7 +213,9 @@ bptree_iterate(objset_t *os, uint64_t obj, boolean_t free, bptree_itor_t func,
 	if (free)
 		dmu_buf_will_dirty(db, tx);
 
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	ba.ba_phys = db->db_data;
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	ba.ba_free = free;
 	ba.ba_func = func;
 	ba.ba_arg = arg;

@@ -102,12 +102,14 @@ ddt_log_update_header(ddt_t *ddt, ddt_log_t *ddl, dmu_tx_t *tx)
 	VERIFY0(dmu_bonus_hold(ddt->ddt_os, ddl->ddl_object, FTAG, &db));
 	dmu_buf_will_dirty(db, tx);
 
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	ddt_log_header_t *hdr = (ddt_log_header_t *)db->db_data;
 	DLH_SET_VERSION(hdr, 1);
 	DLH_SET_FLAGS(hdr, ddl->ddl_flags);
 	hdr->dlh_length = ddl->ddl_length;
 	hdr->dlh_first_txg = ddl->ddl_first_txg;
 	hdr->dlh_checkpoint = ddl->ddl_checkpoint;
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 
 	dmu_buf_rele(db, FTAG);
 }
@@ -290,10 +292,13 @@ ddt_log_entry(ddt_t *ddt, ddt_lightweight_entry_t *ddlwe, ddt_log_update_t *dlu)
 	 */
 	if (dlu->dlu_offset == 0) {
 		dmu_buf_will_fill(db, dlu->dlu_tx, B_FALSE);
+		mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 		memset(db->db_data, 0, db->db_size);
+		mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	}
 
 	/* Create the log record directly in the buffer */
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	ddt_log_record_t *dlr = (db->db_data + dlu->dlu_offset);
 	DLR_SET_TYPE(dlr, DLR_ENTRY);
 	DLR_SET_RECLEN(dlr, dlu->dlu_reclen);
@@ -307,6 +312,7 @@ ddt_log_entry(ddt_t *ddt, ddt_lightweight_entry_t *ddlwe, ddt_log_update_t *dlu)
 
 	/* Advance offset for next record. */
 	dlu->dlu_offset += dlu->dlu_reclen;
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 }
 
 void
@@ -563,7 +569,9 @@ ddt_log_load_one(ddt_t *ddt, uint_t n)
 		dnode_rele(dn, FTAG);
 		return (err);
 	}
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	memcpy(&hdr, db->db_data, sizeof (ddt_log_header_t));
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	dmu_buf_rele(db, FTAG);
 
 	if (DLH_GET_VERSION(&hdr) != 1) {
@@ -599,6 +607,7 @@ ddt_log_load_one(ddt_t *ddt, uint_t n)
 			}
 
 			uint64_t boffset = 0;
+			mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 			while (boffset < db->db_size) {
 				ddt_log_record_t *dlr =
 				    (ddt_log_record_t *)(db->db_data + boffset);
@@ -614,6 +623,7 @@ ddt_log_load_one(ddt_t *ddt, uint_t n)
 					break;
 
 				default:
+					mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 					dmu_buf_rele(db, FTAG);
 					dnode_rele(dn, FTAG);
 					ddt_log_empty(ddt, ddl);
@@ -622,7 +632,7 @@ ddt_log_load_one(ddt_t *ddt, uint_t n)
 
 				boffset += DLR_GET_RECLEN(dlr);
 			}
-
+			mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 			dmu_buf_rele(db, FTAG);
 		}
 	}

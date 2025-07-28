@@ -21,6 +21,7 @@
 #include <sys/dmu_tx.h>
 #include <sys/spa.h>
 #include <sys/dmu.h>
+#include <sys/dbuf.h>
 #include <sys/dsl_pool.h>
 #include <sys/vdev_indirect_births.h>
 
@@ -107,7 +108,9 @@ vdev_indirect_births_open(objset_t *os, uint64_t births_object)
 	vib->vib_object = births_object;
 
 	VERIFY0(dmu_bonus_hold(os, vib->vib_object, vib, &vib->vib_dbuf));
+	mutex_enter(&((dmu_buf_impl_t *)vib->vib_dbuf)->db_mtx);
 	vib->vib_phys = vib->vib_dbuf->db_data;
+	mutex_exit(&((dmu_buf_impl_t *)vib->vib_dbuf)->db_mtx);
 
 	if (vib->vib_phys->vib_count > 0) {
 		uint64_t births_size = vdev_indirect_births_size_impl(vib);
@@ -141,6 +144,7 @@ vdev_indirect_births_add_entry(vdev_indirect_births_t *vib,
 	ASSERT(vdev_indirect_births_verify(vib));
 
 	dmu_buf_will_dirty(vib->vib_dbuf, tx);
+	mutex_enter(&((dmu_buf_impl_t *)vib->vib_dbuf)->db_mtx);
 
 	vibe.vibe_offset = max_offset;
 	vibe.vibe_phys_birth_txg = txg;
@@ -157,6 +161,7 @@ vdev_indirect_births_add_entry(vdev_indirect_births_t *vib,
 		vmem_free(vib->vib_entries, old_size);
 	}
 	new_entries[vib->vib_phys->vib_count - 1] = vibe;
+	mutex_exit(&((dmu_buf_impl_t *)vib->vib_dbuf)->db_mtx);
 	vib->vib_entries = new_entries;
 }
 

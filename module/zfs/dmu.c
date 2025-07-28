@@ -1222,8 +1222,11 @@ dmu_read_impl(dnode_t *dn, uint64_t offset, uint64_t size,
 			bufoff = offset - db->db_offset;
 			tocpy = MIN(db->db_size - bufoff, size);
 
+			/* Ensure stable copy of db_data */
+			mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 			ASSERT(db->db_data != NULL);
-			(void) memcpy(buf, (char *)db->db_data + bufoff, tocpy);
+			memcpy(buf, (char *)db->db_data + bufoff, tocpy);
+			mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 
 			offset += tocpy;
 			size -= tocpy;
@@ -1280,8 +1283,11 @@ dmu_write_impl(dmu_buf_t **dbp, int numbufs, uint64_t offset, uint64_t size,
 		else
 			dmu_buf_will_dirty(db, tx);
 
+		/* Serialise modifications to db_data */
+		mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 		ASSERT(db->db_data != NULL);
-		(void) memcpy((char *)db->db_data + bufoff, buf, tocpy);
+		memcpy((char *)db->db_data + bufoff, buf, tocpy);
+		mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 
 		if (tocpy == db->db_size)
 			dmu_buf_fill_done(db, tx, B_FALSE);
@@ -1429,9 +1435,12 @@ dmu_read_uio_dnode(dnode_t *dn, zfs_uio_t *uio, uint64_t size)
 		bufoff = zfs_uio_offset(uio) - db->db_offset;
 		tocpy = MIN(db->db_size - bufoff, size);
 
+		/* Hold db_mtx during fault move */
+		mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 		ASSERT(db->db_data != NULL);
 		err = zfs_uio_fault_move((char *)db->db_data + bufoff, tocpy,
 		    UIO_READ, uio);
+		mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 
 		if (err)
 			break;
@@ -1554,9 +1563,12 @@ top:
 		else
 			dmu_buf_will_dirty(db, tx);
 
+		/* Protect db_data during write fault move */
+		mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 		ASSERT(db->db_data != NULL);
 		err = zfs_uio_fault_move((char *)db->db_data + bufoff,
 		    tocpy, UIO_WRITE, uio);
+		mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 
 		if (tocpy == db->db_size && dmu_buf_fill_done(db, tx, err)) {
 			/* The fill was reverted.  Undo any uio progress. */
@@ -2038,11 +2050,13 @@ dmu_sync_late_arrival(zio_t *pio, objset_t *os, dmu_sync_cb_t *done, zgd_t *zgd,
 	 */
 	zp->zp_nopwrite = B_FALSE;
 
+	mutex_enter(&((dmu_buf_impl_t *)zgd->zgd_db)->db_mtx);
 	zio_nowait(zio_write(pio, os->os_spa, dmu_tx_get_txg(tx), zgd->zgd_bp,
 	    abd_get_from_buf(zgd->zgd_db->db_data, zgd->zgd_db->db_size),
 	    zgd->zgd_db->db_size, zgd->zgd_db->db_size, zp,
-	    dmu_sync_late_arrival_ready, NULL, dmu_sync_late_arrival_done,
+		dmu_sync_late_arrival_ready, NULL, dmu_sync_late_arrival_done,
 	    dsa, ZIO_PRIORITY_SYNC_WRITE, ZIO_FLAG_CANFAIL, zb));
+	mutex_exit(&((dmu_buf_impl_t *)zgd->zgd_db)->db_mtx);
 
 	return (0);
 }

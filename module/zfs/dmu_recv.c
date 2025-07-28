@@ -1664,8 +1664,10 @@ receive_object_is_same_generation(objset_t *os, uint64_t object,
 	err = dmu_bonus_hold(os, object, FTAG, &old_bonus_dbuf);
 	if (err != 0)
 		return (err);
+	mutex_enter(&((dmu_buf_impl_t *)old_bonus_dbuf)->db_mtx);
 	err = dmu_get_file_info(os, old_bonus_type, old_bonus_dbuf->db_data,
 	    &zoi);
+	mutex_exit(&((dmu_buf_impl_t *)old_bonus_dbuf)->db_mtx);
 	dmu_buf_rele(old_bonus_dbuf, FTAG);
 	if (err != 0)
 		return (err);
@@ -2146,6 +2148,8 @@ receive_object(struct receive_writer_arg *rwa, struct drr_object *drro,
 		dmu_buf_will_dirty(db, tx);
 
 		ASSERT3U(db->db_size, >=, drro->drr_bonuslen);
+
+		mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 		memcpy(db->db_data, data, DRR_OBJECT_PAYLOAD_SIZE(drro));
 
 		/*
@@ -2158,6 +2162,7 @@ receive_object(struct receive_writer_arg *rwa, struct drr_object *drro,
 			dmu_ot_byteswap[byteswap].ob_func(db->db_data,
 			    DRR_OBJECT_PAYLOAD_SIZE(drro));
 		}
+		mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 		dmu_buf_rele(db, FTAG);
 		dnode_rele(dn, FTAG);
 	}

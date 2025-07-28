@@ -46,6 +46,7 @@
 #include <sys/dmu.h>
 #include <sys/dnode.h>
 #include <sys/zfs_context.h>
+#include <sys/dbuf.h>
 #include <sys/zfs_znode.h>
 #include <sys/fs/zfs.h>
 #include <sys/zap.h>
@@ -286,12 +287,16 @@ zap_table_store(zap_t *zap, zap_table_phys_t *tbl, uint64_t idx, uint64_t val,
 			return (err);
 		}
 		dmu_buf_will_dirty(db2, tx);
+		mutex_enter(&((dmu_buf_impl_t *)db2)->db_mtx);
 		((uint64_t *)db2->db_data)[off2] = val;
 		((uint64_t *)db2->db_data)[off2+1] = val;
+		mutex_exit(&((dmu_buf_impl_t *)db2)->db_mtx);
 		dmu_buf_rele(db2, FTAG);
 	}
 
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	((uint64_t *)db->db_data)[off] = val;
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	dmu_buf_rele(db, FTAG);
 
 	return (0);
@@ -312,7 +317,9 @@ zap_table_load(zap_t *zap, zap_table_phys_t *tbl, uint64_t idx, uint64_t *valp)
 	    (tbl->zt_blk + blk) << bs, FTAG, &db, DMU_READ_NO_PREFETCH);
 	if (err != 0)
 		return (err);
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	*valp = ((uint64_t *)db->db_data)[off];
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	dmu_buf_rele(db, FTAG);
 
 	if (tbl->zt_nextblk != 0) {
@@ -1467,8 +1474,10 @@ fzap_get_stats(zap_t *zap, zap_stats_t *zs)
 			    (zap_f_phys(zap)->zap_ptrtbl.zt_blk + b) << bs,
 			    FTAG, &db, DMU_READ_NO_PREFETCH);
 			if (err == 0) {
+				mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 				zap_stats_ptrtbl(zap, db->db_data,
 				    1<<(bs-3), zs);
+				mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 				dmu_buf_rele(db, FTAG);
 			}
 		}

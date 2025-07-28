@@ -30,6 +30,7 @@
 #include <sys/zfs_context.h>
 #include <sys/spa.h>
 #include <sys/dmu.h>
+#include <sys/dbuf.h>
 #include <sys/dmu_tx.h>
 #include <sys/dnode.h>
 #include <sys/dsl_pool.h>
@@ -105,6 +106,7 @@ space_map_iterate(space_map_t *sm, uint64_t end, sm_cb_t callback, void *arg)
 		if (error != 0)
 			return (error);
 
+		mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 		uint64_t *block_start = db->db_data;
 		uint64_t block_length = MIN(end - block_base, blksz);
 		uint64_t *block_end = block_start +
@@ -186,6 +188,7 @@ space_map_iterate(space_map_t *sm, uint64_t end, sm_cb_t callback, void *arg)
 			};
 			error = callback(&sme, arg);
 		}
+		mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 		dmu_buf_rele(db, FTAG);
 	}
 	return (error);
@@ -223,6 +226,7 @@ space_map_reversed_last_block_entries(space_map_t *sm, uint64_t *buf,
 	ASSERT3U(bufsz, >=, db->db_size);
 	ASSERT(nwords != NULL);
 
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	uint64_t *words = db->db_data;
 	*nwords =
 	    (sm->sm_phys->smp_length - db->db_offset) / sizeof (uint64_t);
@@ -262,6 +266,7 @@ space_map_reversed_last_block_entries(space_map_t *sm, uint64_t *buf,
 	 */
 	ASSERT3S(j, ==, -1);
 
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	dmu_buf_rele(db, FTAG);
 	return (error);
 }
@@ -569,6 +574,7 @@ space_map_write_seg(space_map_t *sm, uint64_t rstart, uint64_t rend,
 	dmu_buf_t *db = *dbp;
 	ASSERT3U(db->db_size, ==, sm->sm_blksz);
 
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	uint64_t *block_base = db->db_data;
 	uint64_t *block_end = block_base + (sm->sm_blksz / sizeof (uint64_t));
 	uint64_t *block_cursor = block_base +
@@ -593,6 +599,7 @@ space_map_write_seg(space_map_t *sm, uint64_t rstart, uint64_t rend,
 		 * writing again from the beginning.
 		 */
 		if (block_cursor == block_end) {
+			mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 			dmu_buf_rele(db, tag);
 
 			uint64_t next_word_offset = sm->sm_phys->smp_length;
@@ -606,6 +613,7 @@ space_map_write_seg(space_map_t *sm, uint64_t rstart, uint64_t rend,
 
 			ASSERT3U(db->db_size, ==, sm->sm_blksz);
 
+			mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 			block_base = db->db_data;
 			block_cursor = block_base;
 			block_end = block_base +
@@ -662,6 +670,7 @@ space_map_write_seg(space_map_t *sm, uint64_t rstart, uint64_t rend,
 		size -= run_len;
 	}
 	ASSERT0(size);
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 
 }
 
@@ -806,7 +815,9 @@ space_map_open_impl(space_map_t *sm)
 		return (error);
 
 	dmu_object_size_from_db(sm->sm_dbuf, &sm->sm_blksz, &blocks);
+	mutex_enter(&((dmu_buf_impl_t *)sm->sm_dbuf)->db_mtx);
 	sm->sm_phys = sm->sm_dbuf->db_data;
+	mutex_exit(&((dmu_buf_impl_t *)sm->sm_dbuf)->db_mtx);
 	return (0);
 }
 

@@ -27,6 +27,7 @@
 
 #include <sys/bpobj.h>
 #include <sys/zfs_context.h>
+#include <sys/dbuf.h>
 #include <sys/zfs_refcount.h>
 #include <sys/dsl_pool.h>
 #include <sys/zfeature.h>
@@ -131,7 +132,9 @@ bpobj_free(objset_t *os, uint64_t obj, dmu_tx_t *tx)
 		ASSERT3U(offset, >=, dbuf->db_offset);
 		ASSERT3U(offset, <, dbuf->db_offset + dbuf->db_size);
 
+		mutex_enter(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 		objarray = dbuf->db_data;
+		mutex_exit(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 		bpobj_free(os, objarray[blkoff], tx);
 	}
 	if (dbuf) {
@@ -176,7 +179,9 @@ bpobj_open(bpobj_t *bpo, objset_t *os, uint64_t object)
 	bpo->bpo_havecomp = (doi.doi_bonus_size > BPOBJ_SIZE_V0);
 	bpo->bpo_havesubobj = (doi.doi_bonus_size > BPOBJ_SIZE_V1);
 	bpo->bpo_havefreed = (doi.doi_bonus_size > BPOBJ_SIZE_V2);
+	mutex_enter(&((dmu_buf_impl_t *)bpo->bpo_dbuf)->db_mtx);
 	bpo->bpo_phys = bpo->bpo_dbuf->db_data;
+	mutex_exit(&((dmu_buf_impl_t *)bpo->bpo_dbuf)->db_mtx);
 	return (0);
 }
 
@@ -318,13 +323,16 @@ bpobj_iterate_blkptrs(bpobj_info_t *bpi, bpobj_itor_t func, void *arg,
 		ASSERT3U(offset, >=, dbuf->db_offset);
 		ASSERT3U(offset, <, dbuf->db_offset + dbuf->db_size);
 
+		mutex_enter(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 		blkptr_t *bparray = dbuf->db_data;
 		blkptr_t *bp = &bparray[blkoff];
 
 		boolean_t bp_freed = BP_GET_FREE(bp);
 		err = func(arg, bp, bp_freed, tx);
-		if (err)
+		if (err) {
+			mutex_exit(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 			break;
+		}
 
 		if (free) {
 			int sign = bp_freed ? -1 : +1;
@@ -341,6 +349,7 @@ bpobj_iterate_blkptrs(bpobj_info_t *bpi, bpobj_itor_t func, void *arg,
 				ASSERT3S(bpo->bpo_phys->bpo_num_freed, >=, 0);
 			}
 		}
+		mutex_exit(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 	}
 	if (free) {
 		propagate_space_reduction(bpi, freed, comp_freed,
@@ -750,9 +759,11 @@ bpobj_enqueue_subobj(bpobj_t *bpo, uint64_t subobj, dmu_tx_t *tx)
 			    DMU_OT_BPOBJ_SUBOBJ, SPA_OLD_MAXBLOCKSIZE,
 			    DMU_OT_NONE, 0, tx);
 		}
+		mutex_enter(&((dmu_buf_impl_t *)subdb)->db_mtx);
 		dmu_write(bpo->bpo_os, bpo->bpo_phys->bpo_subobjs,
 		    bpo->bpo_phys->bpo_num_subobjs * sizeof (subobj),
 		    numsubsub * sizeof (subobj), subdb->db_data, tx);
+		mutex_exit(&((dmu_buf_impl_t *)subdb)->db_mtx);
 		dmu_buf_rele(subdb, FTAG);
 		bpo->bpo_phys->bpo_num_subobjs += numsubsub;
 
@@ -774,10 +785,12 @@ bpobj_enqueue_subobj(bpobj_t *bpo, uint64_t subobj, dmu_tx_t *tx)
 		 * to write more data than we have in our buffer.
 		 */
 		VERIFY3U(bps->db_size, >=, numbps * sizeof (blkptr_t));
+		mutex_enter(&((dmu_buf_impl_t *)bps)->db_mtx);
 		dmu_write(bpo->bpo_os, bpo->bpo_object,
 		    bpo->bpo_phys->bpo_num_blkptrs * sizeof (blkptr_t),
 		    numbps * sizeof (blkptr_t),
 		    bps->db_data, tx);
+		mutex_exit(&((dmu_buf_impl_t *)bps)->db_mtx);
 		dmu_buf_rele(bps, FTAG);
 		bpo->bpo_phys->bpo_num_blkptrs += numbps;
 
@@ -920,8 +933,10 @@ bpobj_enqueue(bpobj_t *bpo, const blkptr_t *bp, boolean_t bp_freed,
 	}
 
 	dmu_buf_will_dirty(bpo->bpo_cached_dbuf, tx);
+	mutex_enter(&((dmu_buf_impl_t *)bpo->bpo_cached_dbuf)->db_mtx);
 	bparray = bpo->bpo_cached_dbuf->db_data;
 	bparray[blkoff] = stored_bp;
+	mutex_exit(&((dmu_buf_impl_t *)bpo->bpo_cached_dbuf)->db_mtx);
 
 	dmu_buf_will_dirty(bpo->bpo_dbuf, tx);
 	bpo->bpo_phys->bpo_num_blkptrs++;

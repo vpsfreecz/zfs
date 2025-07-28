@@ -494,11 +494,15 @@ dsl_bookmark_create_sync_impl_snap(const char *bookmark, const char *snapshot,
 			dmu_buf_will_fill(db, tx, B_FALSE);
 			VERIFY0(dbuf_spill_set_blksz(db, P2ROUNDUP(bonuslen,
 			    SPA_MINBLOCKSIZE), tx));
+			mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 			local_rl->rl_phys = db->db_data;
 			local_rl->rl_dbuf = db;
+			mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 		}
+		mutex_enter(&((dmu_buf_impl_t *)local_rl->rl_dbuf)->db_mtx);
 		memcpy(local_rl->rl_phys->rlp_snaps, redact_snaps,
 		    sizeof (uint64_t) * num_redact_snaps);
+		mutex_exit(&((dmu_buf_impl_t *)local_rl->rl_dbuf)->db_mtx);
 		local_rl->rl_phys->rlp_num_snaps = num_redact_snaps;
 		if (bookmark_redacted) {
 			ASSERT3P(redaction_list, ==, NULL);
@@ -1278,7 +1282,9 @@ dsl_redaction_list_hold_obj(dsl_pool_t *dp, uint64_t rlobj, const void *tag,
 			rl->rl_dbuf = dbuf;
 		}
 		rl->rl_object = rlobj;
+		mutex_enter(&((dmu_buf_impl_t *)rl->rl_dbuf)->db_mtx);
 		rl->rl_phys = rl->rl_dbuf->db_data;
+		mutex_exit(&((dmu_buf_impl_t *)rl->rl_dbuf)->db_mtx);
 		rl->rl_mos = dp->dp_meta_objset;
 		zfs_refcount_create(&rl->rl_longholds);
 		dmu_buf_init_user(&rl->rl_dbu, redaction_list_evict_sync, NULL,

@@ -33,6 +33,7 @@
 #include <sys/ddt.h>
 #include <sys/bitmap.h>
 #include <sys/zap.h>
+#include <sys/dbuf.h>
 #include <sys/dmu_tx.h>
 #include <sys/arc.h>
 #include <sys/dsl_pool.h>
@@ -552,12 +553,14 @@ brt_vdev_load(spa_t *spa, brt_vdev_t *brtvd)
 	if (error != 0)
 		return (error);
 
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	bvphys = db->db_data;
 	if (spa->spa_brt_rangesize == 0) {
 		spa->spa_brt_rangesize = bvphys->bvp_rangesize;
 	} else {
 		ASSERT3U(spa->spa_brt_rangesize, ==, bvphys->bvp_rangesize);
 	}
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 
 	brt_vdev_realloc(spa, brtvd);
 
@@ -802,6 +805,7 @@ brt_vdev_sync(spa_t *spa, brt_vdev_t *brtvd, dmu_tx_t *tx)
 	}
 
 	dmu_buf_will_dirty(db, tx);
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	bvphys = db->db_data;
 	bvphys->bvp_mos_entries = brtvd->bv_mos_entries;
 	bvphys->bvp_size = brtvd->bv_size;
@@ -814,6 +818,7 @@ brt_vdev_sync(spa_t *spa, brt_vdev_t *brtvd, dmu_tx_t *tx)
 	bvphys->bvp_rangesize = spa->spa_brt_rangesize;
 	bvphys->bvp_usedspace = brtvd->bv_usedspace;
 	bvphys->bvp_savedspace = brtvd->bv_savedspace;
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	dmu_buf_rele(db, FTAG);
 
 	brtvd->bv_meta_dirty = FALSE;

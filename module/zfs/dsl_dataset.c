@@ -52,6 +52,7 @@
 #include <sys/zfeature.h>
 #include <sys/unique.h>
 #include <sys/zfs_context.h>
+#include <sys/dbuf.h>
 #include <sys/zfs_ioctl.h>
 #include <sys/spa.h>
 #include <sys/spa_impl.h>
@@ -518,10 +519,12 @@ dsl_dataset_get_snapname(dsl_dataset_t *ds)
 	    FTAG, &headdbuf);
 	if (err != 0)
 		return (err);
+	mutex_enter(&((dmu_buf_impl_t *)headdbuf)->db_mtx);
 	headphys = headdbuf->db_data;
 	err = zap_value_search(dp->dp_meta_objset,
 	    headphys->ds_snapnames_zapobj, ds->ds_object, 0, ds->ds_snapname,
 	    sizeof (ds->ds_snapname));
+	mutex_exit(&((dmu_buf_impl_t *)headdbuf)->db_mtx);
 	if (err != 0 && zfs_recover == B_TRUE) {
 		err = 0;
 		(void) snprintf(ds->ds_snapname, sizeof (ds->ds_snapname),
@@ -1193,6 +1196,7 @@ dsl_dataset_create_sync_dd(dsl_dir_t *dd, dsl_dataset_t *origin,
 	    DMU_OT_DSL_DATASET, sizeof (dsl_dataset_phys_t), tx);
 	VERIFY0(dmu_bonus_hold(mos, dsobj, FTAG, &dbuf));
 	dmu_buf_will_dirty(dbuf, tx);
+	mutex_enter(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 	dsphys = dbuf->db_data;
 	memset(dsphys, 0, sizeof (dsl_dataset_phys_t));
 	dsphys->ds_dir_obj = dd->dd_object;
@@ -1280,6 +1284,7 @@ dsl_dataset_create_sync_dd(dsl_dir_t *dd, dsl_dataset_t *origin,
 	if (spa_version(dp->dp_spa) >= SPA_VERSION_UNIQUE_ACCURATE)
 		dsphys->ds_flags |= DS_FLAG_UNIQUE_ACCURATE;
 
+	mutex_exit(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 	dmu_buf_rele(dbuf, FTAG);
 
 	dmu_buf_will_dirty(dd->dd_dbuf, tx);
@@ -1759,6 +1764,7 @@ dsl_dataset_snapshot_sync_impl(dsl_dataset_t *ds, const char *snapname,
 	    DMU_OT_DSL_DATASET, sizeof (dsl_dataset_phys_t), tx);
 	VERIFY0(dmu_bonus_hold(mos, dsobj, FTAG, &dbuf));
 	dmu_buf_will_dirty(dbuf, tx);
+	mutex_enter(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 	dsphys = dbuf->db_data;
 	memset(dsphys, 0, sizeof (dsl_dataset_phys_t));
 	dsphys->ds_dir_obj = ds->ds_dir->dd_object;
@@ -1780,6 +1786,7 @@ dsl_dataset_snapshot_sync_impl(dsl_dataset_t *ds, const char *snapname,
 	rrw_enter(&ds->ds_bp_rwlock, RW_READER, FTAG);
 	dsphys->ds_bp = dsl_dataset_phys(ds)->ds_bp;
 	rrw_exit(&ds->ds_bp_rwlock, FTAG);
+	mutex_exit(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 	dmu_buf_rele(dbuf, FTAG);
 
 	for (spa_feature_t f = 0; f < SPA_FEATURES; f++) {

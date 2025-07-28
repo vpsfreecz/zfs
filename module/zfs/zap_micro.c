@@ -32,6 +32,7 @@
 #include <sys/spa.h>
 #include <sys/dmu.h>
 #include <sys/zfs_context.h>
+#include <sys/dbuf.h>
 #include <sys/zap.h>
 #include <sys/zap_impl.h>
 #include <sys/zap_leaf.h>
@@ -519,9 +520,11 @@ static zap_t *
 mzap_open(dmu_buf_t *db)
 {
 	zap_t *winner;
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	uint64_t *zap_hdr = (uint64_t *)db->db_data;
 	uint64_t zap_block_type = zap_hdr[0];
 	uint64_t zap_magic = zap_hdr[1];
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 
 	ASSERT3U(MZAP_ENT_LEN, ==, sizeof (mzap_ent_phys_t));
 
@@ -844,11 +847,13 @@ mzap_create_impl(dnode_t *dn, int normflags, zap_flags_t flags, dmu_tx_t *tx)
 	VERIFY0(dmu_buf_hold_by_dnode(dn, 0, FTAG, &db, DMU_READ_NO_PREFETCH));
 
 	dmu_buf_will_dirty(db, tx);
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	mzap_phys_t *zp = db->db_data;
 	zp->mz_block_type = ZBT_MICRO;
 	zp->mz_salt =
 	    ((uintptr_t)db ^ (uintptr_t)tx ^ (dn->dn_object << 1)) | 1ULL;
 	zp->mz_normflags = normflags;
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 
 	if (flags != 0) {
 		zap_t *zap;

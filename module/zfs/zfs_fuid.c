@@ -24,6 +24,7 @@
  */
 
 #include <sys/zfs_context.h>
+#include <sys/dbuf.h>
 #include <sys/dmu.h>
 #include <sys/avl.h>
 #include <sys/zap.h>
@@ -114,7 +115,9 @@ zfs_fuid_table_load(objset_t *os, uint64_t fuid_obj, avl_tree_t *idx_tree,
 	ASSERT(fuid_obj != 0);
 	VERIFY(0 == dmu_bonus_hold(os, fuid_obj,
 	    FTAG, &db));
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	fuid_size = *(uint64_t *)db->db_data;
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	dmu_buf_rele(db, FTAG);
 
 	if (fuid_size)  {
@@ -276,7 +279,9 @@ zfs_fuid_sync(zfsvfs_t *zfsvfs, dmu_tx_t *tx)
 	VERIFY(0 == dmu_bonus_hold(zfsvfs->z_os, zfsvfs->z_fuid_obj,
 	    FTAG, &db));
 	dmu_buf_will_dirty(db, tx);
+	mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 	*(uint64_t *)db->db_data = zfsvfs->z_fuid_size;
+	mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 	dmu_buf_rele(db, FTAG);
 
 	zfsvfs->z_fuid_dirty = B_FALSE;

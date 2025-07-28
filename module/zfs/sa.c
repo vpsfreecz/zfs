@@ -722,8 +722,10 @@ sa_build_layouts(sa_handle_t *hdl, sa_bulk_attr_t *attr_desc, int attr_count,
 	}
 
 	/* setup starting pointers to lay down data */
+	mutex_enter(&((dmu_buf_impl_t *)hdl->sa_bonus)->db_mtx);
 	data_start = (void *)((uintptr_t)hdl->sa_bonus->db_data + hdrsize);
 	sahdr = (sa_hdr_phys_t *)hdl->sa_bonus->db_data;
+	mutex_exit(&((dmu_buf_impl_t *)hdl->sa_bonus)->db_mtx);
 	buftype = SA_BONUS;
 
 	attrs_start = attrs = kmem_alloc(sizeof (sa_attr_type_t) * attr_count,
@@ -751,10 +753,11 @@ sa_build_layouts(sa_handle_t *hdl, sa_bulk_attr_t *attr_desc, int attr_count,
 			hash = -1ULL;
 			len_idx = 0;
 
+			mutex_enter(&((dmu_buf_impl_t *)hdl->sa_spill)->db_mtx);
 			sahdr = (sa_hdr_phys_t *)hdl->sa_spill->db_data;
 			sahdr->sa_magic = SA_MAGIC;
-			data_start = (void *)((uintptr_t)sahdr +
-			    spillhdrsize);
+			data_start = (void *)((uintptr_t)sahdr + spillhdrsize);
+			mutex_exit(&((dmu_buf_impl_t *)hdl->sa_spill)->db_mtx);
 			attrs_start = &attrs[i];
 			lot_count = 0;
 		}
@@ -1720,9 +1723,11 @@ sa_add_projid(sa_handle_t *hdl, dmu_tx_t *tx, uint64_t projid)
 		    &xattr, 8);
 
 	if (zp->z_pflags & ZFS_BONUS_SCANSTAMP) {
+		mutex_enter(&((dmu_buf_impl_t *)db)->db_mtx);
 		memcpy(scanstamp,
 		    (caddr_t)db->db_data + ZFS_OLD_ZNODE_PHYS_SIZE,
 		    AV_SCANSTAMP_SZ);
+		mutex_exit(&((dmu_buf_impl_t *)db)->db_mtx);
 		SA_ADD_BULK_ATTR(attrs, count, SA_ZPL_SCANSTAMP(zfsvfs), NULL,
 		    scanstamp, AV_SCANSTAMP_SZ);
 		zp->z_pflags &= ~ZFS_BONUS_SCANSTAMP;
@@ -1935,8 +1940,10 @@ sa_modify_attrs(sa_handle_t *hdl, sa_attr_type_t newattr,
 	if (DB_DNODE(db)->dn_bonuslen != 0) {
 		bonus_data_size = hdl->sa_bonus->db_size;
 		old_data[0] = kmem_alloc(bonus_data_size, KM_SLEEP);
+		mutex_enter(&((dmu_buf_impl_t *)hdl->sa_bonus)->db_mtx);
 		memcpy(old_data[0], hdl->sa_bonus->db_data,
 		    hdl->sa_bonus->db_size);
+		mutex_exit(&((dmu_buf_impl_t *)hdl->sa_bonus)->db_mtx);
 		bonus_attr_count = hdl->sa_bonus_tab->sa_layout->lot_attr_count;
 	} else {
 		old_data[0] = NULL;
@@ -1948,8 +1955,10 @@ sa_modify_attrs(sa_handle_t *hdl, sa_attr_type_t newattr,
 	if ((error = sa_get_spill(hdl)) == 0) {
 		spill_data_size = hdl->sa_spill->db_size;
 		old_data[1] = vmem_alloc(spill_data_size, KM_SLEEP);
+		mutex_enter(&((dmu_buf_impl_t *)hdl->sa_spill)->db_mtx);
 		memcpy(old_data[1], hdl->sa_spill->db_data,
 		    hdl->sa_spill->db_size);
+		mutex_exit(&((dmu_buf_impl_t *)hdl->sa_spill)->db_mtx);
 		spill_attr_count =
 		    hdl->sa_spill_tab->sa_layout->lot_attr_count;
 	} else if (error && error != ENOENT) {

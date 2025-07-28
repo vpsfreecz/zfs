@@ -19,6 +19,7 @@
  */
 
 #include <sys/dmu_tx.h>
+#include <sys/dbuf.h>
 #include <sys/dsl_pool.h>
 #include <sys/spa.h>
 #include <sys/vdev_impl.h>
@@ -329,7 +330,9 @@ vdev_indirect_mapping_alloc(objset_t *os, dmu_tx_t *tx)
 
 		VERIFY0(dmu_bonus_hold(os, object, FTAG, &dbuf));
 		dmu_buf_will_dirty(dbuf, tx);
+		mutex_enter(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 		vimp = dbuf->db_data;
+		mutex_exit(&((dmu_buf_impl_t *)dbuf)->db_mtx);
 		vimp->vimp_counts_object = dmu_object_alloc(os,
 		    DMU_OTN_UINT32_METADATA, SPA_OLD_MAXBLOCKSIZE,
 		    DMU_OT_NONE, 0, tx);
@@ -353,7 +356,9 @@ vdev_indirect_mapping_open(objset_t *os, uint64_t mapping_object)
 
 	VERIFY0(dmu_bonus_hold(os, vim->vim_object, vim,
 	    &vim->vim_dbuf));
+	mutex_enter(&((dmu_buf_impl_t *)vim->vim_dbuf)->db_mtx);
 	vim->vim_phys = vim->vim_dbuf->db_data;
+	mutex_exit(&((dmu_buf_impl_t *)vim->vim_dbuf)->db_mtx);
 
 	vim->vim_havecounts =
 	    (doi.doi_bonus_size > VDEV_INDIRECT_MAPPING_SIZE_V0);
