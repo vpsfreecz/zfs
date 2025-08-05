@@ -22,7 +22,7 @@
 /*
  * Copyright (c) 2012, 2020 by Delphix. All rights reserved.
  * Copyright (c) 2024, 2025, Rob Norris <robn@despairlabs.com>
- * Copyright (c) 2024, Klara, Inc.
+ * Copyright (c) 2024, 2025, Klara, Inc.
  */
 
 #include <sys/dataset_kstats.h>
@@ -761,28 +761,19 @@ zvol_open(struct block_device *bdev, fmode_t flag)
 
 retry:
 #endif
-	rw_enter(&zvol_state_lock, RW_READER);
-	/*
-	 * Obtain a copy of private_data under the zvol_state_lock to make
-	 * sure that either the result of zvol free code path setting
-	 * disk->private_data to NULL is observed, or zvol_os_free()
-	 * is not called on this zv because of the positive zv_open_count.
-	 */
+
 #ifdef HAVE_BLK_MODE_T
-	zv = disk->private_data;
+	zv = READ_ONCE(disk->private_data);
 #else
-	zv = bdev->bd_disk->private_data;
+	zv = READ_ONCE(bdev->bd_disk->private_data);
 #endif
 	if (zv == NULL) {
-		rw_exit(&zvol_state_lock);
 		return (-SET_ERROR(ENXIO));
 	}
 
 	mutex_enter(&zv->zv_state_lock);
-
 	if (unlikely(zv->zv_flags & ZVOL_REMOVING)) {
 		mutex_exit(&zv->zv_state_lock);
-		rw_exit(&zvol_state_lock);
 		return (-SET_ERROR(ENXIO));
 	}
 
@@ -794,8 +785,28 @@ retry:
 	if (zv->zv_open_count == 0) {
 		if (!rw_tryenter(&zv->zv_suspend_lock, RW_READER)) {
 			mutex_exit(&zv->zv_state_lock);
+
+			/*
+			 * Removal may happen while the locks are down, so
+			 * we can't trust zv any longer; we have to start over.
+			 */
+#ifdef HAVE_BLK_MODE_T
+			zv = READ_ONCE(disk->private_data);
+#else
+			zv = READ_ONCE(bdev->bd_disk->private_data);
+#endif
+			if (zv == NULL)
+				return (-SET_ERROR(ENXIO));
+
 			rw_enter(&zv->zv_suspend_lock, RW_READER);
 			mutex_enter(&zv->zv_state_lock);
+
+			if (unlikely(zv->zv_flags & ZVOL_REMOVING)) {
+				mutex_exit(&zv->zv_state_lock);
+				rw_exit(&zv->zv_suspend_lock);
+				return (-SET_ERROR(ENXIO));
+			}
+
 			/* check to see if zv_suspend_lock is needed */
 			if (zv->zv_open_count != 0) {
 				rw_exit(&zv->zv_suspend_lock);
@@ -806,7 +817,6 @@ retry:
 			drop_suspend = B_TRUE;
 		}
 	}
-	rw_exit(&zvol_state_lock);
 
 	ASSERT(MUTEX_HELD(&zv->zv_state_lock));
 
@@ -903,11 +913,11 @@ zvol_release(struct gendisk *disk, fmode_t unused)
 #if !defined(HAVE_BLOCK_DEVICE_OPERATIONS_RELEASE_1ARG)
 	(void) unused;
 #endif
-	zvol_state_t *zv;
 	boolean_t drop_suspend = B_TRUE;
 
-	rw_enter(&zvol_state_lock, RW_READER);
-	zv = disk->private_data;
+	zvol_state_t *zv = READ_ONCE(disk->private_data);
+	if (zv == NULL)
+		return;
 
 	mutex_enter(&zv->zv_state_lock);
 	ASSERT3U(zv->zv_open_count, >, 0);
@@ -921,6 +931,15 @@ zvol_release(struct gendisk *disk, fmode_t unused)
 			mutex_exit(&zv->zv_state_lock);
 			rw_enter(&zv->zv_suspend_lock, RW_READER);
 			mutex_enter(&zv->zv_state_lock);
+
+			/*
+			 * Unlike in zvol_open(), we don't check if removal
+			 * started here, because we might be one of the openers
+			 * that needs to be thrown out! If we're the last, we
+			 * need to call zvol_last_close() below to finish
+			 * cleanup. So, no special treatment for us.
+			 */
+
 			/* check to see if zv_suspend_lock is needed */
 			if (zv->zv_open_count != 1) {
 				rw_exit(&zv->zv_suspend_lock);
@@ -930,7 +949,6 @@ zvol_release(struct gendisk *disk, fmode_t unused)
 	} else {
 		drop_suspend = B_FALSE;
 	}
-	rw_exit(&zvol_state_lock);
 
 	ASSERT(MUTEX_HELD(&zv->zv_state_lock));
 
@@ -950,9 +968,10 @@ static int
 zvol_ioctl(struct block_device *bdev, fmode_t mode,
     unsigned int cmd, unsigned long arg)
 {
-	zvol_state_t *zv = bdev->bd_disk->private_data;
 	int error = 0;
 
+	zvol_state_t *zv = READ_ONCE(bdev->bd_disk->private_data);
+	ASSERT3P(zv, !=, NULL);
 	ASSERT3U(zv->zv_open_count, >, 0);
 
 	switch (cmd) {
@@ -1004,9 +1023,8 @@ zvol_check_events(struct gendisk *disk, unsigned int clearing)
 {
 	unsigned int mask = 0;
 
-	rw_enter(&zvol_state_lock, RW_READER);
+	zvol_state_t *zv = READ_ONCE(disk->private_data);
 
-	zvol_state_t *zv = disk->private_data;
 	if (zv != NULL) {
 		mutex_enter(&zv->zv_state_lock);
 		mask = zv->zv_changed ? DISK_EVENT_MEDIA_CHANGE : 0;
@@ -1014,25 +1032,20 @@ zvol_check_events(struct gendisk *disk, unsigned int clearing)
 		mutex_exit(&zv->zv_state_lock);
 	}
 
-	rw_exit(&zvol_state_lock);
-
 	return (mask);
 }
 
 static int
 zvol_revalidate_disk(struct gendisk *disk)
 {
-	rw_enter(&zvol_state_lock, RW_READER);
+	zvol_state_t *zv = READ_ONCE(disk->private_data);
 
-	zvol_state_t *zv = disk->private_data;
 	if (zv != NULL) {
 		mutex_enter(&zv->zv_state_lock);
 		set_capacity(zv->zv_zso->zvo_disk,
 		    zv->zv_volsize >> SECTOR_BITS);
 		mutex_exit(&zv->zv_state_lock);
 	}
-
-	rw_exit(&zvol_state_lock);
 
 	return (0);
 }
@@ -1052,16 +1065,6 @@ zvol_os_update_volsize(zvol_state_t *zv, uint64_t volsize)
 	return (0);
 }
 
-void
-zvol_os_clear_private(zvol_state_t *zv)
-{
-	/*
-	 * Cleared while holding zvol_state_lock as a writer
-	 * which will prevent zvol_open() from opening it.
-	 */
-	zv->zv_zso->zvo_disk->private_data = NULL;
-}
-
 /*
  * Provide a simple virtual geometry for legacy compatibility.  For devices
  * smaller than 1 MiB a small head and sector count is used to allow very
@@ -1071,9 +1074,8 @@ zvol_os_clear_private(zvol_state_t *zv)
 static inline int
 zvol_getgeo_impl(struct gendisk *disk, struct hd_geometry *geo)
 {
-	zvol_state_t *zv = disk->private_data;
+	zvol_state_t *zv = READ_ONCE(disk->private_data);
 	sector_t sectors;
-
 	ASSERT3P(zv, !=, NULL);
 	ASSERT3U(zv->zv_open_count, >, 0);
 
@@ -1509,17 +1511,50 @@ out_kmem:
 	return (NULL);
 }
 
-/*
- * Cleanup then free a zvol_state_t which was created by zvol_alloc().
- * At this time, the structure is not opened by anyone, is taken off
- * the zvol_state_list, and has its private data set to NULL.
- * The zvol_state_lock is dropped.
- *
- * This function may take many milliseconds to complete (e.g. we've seen
- * it take over 256ms), due to the calls to "blk_cleanup_queue" and
- * "del_gendisk". Thus, consumers need to be careful to account for this
- * latency when calling this function.
- */
+void
+zvol_os_remove_minor(zvol_state_t *zv)
+{
+	ASSERT(MUTEX_HELD(&zv->zv_state_lock));
+	ASSERT0(zv->zv_open_count);
+	ASSERT0(atomic_read(&zv->zv_suspend_ref));
+	ASSERT(zv->zv_flags & ZVOL_REMOVING);
+
+	struct zvol_state_os *zso = zv->zv_zso;
+	zv->zv_zso = NULL;
+
+	/* Clearing private_data will make new callers return immediately. */
+	WRITE_ONCE(zso->zvo_disk->private_data, NULL);
+
+	/*
+	 * Drop the state lock before calling del_gendisk(). There may be
+	 * callers waiting to acquire it, but del_gendisk() will block until
+	 * they exit, which would deadlock.
+	 */
+	mutex_exit(&zv->zv_state_lock);
+
+	del_gendisk(zso->zvo_disk);
+#if defined(HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS) && \
+	(defined(HAVE_BLK_ALLOC_DISK) || defined(HAVE_BLK_ALLOC_DISK_2ARG))
+#if defined(HAVE_BLK_CLEANUP_DISK)
+	blk_cleanup_disk(zso->zvo_disk);
+#else
+	put_disk(zso->zvo_disk);
+#endif
+#else
+	blk_cleanup_queue(zso->zvo_queue);
+	put_disk(zso->zvo_disk);
+#endif
+
+	if (zso->use_blk_mq)
+		blk_mq_free_tag_set(&zso->tag_set);
+
+	ida_free(&zvol_ida, MINOR(zso->zvo_dev) >> ZVOL_MINOR_BITS);
+
+	kmem_free(zso, sizeof (struct zvol_state_os));
+
+	mutex_enter(&zv->zv_state_lock);
+}
+
 void
 zvol_os_free(zvol_state_t *zv)
 {
@@ -1527,35 +1562,19 @@ zvol_os_free(zvol_state_t *zv)
 	ASSERT(!RW_LOCK_HELD(&zv->zv_suspend_lock));
 	ASSERT(!MUTEX_HELD(&zv->zv_state_lock));
 	ASSERT0(zv->zv_open_count);
-	ASSERT3P(zv->zv_zso->zvo_disk->private_data, ==, NULL);
+	ASSERT0P(zv->zv_zso);
+
+	ASSERT0P(zv->zv_objset);
+	ASSERT0P(zv->zv_zilog);
+	ASSERT0P(zv->zv_dn);
 
 	rw_destroy(&zv->zv_suspend_lock);
 	zfs_rangelock_fini(&zv->zv_rangelock);
-
-	del_gendisk(zv->zv_zso->zvo_disk);
-#if defined(HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS) && \
-	(defined(HAVE_BLK_ALLOC_DISK) || defined(HAVE_BLK_ALLOC_DISK_2ARG))
-#if defined(HAVE_BLK_CLEANUP_DISK)
-	blk_cleanup_disk(zv->zv_zso->zvo_disk);
-#else
-	put_disk(zv->zv_zso->zvo_disk);
-#endif
-#else
-	blk_cleanup_queue(zv->zv_zso->zvo_queue);
-	put_disk(zv->zv_zso->zvo_disk);
-#endif
-
-	if (zv->zv_zso->use_blk_mq)
-		blk_mq_free_tag_set(&zv->zv_zso->tag_set);
-
-	ida_free(&zvol_ida,
-	    MINOR(zv->zv_zso->zvo_dev) >> ZVOL_MINOR_BITS);
 
 	cv_destroy(&zv->zv_removing_cv);
 	mutex_destroy(&zv->zv_state_lock);
 	dataset_kstats_destroy(&zv->zv_kstat);
 
-	kmem_free(zv->zv_zso, sizeof (struct zvol_state_os));
 	kmem_free(zv, sizeof (zvol_state_t));
 }
 
