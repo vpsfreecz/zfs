@@ -95,8 +95,9 @@ static unsigned int zvol_num_taskqs = 0;
 static inline void
 zvol_end_io(struct bio *bio, struct request *rq, int error)
 {
+	ASSERT3U(error, >=, 0);
 	if (bio) {
-		bio->bi_status = errno_to_bi_status(-error);
+		bio->bi_status = errno_to_bi_status(error);
 		bio_endio(bio);
 	} else {
 		blk_mq_end_request(rq, errno_to_bi_status(error));
@@ -329,7 +330,7 @@ zvol_write(zv_request_t *zvr)
 		blk_generic_end_io_acct(q, disk, WRITE, bio, start_time);
 	}
 
-	zvol_end_io(bio, rq, -error);
+	zvol_end_io(bio, rq, error);
 }
 
 static void
@@ -416,7 +417,7 @@ unlock:
 		    start_time);
 	}
 
-	zvol_end_io(bio, rq, -error);
+	zvol_end_io(bio, rq, error);
 }
 
 static void
@@ -493,7 +494,7 @@ zvol_read(zv_request_t *zvr)
 		blk_generic_end_io_acct(q, disk, READ, bio, start_time);
 	}
 
-	zvol_end_io(bio, rq, -error);
+	zvol_end_io(bio, rq, error);
 }
 
 static void
@@ -568,7 +569,7 @@ zvol_request_impl(zvol_state_t *zv, struct bio *bio, struct request *rq,
 	ASSERT(rq != NULL || rw == bio_data_dir(bio));
 
 	if (unlikely(zv->zv_flags & ZVOL_REMOVING)) {
-		zvol_end_io(bio, rq, -SET_ERROR(ENXIO));
+		zvol_end_io(bio, rq, SET_ERROR(ENXIO));
 		goto out;
 	}
 
@@ -587,7 +588,7 @@ zvol_request_impl(zvol_state_t *zv, struct bio *bio, struct request *rq,
 		    (long long unsigned)offset,
 		    (long unsigned)size);
 
-		zvol_end_io(bio, rq, -SET_ERROR(EIO));
+		zvol_end_io(bio, rq, SET_ERROR(EIO));
 		goto out;
 	}
 
@@ -609,7 +610,7 @@ zvol_request_impl(zvol_state_t *zv, struct bio *bio, struct request *rq,
 
 	if (rw == WRITE) {
 		if (unlikely(zv->zv_flags & ZVOL_RDONLY)) {
-			zvol_end_io(bio, rq, -SET_ERROR(EROFS));
+			zvol_end_io(bio, rq, SET_ERROR(EROFS));
 			goto out;
 		}
 
@@ -974,16 +975,17 @@ zvol_ioctl(struct block_device *bdev, fmode_t mode,
 
 	case BLKZNAME:
 		mutex_enter(&zv->zv_state_lock);
-		error = copy_to_user((void *)arg, zv->zv_name, MAXNAMELEN);
+		error = copy_to_user((void *)arg, zv->zv_name, MAXNAMELEN) ?
+		    SET_ERROR(EFAULT) : 0;
 		mutex_exit(&zv->zv_state_lock);
 		break;
 
 	default:
-		error = -ENOTTY;
+		error = SET_ERROR(ENOTTY);
 		break;
 	}
 
-	return (SET_ERROR(error));
+	return (-error);
 }
 
 #ifdef CONFIG_COMPAT
@@ -1573,7 +1575,9 @@ __zvol_os_add_disk(struct gendisk *disk)
 {
 	int error = 0;
 #ifdef HAVE_ADD_DISK_RET
-	error = add_disk(disk);
+	error = -add_disk(disk);
+	if (error)
+		error = SET_ERROR(error);
 #else
 	add_disk(disk);
 #endif
@@ -1870,7 +1874,6 @@ zvol_init(void)
 	} else {
 		zvol_actual_threads = MIN(MAX(zvol_threads, 1), 1024);
 	}
-
 	/*
 	 * Use atleast 32 zvol_threads but for many core system,
 	 * prefer 6 threads per taskq, but no more taskqs
@@ -1901,12 +1904,12 @@ zvol_init(void)
 		per_tq_thread++;
 	ztqs->tqs_cnt = num_tqs;
 	ztqs->tqs_taskq = kmem_alloc(num_tqs * sizeof (taskq_t *), KM_SLEEP);
-	error = register_blkdev(zvol_major, ZVOL_DRIVER);
+	error = -register_blkdev(zvol_major, ZVOL_DRIVER);
 	if (error) {
 		kmem_free(ztqs->tqs_taskq, ztqs->tqs_cnt * sizeof (taskq_t *));
 		ztqs->tqs_taskq = NULL;
 		printk(KERN_INFO "ZFS: register_blkdev() failed %d\n", error);
-		return (error);
+		return (SET_ERROR(error));
 	}
 
 	if (zvol_blk_mq_queue_depth == 0) {
