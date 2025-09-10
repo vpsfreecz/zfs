@@ -3648,7 +3648,13 @@ arc_hdr_destroy(arc_buf_hdr_t *hdr)
 	}
 	ASSERT(!HDR_IO_IN_PROGRESS(hdr));
 	ASSERT(!HDR_IN_HASH_TABLE(hdr));
+	boolean_t l1hdr_destroyed = B_FALSE;
 
+	/*
+	 * If L2_WRITING, destroy L1HDR before L2HDR (under mutex) so
+	 * arc_hdr_free_abd() can properly defer ABDs. Otherwise, destroy
+	 * L1HDR outside mutex to minimize contention.
+	 */
 	if (HDR_HAS_L2HDR(hdr)) {
 		l2arc_dev_t *dev = hdr->b_l2hdr.b_dev;
 		boolean_t buflist_held = MUTEX_HELD(&dev->l2ad_mtx);
@@ -3666,9 +3672,26 @@ arc_hdr_destroy(arc_buf_hdr_t *hdr)
 		 * want to re-destroy the header's L2 portion.
 		 */
 		if (HDR_HAS_L2HDR(hdr)) {
+			if (HDR_L2_WRITING(hdr)) {
+				l1hdr_destroyed = B_TRUE;
 
-			if (!HDR_EMPTY(hdr))
-				buf_discard_identity(hdr);
+				if (!HDR_EMPTY(hdr))
+					buf_discard_identity(hdr);
+
+				if (HDR_HAS_L1HDR(hdr)) {
+					arc_cksum_free(hdr);
+
+					while (hdr->b_l1hdr.b_buf != NULL)
+						arc_buf_destroy_impl(
+						    hdr->b_l1hdr.b_buf);
+
+					if (hdr->b_l1hdr.b_pabd != NULL)
+						arc_hdr_free_abd(hdr, B_FALSE);
+
+					if (HDR_HAS_RABD(hdr))
+						arc_hdr_free_abd(hdr, B_TRUE);
+				}
+			}
 
 			arc_hdr_l2hdr_destroy(hdr);
 		}
@@ -3677,26 +3700,22 @@ arc_hdr_destroy(arc_buf_hdr_t *hdr)
 			mutex_exit(&dev->l2ad_mtx);
 	}
 
-	/*
-	 * The header's identify can only be safely discarded once it is no
-	 * longer discoverable.  This requires removing it from the hash table
-	 * and the l2arc header list.  After this point the hash lock can not
-	 * be used to protect the header.
-	 */
-	if (!HDR_EMPTY(hdr))
-		buf_discard_identity(hdr);
+	if (!l1hdr_destroyed) {
+		if (!HDR_EMPTY(hdr))
+			buf_discard_identity(hdr);
 
-	if (HDR_HAS_L1HDR(hdr)) {
-		arc_cksum_free(hdr);
+		if (HDR_HAS_L1HDR(hdr)) {
+			arc_cksum_free(hdr);
 
-		while (hdr->b_l1hdr.b_buf != NULL)
-			arc_buf_destroy_impl(hdr->b_l1hdr.b_buf);
+			while (hdr->b_l1hdr.b_buf != NULL)
+				arc_buf_destroy_impl(hdr->b_l1hdr.b_buf);
 
-		if (hdr->b_l1hdr.b_pabd != NULL)
-			arc_hdr_free_abd(hdr, B_FALSE);
+			if (hdr->b_l1hdr.b_pabd != NULL)
+				arc_hdr_free_abd(hdr, B_FALSE);
 
-		if (HDR_HAS_RABD(hdr))
-			arc_hdr_free_abd(hdr, B_TRUE);
+			if (HDR_HAS_RABD(hdr))
+				arc_hdr_free_abd(hdr, B_TRUE);
+		}
 	}
 
 	ASSERT3P(hdr->b_hash_next, ==, NULL);
@@ -6636,16 +6655,22 @@ arc_release(arc_buf_t *buf, const void *tag)
 	ASSERT3S(zfs_refcount_count(&hdr->b_l1hdr.b_refcnt), >, 0);
 
 	/*
-	 * Do we have more than one buf?
+	 * Do we have more than one buf? Or L2_WRITING with unshared data?
+	 * Single-buf L2_WRITING with shared data can reuse the header since
+	 * L2ARC uses its own transformed copy.
 	 */
-	if (hdr->b_l1hdr.b_buf != buf || !ARC_BUF_LAST(buf)) {
+	if (hdr->b_l1hdr.b_buf != buf || !ARC_BUF_LAST(buf) ||
+	    (HDR_L2_WRITING(hdr) && !ARC_BUF_SHARED(buf))) {
 		arc_buf_hdr_t *nhdr;
 		uint64_t spa = hdr->b_spa;
 		uint64_t psize = HDR_GET_PSIZE(hdr);
 		uint64_t lsize = HDR_GET_LSIZE(hdr);
 		boolean_t protected = HDR_PROTECTED(hdr);
 		enum zio_compress compress = arc_hdr_get_compress(hdr);
+		uint8_t complevel = hdr->b_complevel;
 		arc_buf_contents_t type = arc_buf_type(hdr);
+		boolean_t single_buf_l2writing = (hdr->b_l1hdr.b_buf == buf &&
+		    ARC_BUF_LAST(buf) && HDR_L2_WRITING(hdr));
 
 		if (ARC_BUF_SHARED(buf) && !ARC_BUF_COMPRESSED(buf)) {
 			ASSERT3P(hdr->b_l1hdr.b_buf, !=, buf);
@@ -6656,48 +6681,51 @@ arc_release(arc_buf_t *buf, const void *tag)
 		 * Pull the buffer off of this hdr and find the last buffer
 		 * in the hdr's buffer list.
 		 */
-		VERIFY3S(remove_reference(hdr, tag), >, 0);
 		arc_buf_t *lastbuf = arc_buf_remove(hdr, buf);
-		ASSERT3P(lastbuf, !=, NULL);
+		EQUIV(single_buf_l2writing, lastbuf == NULL);
 
 		/*
 		 * If the current arc_buf_t and the hdr are sharing their data
 		 * buffer, then we must stop sharing that block.
 		 */
-		if (ARC_BUF_SHARED(buf)) {
-			ASSERT(!arc_buf_is_shared(lastbuf));
+		if (!single_buf_l2writing) {
+			if (ARC_BUF_SHARED(buf)) {
+				ASSERT(!arc_buf_is_shared(lastbuf));
 
-			/*
-			 * First, sever the block sharing relationship between
-			 * buf and the arc_buf_hdr_t.
-			 */
-			arc_unshare_buf(hdr, buf);
+				/*
+				 * First, sever the block sharing relationship
+				 * between buf and the arc_buf_hdr_t.
+				 */
+				arc_unshare_buf(hdr, buf);
 
-			/*
-			 * Now we need to recreate the hdr's b_pabd. Since we
-			 * have lastbuf handy, we try to share with it, but if
-			 * we can't then we allocate a new b_pabd and copy the
-			 * data from buf into it.
-			 */
-			if (arc_can_share(hdr, lastbuf)) {
-				arc_share_buf(hdr, lastbuf);
-			} else {
-				arc_hdr_alloc_abd(hdr, 0);
-				abd_copy_from_buf(hdr->b_l1hdr.b_pabd,
-				    buf->b_data, psize);
+				/*
+				 * Now we need to recreate the hdr's b_pabd.
+				 * Since we have lastbuf handy, we try to share
+				 * with it, but if we can't then we allocate a
+				 * new b_pabd and copy the data from buf into it
+				 */
+				if (arc_can_share(hdr, lastbuf)) {
+					arc_share_buf(hdr, lastbuf);
+				} else {
+					arc_hdr_alloc_abd(hdr, 0);
+					abd_copy_from_buf(hdr->b_l1hdr.b_pabd,
+					    buf->b_data, psize);
+				}
+			} else if (HDR_SHARED_DATA(hdr)) {
+				/*
+				 * Uncompressed shared buffers are always at the
+				 * end of the list. Compressed buffers don't
+				 * have the same requirements. This makes it
+				 * hard to simply assert that the lastbuf is
+				 * shared so we rely on the hdr's compression
+				 * flags to determine if we have a compressed,
+				 * shared buffer.
+				 */
+				ASSERT(arc_buf_is_shared(lastbuf) ||
+				    arc_hdr_get_compress(hdr) !=
+				    ZIO_COMPRESS_OFF);
+				ASSERT(!arc_buf_is_shared(buf));
 			}
-		} else if (HDR_SHARED_DATA(hdr)) {
-			/*
-			 * Uncompressed shared buffers are always at the end
-			 * of the list. Compressed buffers don't have the
-			 * same requirements. This makes it hard to
-			 * simply assert that the lastbuf is shared so
-			 * we rely on the hdr's compression flags to determine
-			 * if we have a compressed, shared buffer.
-			 */
-			ASSERT(arc_buf_is_shared(lastbuf) ||
-			    arc_hdr_get_compress(hdr) != ZIO_COMPRESS_OFF);
-			ASSERT(!arc_buf_is_shared(buf));
 		}
 
 		ASSERT(hdr->b_l1hdr.b_pabd != NULL || HDR_HAS_RABD(hdr));
@@ -6712,11 +6740,16 @@ arc_release(arc_buf_t *buf, const void *tag)
 		if (!arc_hdr_has_uncompressed_buf(hdr))
 			arc_cksum_free(hdr);
 
+		if (single_buf_l2writing)
+			VERIFY3S(remove_reference(hdr, tag), ==, 0);
+		else
+			VERIFY3S(remove_reference(hdr, tag), >, 0);
+
 		mutex_exit(hash_lock);
 
-		nhdr = arc_hdr_alloc(spa, psize, lsize, protected,
-		    compress, hdr->b_complevel, type);
-		ASSERT3P(nhdr->b_l1hdr.b_buf, ==, NULL);
+		nhdr = arc_hdr_alloc(spa, psize, lsize, protected, compress,
+		    complevel, type);
+		ASSERT0P(nhdr->b_l1hdr.b_buf);
 		ASSERT0(zfs_refcount_count(&nhdr->b_l1hdr.b_refcnt));
 		VERIFY3U(nhdr->b_type, ==, type);
 		ASSERT(!HDR_SHARED_DATA(nhdr));
