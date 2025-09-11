@@ -23,6 +23,7 @@
  * Copyright (c) 2014 by Chunwei Chen. All rights reserved.
  * Copyright (c) 2019 by Delphix. All rights reserved.
  * Copyright (c) 2023, 2024, Klara Inc.
+ * Copyright (c) 2025, Rob Norris <robn@despairlabs.com>
  */
 
 /*
@@ -63,6 +64,14 @@
 #include <linux/mm_compat.h>
 #include <linux/scatterlist.h>
 #include <linux/version.h>
+
+#ifndef nth_page
+/*
+ * Since 6.18 nth_page() no longer exists, and is no longer required to iterate
+ * within a single SG entry, so we replace it with a simple addition.
+ */
+#define	nth_page(p, n)	((p)+(n))
+#endif
 
 #if defined(MAX_ORDER)
 #define	ABD_MAX_ORDER	(MAX_ORDER)
