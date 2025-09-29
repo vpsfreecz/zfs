@@ -4419,8 +4419,8 @@ zio_vdev_io_start(zio_t *zio)
 			 * SCL_ZIO reader lock and may request it again here.
 			 * If there is another thread who wants the SCL_ZIO
 			 * writer lock, then scl_write_wanted will be set.
-			 * Thus, the spa_config_enter_priority() is used to
-			 * ignore pending writer requests.
+				 * Thus, the spa_config_enter_mmp() is used to
+				 * ignore pending writer requests.
 			 *
 			 * The locking should be revised to remove the need
 			 * for this workaround.  If that's not workable then
@@ -4428,9 +4428,9 @@ zio_vdev_io_start(zio_t *zio)
 			 * the pruning process.  This impacts the read/write
 			 * I/O balance while pruning.
 			 */
-			if (spa->spa_active_ddt_prune)
-				spa_config_enter_priority(spa, SCL_ZIO, zio,
-				    RW_READER);
+				if (spa->spa_active_ddt_prune)
+					spa_config_enter_mmp(spa, SCL_ZIO, zio,
+					    RW_READER);
 			else
 				spa_config_enter(spa, SCL_ZIO, zio,
 				    RW_READER);
