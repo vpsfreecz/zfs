@@ -419,6 +419,7 @@ struct spa {
 	uint64_t	spa_dspace;		/* dspace in normal class */
 	uint64_t	spa_rdspace;		/* raw (non-dedup) --//-- */
 	boolean_t	spa_active_ddt_prune;	/* ddt prune process active */
+	boolean_t	spa_ddt_prune_scl_zio;	/* prune sync holds SCL_ZIO */
 	brt_vdev_t	**spa_brt_vdevs;	/* array of per-vdev BRTs */
 	uint64_t	spa_brt_nvdevs;		/* number of vdevs in BRT */
 	uint64_t	spa_brt_rangesize;	/* pool's BRT range size */

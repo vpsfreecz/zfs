@@ -4399,6 +4399,46 @@ zio_alloc_zil(spa_t *spa, objset_t *os, uint64_t txg, blkptr_t *new_bp,
  * force the underlying vdev layers to call either zio_execute() or
  * zio_interrupt() to ensure that the pipeline continues with the correct I/O.
  */
+
+/*
+ * prune_candidates_sync() holds SCL_ZIO while ddt_lookup() can issue nested
+ * reads for DDT ZAP blocks. If an SCL_ZIO writer is pending, those nested
+ * reads must ignore write-wanted state so the sync task can release the reader
+ * hold it already owns. Keep that priority limited to sync reads of DDT table
+ * blocks, plus MOS dnode blocks needed to reach them.
+ */
+static boolean_t
+zio_ddt_prune_needs_scl_zio_priority(zio_t *zio)
+{
+	spa_t *spa = zio->io_spa;
+	const zbookmark_phys_t *zb = &zio->io_bookmark;
+
+	if (!spa->spa_ddt_prune_scl_zio ||
+	    zio->io_priority != ZIO_PRIORITY_SYNC_READ ||
+	    zb->zb_objset != DMU_META_OBJSET)
+		return (B_FALSE);
+
+	if (zb->zb_object == DMU_META_DNODE_OBJECT)
+		return (B_TRUE);
+
+	for (enum zio_checksum c = 0; c < ZIO_CHECKSUM_FUNCTIONS; c++) {
+		ddt_t *ddt = spa->spa_ddt[c];
+		if (ddt == NULL)
+			continue;
+
+		for (ddt_type_t type = 0; type < DDT_TYPES; type++) {
+			for (ddt_class_t class = 0; class < DDT_CLASSES;
+			    class++) {
+				if (zb->zb_object ==
+				    ddt->ddt_object[type][class])
+					return (B_TRUE);
+			}
+		}
+	}
+
+	return (B_FALSE);
+}
+
 static zio_t *
 zio_vdev_io_start(zio_t *zio)
 {
@@ -4412,8 +4452,14 @@ zio_vdev_io_start(zio_t *zio)
 	ASSERT(zio->io_child_error[ZIO_CHILD_VDEV] == 0);
 
 	if (vd == NULL) {
-		if (!(zio->io_flags & ZIO_FLAG_CONFIG_WRITER))
-			spa_config_enter(spa, SCL_ZIO, zio, RW_READER);
+		if (!(zio->io_flags & ZIO_FLAG_CONFIG_WRITER)) {
+			if (zio_ddt_prune_needs_scl_zio_priority(zio))
+				spa_config_enter_mmp(spa, SCL_ZIO, zio,
+				    RW_READER);
+			else
+				spa_config_enter(spa, SCL_ZIO, zio,
+				    RW_READER);
+		}
 
 		/*
 		 * The mirror_ops handle multiple DVAs in a single BP.
