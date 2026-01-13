@@ -417,7 +417,6 @@ ddt_object_destroy(ddt_t *ddt, ddt_type_t type, ddt_class_t class,
 {
 	spa_t *spa = ddt->ddt_spa;
 	objset_t *os = ddt->ddt_os;
-	uint64_t *objectp = &ddt->ddt_object[type][class];
 	uint64_t count;
 	char name[DDT_NAMELEN];
 
@@ -425,16 +424,19 @@ ddt_object_destroy(ddt_t *ddt, ddt_type_t type, ddt_class_t class,
 
 	ddt_object_name(ddt, type, class, name);
 
-	ASSERT3U(*objectp, !=, 0);
+	ASSERT(ddt->ddt_object[type][class] != 0);
 	ASSERT(ddt_histogram_empty(&ddt->ddt_histogram[type][class]));
 	VERIFY0(ddt_object_count(ddt, type, class, &count));
 	VERIFY0(count);
 	VERIFY0(zap_remove(os, ddt->ddt_dir_object, name, tx));
 	VERIFY0(zap_remove(os, spa->spa_ddt_stat_object, name, tx));
-	VERIFY0(ddt_ops[type]->ddt_op_destroy(os, *objectp, tx));
-	memset(&ddt->ddt_object_stats[type][class], 0, sizeof (ddt_object_t));
+	rw_enter(&ddt->ddt_objects_lock, RW_WRITER);
+	uint64_t object = ddt->ddt_object[type][class];
+	ddt->ddt_object[type][class] = 0;
+	rw_exit(&ddt->ddt_objects_lock);
 
-	*objectp = 0;
+	VERIFY0(ddt_ops[type]->ddt_op_destroy(os, object, tx));
+	memset(&ddt->ddt_object_stats[type][class], 0, sizeof (ddt_object_t));
 }
 
 static int
@@ -530,6 +532,20 @@ ddt_object_lookup(ddt_t *ddt, ddt_type_t type, ddt_class_t class,
 	    dde->dde_phys, DDT_PHYS_SIZE(ddt)));
 }
 
+/*
+ * Like ddt_object_lookup(), but for open context where we need protection
+ * against concurrent object destruction by sync context.
+ */
+static int
+ddt_object_lookup_open(ddt_t *ddt, ddt_type_t type, ddt_class_t class,
+    ddt_entry_t *dde)
+{
+	rw_enter(&ddt->ddt_objects_lock, RW_READER);
+	int error = ddt_object_lookup(ddt, type, class, dde);
+	rw_exit(&ddt->ddt_objects_lock);
+	return (error);
+}
+
 static int
 ddt_object_contains(ddt_t *ddt, ddt_type_t type, ddt_class_t class,
     const ddt_key_t *ddk)
@@ -545,21 +561,35 @@ static void
 ddt_object_prefetch(ddt_t *ddt, ddt_type_t type, ddt_class_t class,
     const ddt_key_t *ddk)
 {
-	if (!ddt_object_exists(ddt, type, class))
-		return;
+	/*
+	 * Called from open context, so protect against concurrent
+	 * object destruction by sync context.
+	 */
+	rw_enter(&ddt->ddt_objects_lock, RW_READER);
 
-	ddt_ops[type]->ddt_op_prefetch(ddt->ddt_os,
-	    ddt->ddt_object[type][class], ddk);
+	if (ddt_object_exists(ddt, type, class)) {
+		ddt_ops[type]->ddt_op_prefetch(ddt->ddt_os,
+		    ddt->ddt_object[type][class], ddk);
+	}
+
+	rw_exit(&ddt->ddt_objects_lock);
 }
 
 static void
 ddt_object_prefetch_all(ddt_t *ddt, ddt_type_t type, ddt_class_t class)
 {
-	if (!ddt_object_exists(ddt, type, class))
-		return;
+	/*
+	 * Called from open context, so protect against concurrent
+	 * object destruction by sync context.
+	 */
+	rw_enter(&ddt->ddt_objects_lock, RW_READER);
 
-	ddt_ops[type]->ddt_op_prefetch_all(ddt->ddt_os,
-	    ddt->ddt_object[type][class]);
+	if (ddt_object_exists(ddt, type, class)) {
+		ddt_ops[type]->ddt_op_prefetch_all(ddt->ddt_os,
+		    ddt->ddt_object[type][class]);
+	}
+
+	rw_exit(&ddt->ddt_objects_lock);
 }
 
 static int
@@ -587,16 +617,25 @@ int
 ddt_object_walk(ddt_t *ddt, ddt_type_t type, ddt_class_t class,
     uint64_t *walk, ddt_lightweight_entry_t *ddlwe)
 {
-	ASSERT(ddt_object_exists(ddt, type, class));
+	/*
+	 * Can be called from open context, so protect against concurrent
+	 * object destruction by sync context.
+	 */
+	rw_enter(&ddt->ddt_objects_lock, RW_READER);
+	if (!ddt_object_exists(ddt, type, class)) {
+		rw_exit(&ddt->ddt_objects_lock);
+		return (SET_ERROR(ENOENT));
+	}
 
 	int error = ddt_ops[type]->ddt_op_walk(ddt->ddt_os,
 	    ddt->ddt_object[type][class], walk, &ddlwe->ddlwe_key,
 	    &ddlwe->ddlwe_phys, DDT_PHYS_SIZE(ddt));
+	rw_exit(&ddt->ddt_objects_lock);
 	if (error == 0) {
 		ddlwe->ddlwe_type = type;
 		ddlwe->ddlwe_class = class;
-		return (0);
 	}
+
 	return (error);
 }
 
@@ -604,10 +643,20 @@ int
 ddt_object_count(ddt_t *ddt, ddt_type_t type, ddt_class_t class,
     uint64_t *count)
 {
-	ASSERT(ddt_object_exists(ddt, type, class));
+	/*
+	 * Can be called from open context, so protect against concurrent
+	 * object destruction by sync context.
+	 */
+	rw_enter(&ddt->ddt_objects_lock, RW_READER);
+	if (!ddt_object_exists(ddt, type, class)) {
+		rw_exit(&ddt->ddt_objects_lock);
+		return (SET_ERROR(ENOENT));
+	}
 
-	return (ddt_ops[type]->ddt_op_count(ddt->ddt_os,
-	    ddt->ddt_object[type][class], count));
+	int error = ddt_ops[type]->ddt_op_count(ddt->ddt_os,
+	    ddt->ddt_object[type][class], count);
+	rw_exit(&ddt->ddt_objects_lock);
+	return (error);
 }
 
 int
@@ -1615,6 +1664,7 @@ ddt_table_alloc(spa_t *spa, enum zio_checksum c)
 	    sizeof (ddt_entry_t), offsetof(ddt_entry_t, dde_node));
 	avl_create(&ddt->ddt_repair_tree, ddt_key_compare,
 	    sizeof (ddt_entry_t), offsetof(ddt_entry_t, dde_node));
+	rw_init(&ddt->ddt_objects_lock, NULL, RW_DEFAULT, NULL);
 
 	ddt->ddt_checksum = c;
 	ddt->ddt_spa = spa;
@@ -1638,6 +1688,7 @@ ddt_table_free(ddt_t *ddt)
 	}
 
 	ddt_log_free(ddt);
+	rw_destroy(&ddt->ddt_objects_lock);
 	ASSERT0(avl_numnodes(&ddt->ddt_tree));
 	ASSERT0(avl_numnodes(&ddt->ddt_repair_tree));
 	avl_destroy(&ddt->ddt_tree);
@@ -1768,7 +1819,7 @@ ddt_repair_start(ddt_t *ddt, const blkptr_t *bp)
 			 * there's definitely only one copy, so don't even try.
 			 */
 			if (class != DDT_CLASS_UNIQUE &&
-			    ddt_object_lookup(ddt, type, class, dde) == 0)
+			    ddt_object_lookup_open(ddt, type, class, dde) == 0)
 				return (dde);
 		}
 	}
