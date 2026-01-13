@@ -282,6 +282,9 @@ typedef struct {
 
 	avl_tree_t	ddt_repair_tree;	/* entries being repaired */
 
+	/* Protects ddt_object[] against sync-time destruction. */
+	krwlock_t	ddt_objects_lock;
+
 	ddt_log_t	ddt_log[2];		/* active/flushing logs */
 	ddt_log_t	*ddt_log_active;	/* pointers into ddt_log */
 	ddt_log_t	*ddt_log_flushing;	/* swapped when flush starts */
