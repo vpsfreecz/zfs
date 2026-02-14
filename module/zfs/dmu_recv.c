@@ -997,24 +997,6 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 		    numredactsnaps, tx);
 	}
 
-	if (featureflags & DMU_BACKUP_FEATURE_LARGE_MICROZAP) {
-		/*
-		 * The source has seen a large microzap at least once in its
-		 * life, so we activate the feature here to match. It's not
-		 * strictly necessary since a large microzap is usable without
-		 * the feature active, but if that object is sent on from here,
-		 * we need this info to know to add the stream feature.
-		 *
-		 * There may be no large microzap in the incoming stream, or
-		 * ever again, but this is a very niche feature and its very
-		 * difficult to spot a large microzap in the stream, so its
-		 * not worth the effort of trying harder to activate the
-		 * feature at first use.
-		 */
-		dsl_dataset_activate_feature(dsobj, SPA_FEATURE_LARGE_MICROZAP,
-		    (void *)B_TRUE, tx);
-	}
-
 	dmu_buf_will_dirty(newds->ds_dbuf, tx);
 	dsl_dataset_phys(newds)->ds_flags |= DS_FLAG_INCONSISTENT;
 
@@ -1024,7 +1006,7 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 	 * (see ZFS_ERR_STREAM_LARGE_BLOCK_MISMATCH). To prevent this
 	 * check from being spuriously triggered, we always activate
 	 * the large block feature if the feature flag is present in the
-	 * stream.  This covers the case where the sending side has the feature
+	 * stream. This covers the case where the sending side has the feature
 	 * active, but has since deleted the file containing large blocks.
 	 */
 	if (featureflags & DMU_BACKUP_FEATURE_LARGE_BLOCKS &&
@@ -1042,6 +1024,26 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 		dsl_dataset_activate_feature(newds->ds_object,
 		    SPA_FEATURE_LONGNAME, (void *)B_TRUE, tx);
 		newds->ds_feature[SPA_FEATURE_LONGNAME] = (void *)B_TRUE;
+	}
+
+	if (featureflags & DMU_BACKUP_FEATURE_LARGE_MICROZAP &&
+	    !dsl_dataset_feature_is_active(newds, SPA_FEATURE_LARGE_MICROZAP)) {
+		/*
+		 * The source has seen a large microzap at least once in its
+		 * life, so we activate the feature here to match. It's not
+		 * strictly necessary since a large microzap is usable without
+		 * the feature active, but if that object is sent on from here,
+		 * we need this info to know to add the stream feature.
+		 *
+		 * There may be no large microzap in the incoming stream, or
+		 * ever again, but this is a very niche feature and its very
+		 * difficult to spot a large microzap in the stream, so its
+		 * not worth the effort of trying harder to activate the
+		 * feature at first use.
+		 */
+		dsl_dataset_activate_feature(dsobj, SPA_FEATURE_LARGE_MICROZAP,
+		    (void *)B_TRUE, tx);
+		newds->ds_feature[SPA_FEATURE_LARGE_MICROZAP] = (void *)B_TRUE;
 	}
 
 	/*
