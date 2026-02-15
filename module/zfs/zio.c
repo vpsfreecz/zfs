@@ -3694,15 +3694,23 @@ zio_ddt_child_write_ready(zio_t *zio)
 	int p = DDT_PHYS_FOR_COPIES(ddt, zio->io_prop.zp_copies);
 	ddt_phys_variant_t v = DDT_PHYS_VARIANT(ddt, p);
 
-	if (ddt_phys_is_gang(dde->dde_phys, v)) {
-		for (int i = 0; i < BP_GET_NDVAS(zio->io_bp); i++) {
-			dva_t *d = &zio->io_bp->blk_dva[i];
-			metaslab_group_alloc_decrement(zio->io_spa,
-			    DVA_GET_VDEV(d), zio->io_allocator,
-			    METASLAB_ASYNC_ALLOC, zio->io_size, zio);
+		if (ddt_phys_is_gang(dde->dde_phys, v)) {
+			for (int i = 0; i < BP_GET_NDVAS(zio->io_bp); i++) {
+				dva_t *d = &zio->io_bp->blk_dva[i];
+				/*
+				 * 2.3.x metaslab throttling is tag-based (see
+				 * metaslab_group_alloc_{in,de}crement()).
+				 *
+				 * Upstream uses a newer API; when retrying we only
+				 * need to drop the reservation so throttle accounting
+				 * doesn't leak.
+				 */
+				metaslab_group_alloc_decrement(zio->io_spa,
+				    DVA_GET_VDEV(d), zio, METASLAB_ASYNC_ALLOC,
+				    zio->io_allocator, B_FALSE);
+			}
+			zio->io_error = EAGAIN;
 		}
-		zio->io_error = EAGAIN;
-	}
 
 	if (zio->io_error != 0)
 		return;
