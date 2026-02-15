@@ -879,6 +879,7 @@ int dmu_free_long_object(objset_t *os, uint64_t object);
 #define	DMU_READ_NO_PREFETCH	1 /* don't prefetch */
 #define	DMU_READ_NO_DECRYPT	2 /* don't decrypt */
 #define	DMU_DIRECTIO		4 /* use Direct I/O */
+#define	DMU_KEEP_CACHING	(1U << 9) /* Don't affect caching. */
 
 int dmu_read(objset_t *os, uint64_t object, uint64_t offset, uint64_t size,
     void *buf, uint32_t flags);
