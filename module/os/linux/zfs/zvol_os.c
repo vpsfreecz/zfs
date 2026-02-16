@@ -771,9 +771,9 @@ retry:
 #endif
 
 #ifdef HAVE_BLK_MODE_T
-	zv = atomic_load_ptr(&disk->private_data);
+	zv = READ_ONCE(disk->private_data);
 #else
-	zv = atomic_load_ptr(&bdev->bd_disk->private_data);
+	zv = READ_ONCE(bdev->bd_disk->private_data);
 #endif
 	if (zv == NULL) {
 		return (-SET_ERROR(ENXIO));
@@ -799,9 +799,9 @@ retry:
 			 * we can't trust zv any longer; we have to start over.
 			 */
 #ifdef HAVE_BLK_MODE_T
-			zv = atomic_load_ptr(&disk->private_data);
+			zv = READ_ONCE(disk->private_data);
 #else
-			zv = atomic_load_ptr(&bdev->bd_disk->private_data);
+			zv = READ_ONCE(bdev->bd_disk->private_data);
 #endif
 			if (zv == NULL)
 				return (-SET_ERROR(ENXIO));
@@ -923,7 +923,7 @@ zvol_release(struct gendisk *disk, fmode_t unused)
 #endif
 	boolean_t drop_suspend = B_TRUE;
 
-	zvol_state_t *zv = atomic_load_ptr(&disk->private_data);
+	zvol_state_t *zv = READ_ONCE(disk->private_data);
 	if (zv == NULL)
 		return;
 
@@ -978,7 +978,7 @@ zvol_ioctl(struct block_device *bdev, fmode_t mode,
 {
 	int error = 0;
 
-	zvol_state_t *zv = atomic_load_ptr(&bdev->bd_disk->private_data);
+	zvol_state_t *zv = READ_ONCE(bdev->bd_disk->private_data);
 	ASSERT3P(zv, !=, NULL);
 	ASSERT3U(zv->zv_open_count, >, 0);
 
@@ -1032,7 +1032,7 @@ zvol_check_events(struct gendisk *disk, unsigned int clearing)
 {
 	unsigned int mask = 0;
 
-	zvol_state_t *zv = atomic_load_ptr(&disk->private_data);
+	zvol_state_t *zv = READ_ONCE(disk->private_data);
 
 	if (zv != NULL) {
 		mutex_enter(&zv->zv_state_lock);
@@ -1047,7 +1047,7 @@ zvol_check_events(struct gendisk *disk, unsigned int clearing)
 static int
 zvol_revalidate_disk(struct gendisk *disk)
 {
-	zvol_state_t *zv = atomic_load_ptr(&disk->private_data);
+	zvol_state_t *zv = READ_ONCE(disk->private_data);
 
 	if (zv != NULL) {
 		mutex_enter(&zv->zv_state_lock);
@@ -1085,7 +1085,7 @@ zvol_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 {
 	sector_t sectors;
 
-	zvol_state_t *zv = atomic_load_ptr(&bdev->bd_disk->private_data);
+	zvol_state_t *zv = READ_ONCE(bdev->bd_disk->private_data);
 	ASSERT3P(zv, !=, NULL);
 	ASSERT3U(zv->zv_open_count, >, 0);
 
@@ -1519,7 +1519,7 @@ zvol_os_remove_minor(zvol_state_t *zv)
 	zv->zv_zso = NULL;
 
 	/* Clearing private_data will make new callers return immediately. */
-	atomic_store_ptr(&zso->zvo_disk->private_data, NULL);
+	WRITE_ONCE(zso->zvo_disk->private_data, NULL);
 
 	/*
 	 * Drop the state lock before calling del_gendisk(). There may be
