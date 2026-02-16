@@ -1327,13 +1327,20 @@ zil_check_log_chain(dsl_pool_t *dp, dsl_dataset_t *ds, void *tx)
  * zil_commit() is racing with spa_sync().
  */
 static void
-zil_commit_waiter_skip(zil_commit_waiter_t *zcw)
+zil_commit_waiter_done(zil_commit_waiter_t *zcw, int zio_error)
 {
 	mutex_enter(&zcw->zcw_lock);
 	ASSERT3B(zcw->zcw_done, ==, B_FALSE);
+	zcw->zcw_zio_error = zio_error;
 	zcw->zcw_done = B_TRUE;
 	cv_broadcast(&zcw->zcw_cv);
 	mutex_exit(&zcw->zcw_lock);
+}
+
+static void
+zil_commit_waiter_skip(zil_commit_waiter_t *zcw)
+{
+	zil_commit_waiter_done(zcw, 0);
 }
 
 /*
