@@ -812,17 +812,23 @@ static xattr_handler_t zpl_xattr_user_handler =
  * the kernel) which keep information in extended attributes to which
  * ordinary processes should not have access." - xattr(7)
  */
+static uint_t zfs_xattr_trusted_userns_enable = 0;
+ZFS_MODULE_PARAM(zfs, zfs_, xattr_trusted_userns_enable, UINT, ZMOD_RW,
+	"Allow trusted.* xattr access from first-level user namespaces");
+
 bool __xattr_trusted(void);
 
 bool __xattr_trusted(void)
 {
 	struct user_namespace *ns = current_user_ns();
-	if (((ns == &init_user_ns) || (ns->parent == &init_user_ns)) &&
-	    ns_capable(ns, CAP_SYS_ADMIN))
-		return true;
-	printk(KERN_INFO "ZFS: __xattr_trusted() failed for pid %d\n",
-			current->pid);
-	return false;
+	if (ns == &init_user_ns)
+		return (ns_capable(ns, CAP_SYS_ADMIN));
+
+	if (zfs_xattr_trusted_userns_enable != 0 &&
+	    ns->parent == &init_user_ns)
+		return (ns_capable(ns, CAP_SYS_ADMIN));
+
+	return (false);
 }
 
 
