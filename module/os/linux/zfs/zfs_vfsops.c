@@ -111,6 +111,10 @@ static const match_table_t zpl_tokens = {
 	{ TOKEN_LAST,		NULL },
 };
 
+static uint_t zfs_statfs_shack_enabled = 0;
+ZFS_MODULE_PARAM(zfs, zfs_, statfs_shack_enabled, UINT, ZMOD_RW,
+	"Enable per-process statfs f_type spoofing for container runtimes");
+
 static void
 zfsvfs_vfs_free(vfs_t *vfsp)
 {
@@ -1142,16 +1146,18 @@ zfs_statvfs(struct inode *ip, struct kstatfs *statp)
 	statp->f_namelen =
 	    zfsvfs->z_longname ? (ZAP_MAXNAMELEN_NEW - 1) : (MAXNAMELEN - 1);
 
-	if (strcmp(current->comm, "containerd") == 0)
-		magic_hack = true;
-	if (strcmp(current->comm, "dockerd") == 0)
-		magic_hack = true;
-	if (strcmp(current->comm, "lxd") == 0)
-		magic_hack = true;
-	if (strcmp(current->comm, "podman") == 0)
-		magic_hack = true;
-	if (strcmp(current->comm, "crio") == 0)
-		magic_hack = true;
+	if (zfs_statfs_shack_enabled != 0) {
+		if (strcmp(current->comm, "containerd") == 0)
+			magic_hack = true;
+		if (strcmp(current->comm, "dockerd") == 0)
+			magic_hack = true;
+		if (strcmp(current->comm, "lxd") == 0)
+			magic_hack = true;
+		if (strcmp(current->comm, "podman") == 0)
+			magic_hack = true;
+		if (strcmp(current->comm, "crio") == 0)
+			magic_hack = true;
+	}
 	if (magic_hack)
 		statp->f_type = ZFS_SHACK_MAGIC;
 
