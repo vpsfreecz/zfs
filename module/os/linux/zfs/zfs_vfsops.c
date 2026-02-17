@@ -1325,15 +1325,64 @@ zfs_prune(struct super_block *sb, unsigned long nr_to_scan, int *objects)
 static void
 zfs_sync_all_mappings(zfsvfs_t *zfsvfs)
 {
-	znode_t *zp;
+	znode_t **zp_array, *zp;
+	size_t nr_znodes = 0, scanned = 0;
+	size_t max_array;
+	size_t i, j;
 
 	mutex_enter(&zfsvfs->z_znodes_lock);
 	for (zp = list_head(&zfsvfs->z_all_znodes); zp != NULL;
-	    zp = list_next(&zfsvfs->z_all_znodes, zp)) {
-		if (zp->z_sa_hdl)
-			filemap_write_and_wait(ZTOI(zp)->i_mapping);
-	}
+	    zp = list_next(&zfsvfs->z_all_znodes, zp))
+		nr_znodes++;
 	mutex_exit(&zfsvfs->z_znodes_lock);
+
+	if (nr_znodes == 0)
+		return;
+
+	max_array = PAGE_SIZE * 8 / sizeof (znode_t *);
+	if (max_array == 0)
+		max_array = 1;
+
+	zp_array = vmem_zalloc(max_array * sizeof (znode_t *), KM_SLEEP);
+
+	while (scanned < nr_znodes) {
+		size_t to_scan;
+
+		j = 0;
+		to_scan = MIN(max_array, nr_znodes - scanned);
+
+		mutex_enter(&zfsvfs->z_znodes_lock);
+		for (i = 0; i < to_scan; i++) {
+			zp = list_head(&zfsvfs->z_all_znodes);
+			if (zp == NULL)
+				break;
+
+			ASSERT(list_link_active(&zp->z_link_node));
+			list_remove(&zfsvfs->z_all_znodes, zp);
+			list_insert_tail(&zfsvfs->z_all_znodes, zp);
+
+			if (!zp->z_sa_hdl)
+				continue;
+
+			if (igrab(ZTOI(zp)) == NULL)
+				continue;
+
+			zp_array[j++] = zp;
+		}
+		mutex_exit(&zfsvfs->z_znodes_lock);
+
+		if (i == 0)
+			break;
+		scanned += i;
+
+		for (i = 0; i < j; i++) {
+			filemap_write_and_wait(ZTOI(zp_array[i])->i_mapping);
+			zrele(zp_array[i]);
+			cond_resched();
+		}
+	}
+
+	vmem_free(zp_array, max_array * sizeof (znode_t *));
 }
 
 /*
