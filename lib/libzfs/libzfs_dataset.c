@@ -1027,13 +1027,13 @@ static int
 zfs_ugid_map_validate_str(const char *strval)
 {
 	int pos = 0, i = 0, entries = 0, matches;
-	int64_t ns_id, host_id, cnt;
+	long long ns_id, host_id, cnt;
 
 	if (strcmp(strval, "none") == 0)
 		return 0;
 
 	while (1) {
-		matches = sscanf(strval + pos, "%ld:%ld:%ld%n",
+		matches = sscanf(strval + pos, "%lld:%lld:%lld%n",
 				&ns_id, &host_id, &cnt, &i);
 		pos += i;
 
@@ -1055,7 +1055,7 @@ zfs_ugid_map_validate_str(const char *strval)
 		else
 			return 1;
 
-		if (++entries == ZFS_UGID_MAP_SIZE)
+		if (++entries > ZFS_UGID_MAP_SIZE)
 			return 1;
 	}
 

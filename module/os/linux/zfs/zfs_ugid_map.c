@@ -11,10 +11,10 @@ struct zfs_ugid_map *
 zfs_create_ugid_map(objset_t *os, zfs_prop_t prop)
 {
 	char *value = kmem_alloc(ZAP_MAXVALUELEN, KM_SLEEP);
-        char source[ZFS_MAX_DATASET_NAME_LEN] = "Internal error - setpoint not determined";
-	uint32_t ns_id, host_id, count;
+	char source[ZFS_MAX_DATASET_NAME_LEN] =
+	    "Internal error - setpoint not determined";
 	int pos = 0, i = 0, error;
-	struct zfs_ugid_map *ugid_map;
+	struct zfs_ugid_map *ugid_map = NULL;
 	struct zfs_ugid_map_entry *entry;
 
 	dsl_pool_config_enter(dmu_objset_pool(os), FTAG);
@@ -25,39 +25,32 @@ zfs_create_ugid_map(objset_t *os, zfs_prop_t prop)
 	dsl_pool_config_exit(dmu_objset_pool(os), FTAG);
 
 	if (error != 0) {
-		kmem_free(value, ZAP_MAXVALUELEN);
-		/*
-		 * TODO: should we report error? we'd have to pass the return
-		 * value through function argument to be able to report errors
-		 */
-		return (NULL);
-		//return (error);
+		goto out;
 	}
 
 	if (strcmp(value, "none") == 0)
-		return (NULL);
+		goto out;
 
 	ugid_map = vmem_zalloc(sizeof(struct zfs_ugid_map), KM_SLEEP);
 	ugid_map->m_size = ZFS_UGID_MAP_SIZE;
 	ugid_map->m_entries = 0;
-	ugid_map->m_map = vmem_zalloc(sizeof(struct zfs_ugid_map_entry*) * ugid_map->m_size,
-			KM_SLEEP);
+	ugid_map->m_map = vmem_zalloc(
+	    sizeof (struct zfs_ugid_map_entry *) * ugid_map->m_size,
+	    KM_SLEEP);
 
-	while (1) {
-		error = sscanf(value + pos, "%u:%u:%u%n", &ns_id, &host_id, &count, &i);
+	while (value[pos] != '\0') {
+		unsigned long long ns_id, host_id, count;
+
+		error = sscanf(value + pos, "%llu:%llu:%llu%n",
+		    &ns_id, &host_id, &count, &i);
+		if (error != 3 || i <= 0 || count == 0)
+			goto fail;
+
+		if (ugid_map->m_entries >= ugid_map->m_size)
+			goto fail;
 		pos += i;
 
-		if (error == 0) {
-			break;
-
-		} else if (error != 3) {
-			//pr_debug("invalid ugid map format");
-			return (NULL);
-			//return (error);
-		}
-		//pr_debug("got map: ns_id=%u, host_id=%u,, count=%u for %s", ns_id, host_id, count, source);
-
-		entry = vmem_zalloc(sizeof(struct zfs_ugid_map_entry), KM_SLEEP);
+		entry = vmem_zalloc(sizeof (struct zfs_ugid_map_entry), KM_SLEEP);
 		entry->e_ns_id = ns_id;
 		entry->e_host_id = host_id;
 		entry->e_count = count;
@@ -65,23 +58,25 @@ zfs_create_ugid_map(objset_t *os, zfs_prop_t prop)
 		ugid_map->m_map[ugid_map->m_entries] = entry;
 		ugid_map->m_entries += 1;
 
-		// TODO: make map size dynamic
-		if (ugid_map->m_entries == ZFS_UGID_MAP_SIZE)
-			break;
-		else if (value[pos] == ',')
+		if (value[pos] == ',')
 			pos += 1;
-		else
-			break;
+		else if (value[pos] != '\0')
+			goto fail;
 	}
 
-	if (ugid_map->m_entries == 0) {
-		vmem_free(ugid_map->m_map, sizeof(struct zfs_ugid_map_entry*) * ugid_map->m_size);
-		vmem_free(ugid_map, sizeof(struct zfs_ugid_map));
-		return (NULL);
-	}
+	if (ugid_map->m_entries == 0)
+		goto fail;
 
+out:
 	kmem_free(value, ZAP_MAXVALUELEN);
 	return (ugid_map);
+
+fail:
+	if (ugid_map != NULL) {
+		zfs_free_ugid_map(ugid_map);
+		ugid_map = NULL;
+	}
+	goto out;
 }
 
 void
