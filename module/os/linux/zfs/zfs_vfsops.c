@@ -1322,6 +1322,35 @@ zfs_prune(struct super_block *sb, unsigned long nr_to_scan, int *objects)
 	return (error);
 }
 
+static void
+zfs_sync_all_mappings(zfsvfs_t *zfsvfs)
+{
+	struct inode *ip;
+
+	for (;;) {
+		znode_t *zp;
+
+		ip = NULL;
+		mutex_enter(&zfsvfs->z_znodes_lock);
+		for (zp = list_head(&zfsvfs->z_all_znodes); zp != NULL;
+		    zp = list_next(&zfsvfs->z_all_znodes, zp)) {
+			if (!zp->z_sa_hdl)
+				continue;
+			ip = igrab(ZTOI(zp));
+			if (ip != NULL)
+				break;
+		}
+		mutex_exit(&zfsvfs->z_znodes_lock);
+
+		if (ip == NULL)
+			break;
+
+		filemap_write_and_wait(ip->i_mapping);
+		iput(ip);
+		cond_resched();
+	}
+}
+
 /*
  * Teardown the zfsvfs_t.
  *
@@ -1341,13 +1370,7 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
 	 * zfsvfs_t have been handled only then can it be safely destroyed.
 	 */
 	if (zfsvfs->z_os) {
-		mutex_enter(&zfsvfs->z_znodes_lock);
-		for (zp = list_head(&zfsvfs->z_all_znodes); zp;
-		    zp = list_next(&zfsvfs->z_all_znodes, zp)) {
-			if (zp->z_sa_hdl)
-				filemap_write_and_wait(ZTOI(zp)->i_mapping);
-		}
-		mutex_exit(&zfsvfs->z_znodes_lock);
+		zfs_sync_all_mappings(zfsvfs);
 		/*
 		 * If we're unmounting we have to wait for the list to
 		 * drain completely.
@@ -1636,13 +1659,7 @@ zfs_preumount(struct super_block *sb)
 		*
 		* Let's do it here.
 		*/
-		mutex_enter(&zfsvfs->z_znodes_lock);
-		for (zp = list_head(&zfsvfs->z_all_znodes); zp;
-		    zp = list_next(&zfsvfs->z_all_znodes, zp)) {
-			if (zp->z_sa_hdl)
-				filemap_write_and_wait(ZTOI(zp)->i_mapping);
-		}
-		mutex_exit(&zfsvfs->z_znodes_lock);
+		zfs_sync_all_mappings(zfsvfs);
 
 		zfs_unlinked_drain_stop_wait(zfsvfs);
 		zfsctl_destroy(sb->s_fs_info);
