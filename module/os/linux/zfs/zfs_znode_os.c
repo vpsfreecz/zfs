@@ -1139,9 +1139,22 @@ again:
 	if (zp == NULL) {
 		err = SET_ERROR(ENOENT);
 	} else {
-		*zpp = zp;
-		VERIFY0(insert_inode_locked(ZTOI(zp)));
-		unlock_new_inode(ZTOI(zp));
+		int iret = insert_inode_locked(ZTOI(zp));
+
+		if (iret == -EBUSY) {
+			discard_new_inode(ZTOI(zp));
+			zfs_znode_hold_exit(zfsvfs, zh);
+			cond_resched();
+			goto again;
+		}
+		if (iret != 0) {
+			discard_new_inode(ZTOI(zp));
+			err = SET_ERROR(-iret);
+		} else {
+			*zpp = zp;
+			unlock_new_inode(ZTOI(zp));
+			err = 0;
+		}
 	}
 	zfs_znode_hold_exit(zfsvfs, zh);
 	return (err);
