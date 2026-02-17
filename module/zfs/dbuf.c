@@ -5328,9 +5328,8 @@ dbuf_remap(dnode_t *dn, dmu_buf_impl_t *db, dmu_tx_t *tx)
 		for (int i = 0; i < db->db.db_size >> DNODE_SHIFT;
 		    i += dnp[i].dn_extra_slots + 1) {
 			for (int j = 0; j < dnp[i].dn_nblkptr; j++) {
-				krwlock_t *lock = (dn->dn_dbuf == NULL ? NULL :
-				    &dn->dn_dbuf->db_rwlock);
-				dbuf_remap_impl(dn, &dnp[i].dn_blkptr[j], lock,
+				dbuf_remap_impl(dn, &dnp[i].dn_blkptr[j],
+				    &db->db_rwlock,
 				    tx);
 			}
 		}
