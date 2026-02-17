@@ -1648,7 +1648,6 @@ void
 zfs_preumount(struct super_block *sb)
 {
 	zfsvfs_t *zfsvfs = sb->s_fs_info;
-	znode_t *zp;
 
 	/* zfsvfs is NULL when zfs_domount fails during mount */
 	if (zfsvfs) {
