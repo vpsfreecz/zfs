@@ -1325,30 +1325,15 @@ zfs_prune(struct super_block *sb, unsigned long nr_to_scan, int *objects)
 static void
 zfs_sync_all_mappings(zfsvfs_t *zfsvfs)
 {
-	struct inode *ip;
+	znode_t *zp;
 
-	for (;;) {
-		znode_t *zp;
-
-		ip = NULL;
-		mutex_enter(&zfsvfs->z_znodes_lock);
-		for (zp = list_head(&zfsvfs->z_all_znodes); zp != NULL;
-		    zp = list_next(&zfsvfs->z_all_znodes, zp)) {
-			if (!zp->z_sa_hdl)
-				continue;
-			ip = igrab(ZTOI(zp));
-			if (ip != NULL)
-				break;
-		}
-		mutex_exit(&zfsvfs->z_znodes_lock);
-
-		if (ip == NULL)
-			break;
-
-		filemap_write_and_wait(ip->i_mapping);
-		iput(ip);
-		cond_resched();
+	mutex_enter(&zfsvfs->z_znodes_lock);
+	for (zp = list_head(&zfsvfs->z_all_znodes); zp != NULL;
+	    zp = list_next(&zfsvfs->z_all_znodes, zp)) {
+		if (zp->z_sa_hdl)
+			filemap_write_and_wait(ZTOI(zp)->i_mapping);
 	}
+	mutex_exit(&zfsvfs->z_znodes_lock);
 }
 
 /*
