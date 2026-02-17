@@ -111,8 +111,8 @@ arc_all_memory(void)
 #endif /* CONFIG_HIGHMEM */
 }
 
-unsigned long zfs_arc_swapcache_ignore_bytes = (1L << 33); // 8 GB
-ZFS_MODULE_PARAM(zfs_arc, zfs_arc_, swapcache_ignore_bytes, UINT, ZMOD_RW,
+uint64_t zfs_arc_swapcache_ignore_bytes = (1ULL << 33); // 8 GB
+ZFS_MODULE_PARAM(zfs_arc, zfs_arc_, swapcache_ignore_bytes, U64, ZMOD_RW,
 	"Consider swapcache above this limit a free memory");
 /*
  * Return the amount of memory that is considered free.  In user space
