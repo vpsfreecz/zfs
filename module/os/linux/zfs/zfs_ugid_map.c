@@ -5,6 +5,7 @@
 #include <sys/zap.h>
 #include <sys/dmu_objset.h>
 #include <sys/zfs_ugid_map.h>
+#include <linux/vfs_compat.h>
 
 
 struct zfs_ugid_map *
@@ -209,6 +210,7 @@ zfs_ugid_map_acl_to_xattr(struct zfs_ugid_map *uid_map,
 		struct zfs_ugid_map *gid_map,
 		struct posix_acl *acl, void *value, int size)
 {
+	struct posix_acl *acl_map;
 	struct posix_acl_entry *pa, *pe;
 	int ret;
 
@@ -217,8 +219,14 @@ zfs_ugid_map_acl_to_xattr(struct zfs_ugid_map *uid_map,
 	if (uid_map == NULL && gid_map == NULL)
 		return (posix_acl_to_xattr(kcred->user_ns, acl, value, size));
 
+	acl_map = posix_acl_clone(acl, GFP_KERNEL);
+	if (acl_map == NULL)
+		return (-ENOMEM);
+	if (IS_ERR(acl_map))
+		return (PTR_ERR(acl_map));
+
 	/* Map the entries */
-	FOREACH_ACL_ENTRY(pa, acl, pe) {
+	FOREACH_ACL_ENTRY(pa, acl_map, pe) {
 		switch(pa->e_tag) {
 			case ACL_USER:
 				//pr_debug("zfs_ugid_map_acl_to_xattr: map uid %u",
@@ -240,32 +248,8 @@ zfs_ugid_map_acl_to_xattr(struct zfs_ugid_map *uid_map,
 	}
 
 	/* Make the xattr with mapped entries */
-	ret = posix_acl_to_xattr(kcred->user_ns, acl, value, size);
-
-	/*
-	 *  Unmap the entries from acl, because the caller keeps using it
-	 *  and we must not change it.
-	 */
-	FOREACH_ACL_ENTRY(pa, acl, pe) {
-		switch(pa->e_tag) {
-			case ACL_USER:
-				//pr_debug("zfs_ugid_map_acl_to_xattr: unmap uid %u",
-				//		KUID_TO_SUID(pa->e_uid));
-				pa->e_uid = SUID_TO_KUID(zfs_ugid_map_ns_to_host(
-					uid_map,
-					KUID_TO_SUID(pa->e_uid)));
-				break;
-			case ACL_GROUP:
-				//pr_debug("zfs_ugid_map_acl_to_xattr: unmap gid %u",
-				//		KGID_TO_SGID(pa->e_gid));
-				pa->e_gid = SGID_TO_KGID(zfs_ugid_map_ns_to_host(
-					gid_map,
-					KGID_TO_SGID(pa->e_gid)));
-				break;
-			default:
-				continue;
-		}
-	}
+	ret = posix_acl_to_xattr(kcred->user_ns, acl_map, value, size);
+	zpl_posix_acl_release(acl_map);
 
 	return (ret);
 }
