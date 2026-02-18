@@ -1049,10 +1049,20 @@ zpl_set_acl_impl(struct inode *ip, struct posix_acl *acl, int type)
 		kmem_free(value, size);
 
 	if (!error) {
-		if (acl)
-			set_cached_acl(ip, type, acl);
-		else
+		if (acl) {
+			/*
+			 * With uid/gid mappings, userspace can provide ACL
+			 * IDs in namespace form and expects mapped IDs on
+			 * readback. Caching the raw ACL can bypass mapping on
+			 * subsequent reads, so force re-read from xattr.
+			 */
+			if (zfsvfs->z_uid_map != NULL || zfsvfs->z_gid_map != NULL)
+				forget_cached_acl(ip, type);
+			else
+				set_cached_acl(ip, type, acl);
+		} else {
 			forget_cached_acl(ip, type);
+		}
 	}
 
 	return (error);
