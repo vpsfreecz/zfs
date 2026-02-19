@@ -1637,12 +1637,12 @@ zfs_preumount(struct super_block *sb)
 	/* zfsvfs is NULL when zfs_domount fails during mount */
 	if (zfsvfs) {
 		/*
-		* Since we have to disable zpl_prune_sb when umounting,
-		* because the shrinker gets freed before zpl_kill_sb is
-		* ever called, the umount might be unable to sync open files.
-		*
-		* Let's do it here.
-		*/
+		 * Since we have to disable zpl_prune_sb when umounting,
+		 * because the shrinker gets freed before zpl_kill_sb is
+		 * ever called, the umount might be unable to sync open files.
+		 *
+		 * Let's do it here.
+		 */
 		zfs_sync_all_mappings(zfsvfs);
 
 		zfs_unlinked_drain_stop_wait(zfsvfs);

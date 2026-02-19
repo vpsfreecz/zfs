@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: CDDL-1.0
+
 #ifndef	_SYS_FS_ZFS_UGID_MAP_H
 #define	_SYS_FS_ZFS_UGID_MAP_H
 
@@ -8,15 +10,15 @@
 #define	ZFS_UGID_MAP_SIZE	10
 
 struct zfs_ugid_map_entry {
-	uint64_t        e_ns_id;
-	uint64_t        e_host_id;
-	uint64_t        e_count;
+	uint64_t		e_ns_id;
+	uint64_t		e_host_id;
+	uint64_t		e_count;
 };
 
 struct zfs_ugid_map {
 	struct zfs_ugid_map_entry **m_map;
-	uint64_t        m_size;
-	uint64_t        m_entries;
+	uint64_t		m_size;
+	uint64_t		m_entries;
 };
 
 struct zfs_ugid_map *

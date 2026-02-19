@@ -140,13 +140,11 @@ zpl_acl_to_xattr(struct posix_acl *acl, void *value, int size)
 
 static inline struct posix_acl *
 zpl_acl_from_xattr_map(struct zfs_ugid_map *uid_map,
-		struct zfs_ugid_map *gid_map,
-		const void *value, int size)
+			struct zfs_ugid_map *gid_map,
+			const void *value, int size)
 {
-	return zfs_ugid_map_acl_from_xattr(
-		uid_map,
-		gid_map,
-		posix_acl_from_xattr(kcred->user_ns, value, size));
+	return (zfs_ugid_map_acl_from_xattr(uid_map, gid_map,
+	    posix_acl_from_xattr(kcred->user_ns, value, size)));
 }
 
 static inline int

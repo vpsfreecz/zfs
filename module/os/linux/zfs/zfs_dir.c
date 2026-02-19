@@ -870,11 +870,11 @@ zfs_link_create(zfs_dirlock_t *dl, znode_t *zp, dmu_tx_t *tx, int flag)
 		 * ZNEW nodes come from zfs_mknode() where the link
 		 * count has already been initialised
 		 */
-		inc_nlink(ZTOI(zp));
-		links = ZTOI(zp)->i_nlink;
-		SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_LINKS(zfsvfs),
-			NULL, &links, sizeof (links));
-	}
+			inc_nlink(ZTOI(zp));
+			links = ZTOI(zp)->i_nlink;
+			SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_LINKS(zfsvfs),
+			    NULL, &links, sizeof (links));
+		}
 
 	error = sa_bulk_update(zp->z_sa_hdl, bulk, count, tx);
 	ASSERT(error == 0);

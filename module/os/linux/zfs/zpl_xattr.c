@@ -818,7 +818,8 @@ ZFS_MODULE_PARAM(zfs, zfs_, xattr_trusted_userns_enable, UINT, ZMOD_RW,
 
 bool __xattr_trusted(void);
 
-bool __xattr_trusted(void)
+bool
+__xattr_trusted(void)
 {
 	struct user_namespace *ns = current_user_ns();
 	if (ns == &init_user_ns)
@@ -836,7 +837,7 @@ static int
 __zpl_xattr_trusted_list(struct inode *ip, char *list, size_t list_size,
     const char *name, size_t name_len)
 {
-	return __xattr_trusted();
+	return (__xattr_trusted());
 }
 ZPL_XATTR_LIST_WRAPPER(zpl_xattr_trusted_list);
 
@@ -1037,7 +1038,8 @@ zpl_set_acl_impl(struct inode *ip, struct posix_acl *acl, int type)
 		value = kmem_alloc(size, KM_SLEEP);
 
 		zfsvfs = ITOZSB(ip);
-		error = zpl_acl_to_xattr_map(zfsvfs->z_uid_map, zfsvfs->z_gid_map, acl, value, size);
+			error = zpl_acl_to_xattr_map(zfsvfs->z_uid_map,
+			    zfsvfs->z_gid_map, acl, value, size);
 		if (error < 0) {
 			kmem_free(value, size);
 			return (error);
@@ -1056,8 +1058,9 @@ zpl_set_acl_impl(struct inode *ip, struct posix_acl *acl, int type)
 			 * readback. Caching the raw ACL can bypass mapping on
 			 * subsequent reads, so force re-read from xattr.
 			 */
-			if (zfsvfs->z_uid_map != NULL || zfsvfs->z_gid_map != NULL)
-				forget_cached_acl(ip, type);
+				if (zfsvfs->z_uid_map != NULL ||
+				    zfsvfs->z_gid_map != NULL)
+					forget_cached_acl(ip, type);
 			else
 				set_cached_acl(ip, type, acl);
 		} else {
@@ -1118,7 +1121,8 @@ zpl_get_acl_impl(struct inode *ip, int type)
 
 	if (size > 0) {
 		zfsvfs = ITOZSB(ip);
-		acl = zpl_acl_from_xattr_map(zfsvfs->z_uid_map, zfsvfs->z_gid_map, value, size);
+			acl = zpl_acl_from_xattr_map(zfsvfs->z_uid_map,
+			    zfsvfs->z_gid_map, value, size);
 	} else if (size == -ENODATA || size == -ENOSYS) {
 		acl = NULL;
 	} else {
