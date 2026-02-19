@@ -7730,7 +7730,6 @@ share_mount(int op, int argc, char **argv)
 				zfs_close(zhp);
 			}
 		}
-		}
 
 	free(options);
 	return (ret);
