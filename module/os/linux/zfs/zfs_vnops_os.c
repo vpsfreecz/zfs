@@ -2447,11 +2447,11 @@ top:
 
 	if (mask & (ATTR_UID|ATTR_GID)) {
 
-			if (mask & ATTR_UID) {
-				stored_uid = zfs_ugid_map_host_to_ns(
-				    zfsvfs->z_uid_map, new_kuid);
-				offset_uid = zfs_ugid_map_ns_to_host(
-				    zfsvfs->z_uid_map, new_kuid);
+		if (mask & ATTR_UID) {
+			stored_uid = zfs_ugid_map_host_to_ns(
+			    zfsvfs->z_uid_map, new_kuid);
+			offset_uid = zfs_ugid_map_ns_to_host(
+			    zfsvfs->z_uid_map, new_kuid);
 
 			ZTOI(zp)->i_uid = SUID_TO_KUID(offset_uid);
 			new_uid = zfs_uid_read(ZTOI(zp));
@@ -2466,11 +2466,11 @@ top:
 			}
 		}
 
-			if (mask & ATTR_GID) {
-				stored_gid = zfs_ugid_map_host_to_ns(
-				    zfsvfs->z_gid_map, new_kgid);
-				offset_gid = zfs_ugid_map_ns_to_host(
-				    zfsvfs->z_gid_map, new_kgid);
+		if (mask & ATTR_GID) {
+			stored_gid = zfs_ugid_map_host_to_ns(
+			    zfsvfs->z_gid_map, new_kgid);
+			offset_gid = zfs_ugid_map_ns_to_host(
+			    zfsvfs->z_gid_map, new_kgid);
 
 			ZTOI(zp)->i_gid = SGID_TO_KGID(offset_gid);
 			new_gid = zfs_gid_read(ZTOI(zp));
