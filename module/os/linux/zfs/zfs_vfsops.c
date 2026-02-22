@@ -73,6 +73,10 @@ zfsvfs_vfs_alloc(void)
 	return (vfsp);
 }
 
+static uint_t zfs_container_statfs_enabled = 0;
+ZFS_MODULE_PARAM(zfs, zfs_, container_statfs_enabled, UINT, ZMOD_RW,
+	"Enable per-process statfs f_type spoofing for container runtimes");
+
 void
 zfsvfs_vfs_free(vfs_t *vfsp)
 {
@@ -917,6 +921,7 @@ zfs_statvfs(struct inode *ip, struct kstatfs *statp)
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
 	uint64_t refdbytes, availbytes, usedobjs, availobjs;
 	int err = 0;
+	bool use_container_magic = false;
 
 	if ((err = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
 		return (err);
@@ -965,6 +970,21 @@ zfs_statvfs(struct inode *ip, struct kstatfs *statp)
 	statp->f_type = ZFS_SUPER_MAGIC;
 	statp->f_namelen =
 	    zfsvfs->z_longname ? (ZAP_MAXNAMELEN_NEW - 1) : (MAXNAMELEN - 1);
+
+	if (zfs_container_statfs_enabled != 0) {
+		if (strcmp(current->comm, "containerd") == 0)
+			use_container_magic = true;
+		if (strcmp(current->comm, "dockerd") == 0)
+			use_container_magic = true;
+		if (strcmp(current->comm, "lxd") == 0)
+			use_container_magic = true;
+		if (strcmp(current->comm, "podman") == 0)
+			use_container_magic = true;
+		if (strcmp(current->comm, "crio") == 0)
+			use_container_magic = true;
+	}
+	if (use_container_magic)
+		statp->f_type = ZFS_CONTAINER_SUPER_MAGIC;
 
 	/*
 	 * We have all of 40 characters to stuff a string here.
