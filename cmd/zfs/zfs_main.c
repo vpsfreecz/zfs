@@ -358,7 +358,8 @@ get_usage(zfs_help_t idx)
 		return (gettext("\tset [-u] <property=value> ... "
 		    "<filesystem|volume|snapshot> ...\n"));
 	case HELP_SHARE:
-		return (gettext("\tshare [-l] <-a [nfs|smb] | filesystem>\n"));
+		return (gettext("\tshare [-l] <-a [nfs|smb] | "
+		    "[-r] filesystem>\n"));
 	case HELP_SNAPSHOT:
 		return (gettext("\tsnapshot [-r] [-o property=value] ... "
 		    "<filesystem|volume>@<snap> ...\n"));
@@ -7459,6 +7460,7 @@ share_mount(int op, int argc, char **argv)
 {
 	int do_all = 0;
 	int recursive = 0;
+	int share_recursive = 0;
 	boolean_t verbose = B_FALSE;
 	boolean_t json = B_FALSE;
 	int c, ret = 0;
@@ -7476,7 +7478,7 @@ share_mount(int op, int argc, char **argv)
 
 	/* check options */
 	while ((c = getopt_long(argc, argv,
-	    op == OP_MOUNT ? ":ajRlvo:Of" : "al",
+	    op == OP_MOUNT ? ":ajRlvo:Of" : "alr",
 	    op == OP_MOUNT ? long_options : NULL, NULL)) != -1) {
 		switch (c) {
 		case 'a':
@@ -7514,6 +7516,9 @@ share_mount(int op, int argc, char **argv)
 			break;
 		case 'f':
 			flags |= MS_FORCE;
+			break;
+		case 'r':
+			share_recursive = 1;
 			break;
 		case ':':
 			(void) fprintf(stderr, gettext("missing argument for "
@@ -7674,9 +7679,53 @@ share_mount(int op, int argc, char **argv)
 		if ((zhp = zfs_open(g_zfs, argv[0],
 		    ZFS_TYPE_FILESYSTEM)) == NULL) {
 			ret = 1;
+		} else if (op == OP_SHARE && share_recursive) {
+			int iter_err;
+			start_progress_timer();
+			get_all_cb_t cb = { 0 };
+			get_all_state_t state = {
+				.ga_verbose = verbose,
+				.ga_cbp = &cb
+			};
+
+			libzfs_add_handle(&cb, zhp);
+			assert(cb.cb_used <= cb.cb_alloc);
+
+			iter_err = zfs_iter_filesystems_v2(zhp, 0,
+			    get_one_dataset, &state);
+
+			if (iter_err != 0) {
+				ret = 1;
+			} else if (cb.cb_used == 0) {
+				ret = 0;
+			} else {
+				share_mount_state_t sms = { 0 };
+
+				sms.sm_op = op;
+				sms.sm_verbose = verbose;
+				sms.sm_flags = flags;
+				sms.sm_options = options;
+				sms.sm_total = cb.cb_used;
+				pthread_mutex_init(&sms.sm_lock, NULL);
+
+				/*
+				 * libshare isn't mt-safe, so don't do
+				 * the operation in parallel.
+				 */
+				zfs_foreach_mountpoint(g_zfs,
+				    cb.cb_handles, cb.cb_used,
+				    share_mount_one_cb, &sms, 1);
+				zfs_commit_shares(NULL);
+
+				ret = sms.sm_status;
+			}
+
+			for (int i = 0; i < cb.cb_used; i++)
+				zfs_close(cb.cb_handles[i]);
+			free(cb.cb_handles);
 		} else {
-			ret = share_mount_one(zhp, op, flags, SA_NO_PROTOCOL,
-			    B_TRUE, options);
+			ret = share_mount_one(zhp, op, flags,
+			    SA_NO_PROTOCOL, B_TRUE, options);
 			zfs_commit_shares(NULL);
 			zfs_close(zhp);
 		}
