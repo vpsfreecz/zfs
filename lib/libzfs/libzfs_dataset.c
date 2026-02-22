@@ -1030,36 +1030,36 @@ zfs_ugid_map_validate_str(const char *strval)
 	long long ns_id, host_id, cnt;
 
 	if (strcmp(strval, "none") == 0)
-		return 0;
+		return (0);
 
 	while (1) {
 		matches = sscanf(strval + pos, "%lld:%lld:%lld%n",
-				&ns_id, &host_id, &cnt, &i);
+		    &ns_id, &host_id, &cnt, &i);
 		pos += i;
 
 		if (matches == 0) {
 			if (entries > 0)
 				break;
 			else
-				return 1;
+				return (1);
 		} else if (matches != 3) {
-			return 1;
+			return (1);
 		}
 
 		if (ns_id < 0 || host_id < 0 || cnt < 1)
-			return 1;
+			return (1);
 		else if (strval[pos] == ',')
 			pos += 1;
 		else if (strval[pos] == '\0')
-			return 0;
+			return (0);
 		else
-			return 1;
+			return (1);
 
 		if (++entries > ZFS_UGID_MAP_SIZE)
-			return 1;
+			return (1);
 	}
 
-	return 0;
+	return (0);
 }
 
 /*
@@ -3087,8 +3087,8 @@ zfs_prop_get(zfs_handle_t *zhp, zfs_prop_t prop, char *propbuf, size_t proplen,
 		zcp_check(zhp, prop, val, NULL);
 		break;
 
-	//case ZFS_PROP_UIDMAP: // TODO retrieve property
-	//case ZFS_PROP_GIDMAP:
+		/* case ZFS_PROP_UIDMAP: TODO retrieve property */
+		/* case ZFS_PROP_GIDMAP: */
 
 	default:
 		switch (zfs_prop_get_type(prop)) {

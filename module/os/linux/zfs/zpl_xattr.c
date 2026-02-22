@@ -812,11 +812,32 @@ static xattr_handler_t zpl_xattr_user_handler =
  * the kernel) which keep information in extended attributes to which
  * ordinary processes should not have access." - xattr(7)
  */
+static uint_t zfs_xattr_trusted_userns_enable = 0;
+ZFS_MODULE_PARAM(zfs, zfs_, xattr_trusted_userns_enable, UINT, ZMOD_RW,
+	"Allow trusted.* xattr access from first-level user namespaces");
+
+bool __xattr_trusted(void);
+
+bool
+__xattr_trusted(void)
+{
+	struct user_namespace *ns = current_user_ns();
+	if (ns == &init_user_ns)
+		return (ns_capable(ns, CAP_SYS_ADMIN));
+
+	if (zfs_xattr_trusted_userns_enable != 0 &&
+	    ns->parent == &init_user_ns)
+		return (ns_capable(ns, CAP_SYS_ADMIN));
+
+	return (false);
+}
+
+
 static int
 __zpl_xattr_trusted_list(struct inode *ip, char *list, size_t list_size,
     const char *name, size_t name_len)
 {
-	return (capable(CAP_SYS_ADMIN));
+	return (__xattr_trusted());
 }
 ZPL_XATTR_LIST_WRAPPER(zpl_xattr_trusted_list);
 
@@ -827,7 +848,7 @@ __zpl_xattr_trusted_get(struct inode *ip, const char *name,
 	char *xattr_name;
 	int error;
 
-	if (!capable(CAP_SYS_ADMIN))
+	if (!__xattr_trusted())
 		return (-EACCES);
 	/* xattr_resolve_name will do this for us if this is defined */
 	xattr_name = kmem_asprintf("%s%s", XATTR_TRUSTED_PREFIX, name);
@@ -847,7 +868,7 @@ __zpl_xattr_trusted_set(zidmap_t *user_ns,
 	char *xattr_name;
 	int error;
 
-	if (!capable(CAP_SYS_ADMIN))
+	if (!__xattr_trusted())
 		return (-EACCES);
 	/* xattr_resolve_name will do this for us if this is defined */
 	xattr_name = kmem_asprintf("%s%s", XATTR_TRUSTED_PREFIX, name);
@@ -968,6 +989,7 @@ zpl_set_acl_impl(struct inode *ip, struct posix_acl *acl, int type)
 	char *name, *value = NULL;
 	int error = 0;
 	size_t size = 0;
+	zfsvfs_t *zfsvfs;
 
 	if (S_ISLNK(ip->i_mode))
 		return (-EOPNOTSUPP);
@@ -1015,7 +1037,9 @@ zpl_set_acl_impl(struct inode *ip, struct posix_acl *acl, int type)
 		size = posix_acl_xattr_size(acl->a_count);
 		value = kmem_alloc(size, KM_SLEEP);
 
-		error = zpl_acl_to_xattr(acl, value, size);
+		zfsvfs = ITOZSB(ip);
+		error = zpl_acl_to_xattr_map(zfsvfs->z_uid_map,
+		    zfsvfs->z_gid_map, acl, value, size);
 		if (error < 0) {
 			kmem_free(value, size);
 			return (error);
@@ -1027,10 +1051,21 @@ zpl_set_acl_impl(struct inode *ip, struct posix_acl *acl, int type)
 		kmem_free(value, size);
 
 	if (!error) {
-		if (acl)
-			set_cached_acl(ip, type, acl);
-		else
+		if (acl) {
+			/*
+			 * With uid/gid mappings, userspace can provide ACL
+			 * IDs in namespace form and expects mapped IDs on
+			 * readback. Caching the raw ACL can bypass mapping on
+			 * subsequent reads, so force re-read from xattr.
+			 */
+			if (zfsvfs->z_uid_map != NULL ||
+			    zfsvfs->z_gid_map != NULL)
+				forget_cached_acl(ip, type);
+			else
+				set_cached_acl(ip, type, acl);
+		} else {
 			forget_cached_acl(ip, type);
+		}
 	}
 
 	return (error);
@@ -1065,6 +1100,7 @@ zpl_get_acl_impl(struct inode *ip, int type)
 	struct posix_acl *acl;
 	void *value = NULL;
 	char *name;
+	zfsvfs_t *zfsvfs;
 
 	switch (type) {
 	case ACL_TYPE_ACCESS:
@@ -1084,7 +1120,9 @@ zpl_get_acl_impl(struct inode *ip, int type)
 	}
 
 	if (size > 0) {
-		acl = zpl_acl_from_xattr(value, size);
+		zfsvfs = ITOZSB(ip);
+		acl = zpl_acl_from_xattr_map(zfsvfs->z_uid_map,
+		    zfsvfs->z_gid_map, value, size);
 	} else if (size == -ENODATA || size == -ENOSYS) {
 		acl = NULL;
 	} else {
