@@ -913,6 +913,10 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/cli_root/zfs_set/setup.ksh \
 	functional/cli_root/zfs_set/share_mount_001_neg.ksh \
 	functional/cli_root/zfs_set/snapdir_001_pos.ksh \
+	functional/cli_root/zfs_set/ugidmap_001_pos.ksh \
+	functional/cli_root/zfs_set/ugidmap_002_pos.ksh \
+	functional/cli_root/zfs_set/ugidmap_003_pos.ksh \
+	functional/cli_root/zfs_set/ugidmap_004_pos.ksh \
 	functional/cli_root/zfs/setup.ksh \
 	functional/cli_root/zfs_set/user_property_001_pos.ksh \
 	functional/cli_root/zfs_set/user_property_002_pos.ksh \

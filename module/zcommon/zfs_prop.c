@@ -41,6 +41,7 @@
 #include <sys/zfs_acl.h>
 #include <sys/zfs_ioctl.h>
 #include <sys/zfs_znode.h>
+#include <sys/zfs_ugid_map.h>
 #include <sys/dsl_crypt.h>
 #include <sys/simd.h>
 
@@ -55,6 +56,101 @@
 #endif
 
 static zprop_desc_t zfs_prop_table[ZFS_NUM_PROPS];
+
+static int
+zfs_ugid_map_parse_id(const char **valuep, uint64_t *idp)
+{
+	const char *value = *valuep;
+	uint64_t id = 0;
+
+	if (*value < '0' || *value > '9')
+		return (EINVAL);
+
+	do {
+		uint64_t digit = *value - '0';
+
+		if (id > (UINT64_MAX - digit) / 10)
+			return (EINVAL);
+		id = id * 10 + digit;
+		value++;
+	} while (*value >= '0' && *value <= '9');
+
+	*valuep = value;
+	*idp = id;
+	return (0);
+}
+
+static boolean_t
+zfs_ugid_map_ranges_overlap(uint64_t first, uint64_t first_count,
+    uint64_t second, uint64_t second_count)
+{
+	return (first <= second + second_count - 1 &&
+	    second <= first + first_count - 1);
+}
+
+int
+zfs_ugid_map_parse(const char *value,
+    struct zfs_ugid_map_entry entries[ZFS_UGID_MAP_SIZE],
+    uint64_t *entry_count)
+{
+	struct zfs_ugid_map_entry parsed[ZFS_UGID_MAP_SIZE];
+	uint64_t count = 0;
+	int error;
+
+	if (strcmp(value, "none") == 0) {
+		*entry_count = 0;
+		return (0);
+	}
+
+	for (;;) {
+		struct zfs_ugid_map_entry *entry;
+
+		if (count == ZFS_UGID_MAP_SIZE)
+			return (EINVAL);
+		entry = &parsed[count];
+
+		error = zfs_ugid_map_parse_id(&value, &entry->e_ns_id);
+		if (error != 0 || *value++ != ':')
+			return (EINVAL);
+		error = zfs_ugid_map_parse_id(&value, &entry->e_host_id);
+		if (error != 0 || *value++ != ':')
+			return (EINVAL);
+		error = zfs_ugid_map_parse_id(&value, &entry->e_count);
+		if (error != 0 || entry->e_count == 0 ||
+		    entry->e_ns_id > ZFS_UGID_MAP_MAX_ID ||
+		    entry->e_host_id > ZFS_UGID_MAP_MAX_ID ||
+		    entry->e_count - 1 >
+		    ZFS_UGID_MAP_MAX_ID - entry->e_ns_id ||
+		    entry->e_count - 1 >
+		    ZFS_UGID_MAP_MAX_ID - entry->e_host_id)
+			return (EINVAL);
+
+		count++;
+		if (*value == '\0')
+			break;
+		if (*value++ != ',' || *value == '\0')
+			return (EINVAL);
+	}
+
+	for (uint64_t i = 0; i < count; i++) {
+		for (uint64_t j = i + 1; j < count; j++) {
+			if (zfs_ugid_map_ranges_overlap(parsed[i].e_ns_id,
+			    parsed[i].e_count, parsed[j].e_ns_id,
+			    parsed[j].e_count) ||
+			    zfs_ugid_map_ranges_overlap(parsed[i].e_host_id,
+			    parsed[i].e_count, parsed[j].e_host_id,
+			    parsed[j].e_count))
+				return (EINVAL);
+		}
+	}
+
+	if (entries != NULL) {
+		for (uint64_t i = 0; i < count; i++)
+			entries[i] = parsed[i];
+	}
+	*entry_count = count;
+	return (0);
+}
 
 /* Note this is indexed by zfs_userquota_prop_t, keep the order the same */
 const char *const zfs_userquota_prop_prefixes[] = {
@@ -622,6 +718,12 @@ zfs_prop_init(void)
 	    "redact_snaps", NULL, PROP_READONLY,
 	    ZFS_TYPE_DATASET | ZFS_TYPE_BOOKMARK, "<snapshot>[,...]",
 	    "RSNAPS", sfeatures);
+	zprop_register_string(ZFS_PROP_UIDMAP, "uidmap",
+	    "none", PROP_INHERIT, ZFS_TYPE_FILESYSTEM,
+	    "<map> | none", "UIDMAP", sfeatures);
+	zprop_register_string(ZFS_PROP_GIDMAP, "gidmap",
+	    "none", PROP_INHERIT, ZFS_TYPE_FILESYSTEM,
+	    "<map> | none", "GIDMAP", sfeatures);
 
 	/* readonly number properties */
 	zprop_register_number(ZFS_PROP_USED, "used", 0, PROP_READONLY,
@@ -1134,3 +1236,4 @@ EXPORT_SYMBOL(zfs_prop_index_to_string);
 EXPORT_SYMBOL(zfs_prop_string_to_index);
 EXPORT_SYMBOL(zfs_prop_valid_for_type);
 EXPORT_SYMBOL(zfs_prop_written);
+EXPORT_SYMBOL(zfs_ugid_map_parse);

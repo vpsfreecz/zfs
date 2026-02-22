@@ -112,6 +112,8 @@ extern "C" {
 #define	SA_ZPL_DXATTR(z)	z->z_attr_table[ZPL_DXATTR]
 #define	SA_ZPL_PAD(z)		z->z_attr_table[ZPL_PAD]
 #define	SA_ZPL_PROJID(z)	z->z_attr_table[ZPL_PROJID]
+#define	SA_ZPL_VPSADMINOS_FILECAP(z) \
+	z->z_attr_table[ZPL_VPSADMINOS_FILECAP]
 
 /*
  * Is ID ephemeral?
