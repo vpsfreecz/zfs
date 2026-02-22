@@ -94,7 +94,7 @@ uint64_t
 arc_default_max(uint64_t min, uint64_t allmem)
 {
 	/* Default to 1/4 of all memory */
-	return MAX(allmem / 4, min);
+	return (MAX(allmem / 4, min));
 }
 
 /*

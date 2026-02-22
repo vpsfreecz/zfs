@@ -670,7 +670,7 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 	uint64_t	crtime[2], atime[2], mtime[2], ctime[2];
 	uint64_t	mode, size, links, parent, pflags;
 	uint64_t	projid = ZFS_DEFAULT_PROJID;
-	uint64_t        offset_uid, offset_gid;
+	uint64_t	offset_uid, offset_gid;
 	uint64_t	rdev = 0;
 	zfsvfs_t	*zfsvfs = ZTOZSB(dzp);
 	dmu_buf_t	*db;
@@ -792,8 +792,10 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 			pflags |= ZFS_PROJINHERIT;
 	}
 
-	offset_uid = zfs_ugid_map_host_to_ns(zfsvfs->z_uid_map, acl_ids->z_fuid);
-	offset_gid = zfs_ugid_map_host_to_ns(zfsvfs->z_gid_map, acl_ids->z_fgid);
+	offset_uid = zfs_ugid_map_host_to_ns(zfsvfs->z_uid_map,
+	    acl_ids->z_fuid);
+	offset_gid = zfs_ugid_map_host_to_ns(zfsvfs->z_gid_map,
+	    acl_ids->z_fgid);
 
 	/*
 	 * No execs denied will be determined when zfs_mode_compute() is called.
@@ -1268,8 +1270,10 @@ zfs_rezget(znode_t *zp)
 	zp->z_projid = projid;
 	zp->z_mode = ZTOI(zp)->i_mode = mode;
 
-	zfs_uid_write(ZTOI(zp), zfs_ugid_map_ns_to_host(zfsvfs->z_uid_map, z_uid));
-	zfs_gid_write(ZTOI(zp), zfs_ugid_map_ns_to_host(zfsvfs->z_gid_map, z_gid));
+	zfs_uid_write(ZTOI(zp),
+	    zfs_ugid_map_ns_to_host(zfsvfs->z_uid_map, z_uid));
+	zfs_gid_write(ZTOI(zp),
+	    zfs_ugid_map_ns_to_host(zfsvfs->z_gid_map, z_gid));
 
 	ZFS_TIME_DECODE(&tmp_ts, atime);
 	zpl_inode_set_atime_to_ts(ZTOI(zp), tmp_ts);
