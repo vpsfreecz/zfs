@@ -967,6 +967,17 @@ zpl_file_idmap(struct file *filp)
 #endif
 }
 
+static struct user_namespace *
+zpl_ioctl_userns(void)
+{
+	struct user_namespace *ns = current_user_ns();
+
+	if ((ns != &init_user_ns) && (ns->parent != &init_user_ns))
+		ns = &init_user_ns;
+
+	return (ns);
+}
+
 static struct {
 	uint64_t zfs_flag;
 	uint32_t fs_flag;
@@ -1037,6 +1048,7 @@ __zpl_ioctl_setflags(zidmap_t *mnt_ns, struct inode *ip, uint32_t ioctl_flags,
 {
 	uint64_t zfs_flags = ITOZ(ip)->z_pflags;
 	xoptattr_t *xoap;
+	struct user_namespace *ns = zpl_ioctl_userns();
 
 	if (ioctl_flags & ~(FS_IMMUTABLE_FL | FS_APPEND_FL | FS_NODUMP_FL |
 	    FS_PROJINHERIT_FL))
@@ -1047,7 +1059,7 @@ __zpl_ioctl_setflags(zidmap_t *mnt_ns, struct inode *ip, uint32_t ioctl_flags,
 
 	if ((fchange(ioctl_flags, zfs_flags, FS_IMMUTABLE_FL, ZFS_IMMUTABLE) ||
 	    fchange(ioctl_flags, zfs_flags, FS_APPEND_FL, ZFS_APPENDONLY)) &&
-	    !capable(CAP_LINUX_IMMUTABLE))
+	    !ns_capable(ns, CAP_LINUX_IMMUTABLE))
 		return (-EPERM);
 
 	if (!zpl_inode_owner_or_capable(mnt_ns, ip))
@@ -1083,6 +1095,7 @@ __zpl_ioctl_setxflags(zidmap_t *mnt_ns, struct inode *ip, uint32_t ioctl_flags,
 {
 	uint64_t zfs_flags = ITOZ(ip)->z_pflags;
 	xoptattr_t *xoap;
+	struct user_namespace *ns = zpl_ioctl_userns();
 
 	if (ioctl_flags & ~(FS_XFLAG_IMMUTABLE | FS_XFLAG_APPEND |
 	    FS_XFLAG_NODUMP | FS_XFLAG_PROJINHERIT))
@@ -1091,7 +1104,7 @@ __zpl_ioctl_setxflags(zidmap_t *mnt_ns, struct inode *ip, uint32_t ioctl_flags,
 	if ((fchange(ioctl_flags, zfs_flags, FS_XFLAG_IMMUTABLE,
 	    ZFS_IMMUTABLE) ||
 	    fchange(ioctl_flags, zfs_flags, FS_XFLAG_APPEND, ZFS_APPENDONLY)) &&
-	    !capable(CAP_LINUX_IMMUTABLE))
+	    !ns_capable(ns, CAP_LINUX_IMMUTABLE))
 		return (-EPERM);
 
 	if (!zpl_inode_owner_or_capable(mnt_ns, ip))
@@ -1302,13 +1315,14 @@ __zpl_ioctl_setdosflags(zidmap_t *mnt_ns, struct inode *ip,
 {
 	uint64_t zfs_flags = ITOZ(ip)->z_pflags;
 	xoptattr_t *xoap;
+	struct user_namespace *ns = zpl_ioctl_userns();
 
 	if (ioctl_flags & (~ZFS_DOS_FL_USER_VISIBLE))
 		return (-EOPNOTSUPP);
 
 	if ((fchange(ioctl_flags, zfs_flags, ZFS_IMMUTABLE, ZFS_IMMUTABLE) ||
 	    fchange(ioctl_flags, zfs_flags, ZFS_APPENDONLY, ZFS_APPENDONLY)) &&
-	    !capable(CAP_LINUX_IMMUTABLE))
+	    !ns_capable(ns, CAP_LINUX_IMMUTABLE))
 		return (-EPERM);
 
 	if (!zpl_inode_owner_or_capable(mnt_ns, ip))
