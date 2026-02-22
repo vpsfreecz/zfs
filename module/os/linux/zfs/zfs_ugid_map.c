@@ -1,0 +1,166 @@
+#include <sys/types.h>
+#include <sys/fs/zfs.h>
+#include <sys/dsl_prop.h>
+#include <sys/dsl_dataset.h>
+#include <sys/zap.h>
+#include <sys/dmu_objset.h>
+#include <sys/zfs_ugid_map.h>
+
+
+struct zfs_ugid_map *
+zfs_create_ugid_map(objset_t *os, zfs_prop_t prop)
+{
+	char *value = kmem_alloc(ZAP_MAXVALUELEN, KM_SLEEP);
+	char source[ZFS_MAX_DATASET_NAME_LEN] =
+	    "Internal error - setpoint not determined";
+	int pos = 0, i = 0, error;
+	struct zfs_ugid_map *ugid_map = NULL;
+	struct zfs_ugid_map_entry *entry;
+
+	dsl_pool_config_enter(dmu_objset_pool(os), FTAG);
+
+	error = dsl_prop_get_ds(os->os_dsl_dataset, zfs_prop_to_name(prop), 1,
+	    ZAP_MAXVALUELEN, value, source);
+
+	dsl_pool_config_exit(dmu_objset_pool(os), FTAG);
+
+	if (error != 0) {
+		goto out;
+	}
+
+	if (strcmp(value, "none") == 0)
+		goto out;
+
+	ugid_map = vmem_zalloc(sizeof(struct zfs_ugid_map), KM_SLEEP);
+	ugid_map->m_size = ZFS_UGID_MAP_SIZE;
+	ugid_map->m_entries = 0;
+	ugid_map->m_map = vmem_zalloc(
+	    sizeof (struct zfs_ugid_map_entry *) * ugid_map->m_size,
+	    KM_SLEEP);
+
+	while (value[pos] != '\0') {
+		unsigned long long ns_id, host_id, count;
+
+		error = sscanf(value + pos, "%llu:%llu:%llu%n",
+		    &ns_id, &host_id, &count, &i);
+		if (error != 3 || i <= 0 || count == 0)
+			goto fail;
+
+		if (ugid_map->m_entries >= ugid_map->m_size)
+			goto fail;
+		pos += i;
+
+			entry = vmem_zalloc(sizeof (struct zfs_ugid_map_entry), KM_SLEEP);
+		entry->e_ns_id = ns_id;
+		entry->e_host_id = host_id;
+		entry->e_count = count;
+
+		ugid_map->m_map[ugid_map->m_entries] = entry;
+		ugid_map->m_entries += 1;
+
+		if (value[pos] == ',')
+			pos += 1;
+		else if (value[pos] != '\0')
+			goto fail;
+	}
+
+	if (ugid_map->m_entries == 0)
+		goto fail;
+
+out:
+	kmem_free(value, ZAP_MAXVALUELEN);
+	return (ugid_map);
+
+fail:
+	if (ugid_map != NULL) {
+		zfs_free_ugid_map(ugid_map);
+		ugid_map = NULL;
+	}
+	goto out;
+}
+
+void
+zfs_free_ugid_map(struct zfs_ugid_map *ugid_map)
+{
+	int i;
+
+	if (ugid_map == NULL)
+		return;
+
+	for (i = 0; i < ugid_map->m_size; i++) {
+		vmem_free(ugid_map->m_map[i], sizeof(struct zfs_ugid_map_entry));
+	}
+
+	vmem_free(ugid_map->m_map, sizeof(struct zfs_ugid_map_entry*) * ugid_map->m_size);
+	vmem_free(ugid_map, sizeof(struct zfs_ugid_map));
+}
+
+uint64_t
+zfs_ugid_map_ns_to_host(struct zfs_ugid_map *ugid_map, uint64_t id)
+{
+	uint64_t res;
+	int i;
+	struct zfs_ugid_map_entry *entry;
+
+	if (ugid_map == NULL)
+		return (id);
+
+	/* look for a matching mapping */
+	for (i = 0; i < ugid_map->m_entries; i++) {
+		entry = ugid_map->m_map[i];
+
+		/* check if we're already mapped into the entry */
+		if (id >= entry->e_host_id && id < (entry->e_host_id + entry->e_count)) {
+			pr_debug("zfs_ugid_map_ns_to_host: %lld already mapped via mapping %lld:%lld:%lld",
+				id, entry->e_ns_id, entry->e_host_id, entry->e_count);
+			return (id);
+		}
+
+		/* check if we can map the entry */
+		if (id >= entry->e_ns_id && id < (entry->e_ns_id + entry->e_count)) {
+			res = entry->e_host_id + (id - entry->e_ns_id);
+			pr_debug("zfs_ugid_map_ns_to_host: %lld -> %lld via mapping %lld:%lld:%lld",
+				id, res, entry->e_ns_id, entry->e_host_id, entry->e_count);
+			VERIFY3U(0, <=, res);
+			return (res);
+		}
+	}
+
+	/* id not mapped, return nobody */
+	return (65534);
+}
+
+uint64_t
+zfs_ugid_map_host_to_ns(struct zfs_ugid_map *ugid_map, uint64_t id)
+{
+	uint64_t res;
+	int i;
+	struct zfs_ugid_map_entry *entry;
+
+	if (ugid_map == NULL)
+		return (id);
+
+	/* look for a matching mapping */
+	for (i = 0; i < ugid_map->m_entries; i++) {
+		entry = ugid_map->m_map[i];
+
+		/* check if we're already mapped into the entry */
+		if (id >= entry->e_ns_id && id < (entry->e_ns_id + entry->e_count)) {
+			pr_debug("zfs_ugid_map_host_to_ns: %lld already mapped via mapping %lld:%lld:%lld",
+				id, entry->e_ns_id, entry->e_host_id, entry->e_count);
+			return (id);
+		}
+
+		/* check if we can map the entry */
+		if (id >= entry->e_host_id && id < (entry->e_host_id + entry->e_count)) {
+			res = (id - entry->e_host_id) + entry->e_ns_id;
+			pr_debug("zfs_ugid_map_host_to_ns: %lld -> %lld via mapping %lld:%lld:%lld",
+				id, res, entry->e_ns_id, entry->e_host_id, entry->e_count);
+			VERIFY3U(0, <=, res);
+			return (res);
+		}
+	}
+
+	/* id not mapped, return nobody */
+	return (65534);
+}
