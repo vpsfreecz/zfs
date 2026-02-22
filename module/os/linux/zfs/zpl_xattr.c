@@ -81,9 +81,13 @@
 #include <sys/zfs_znode.h>
 #include <sys/zfs_vfsops.h>
 #include <sys/zfs_vnops.h>
+#include <sys/zfs_ugid_map.h>
 #include <sys/zap.h>
+#include <sys/txg.h>
 #include <sys/vfs.h>
 #include <sys/zpl.h>
+#include <linux/capability.h>
+#include <linux/xattr.h>
 #include <linux/vfs_compat.h>
 
 enum xattr_permission {
@@ -604,21 +608,15 @@ zpl_xattr_set_sa(struct inode *ip, const char *name, const void *value,
 }
 
 static int
-zpl_xattr_set(struct inode *ip, const char *name, const void *value,
-    size_t size, int flags, zidmap_t *mnt_ns)
+__zpl_xattr_set_locked(struct inode *ip, const char *name, const void *value,
+    size_t size, int flags, zidmap_t *mnt_ns, cred_t *cr)
 {
 	znode_t *zp = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
-	cred_t *cr = CRED();
-	fstrans_cookie_t cookie;
 	int where;
 	int error;
 
-	crhold(cr);
-	cookie = spl_fstrans_mark();
-	if ((error = zpl_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
-		goto out1;
-	rw_enter(&zp->z_xattr_lock, RW_WRITER);
+	ASSERT(RW_WRITE_HELD(&zp->z_xattr_lock));
 
 	/*
 	 * Before setting the xattr check to see if it already exists.
@@ -633,18 +631,18 @@ zpl_xattr_set(struct inode *ip, const char *name, const void *value,
 	error = __zpl_xattr_where(ip, name, &where, cr);
 	if (error < 0) {
 		if (error != -ENODATA)
-			goto out;
+			return (error);
 		if (flags & XATTR_REPLACE)
-			goto out;
+			return (error);
 
 		/* The xattr to be removed already doesn't exist */
 		error = 0;
 		if (value == NULL)
-			goto out;
+			return (error);
 	} else {
 		error = -EEXIST;
 		if (flags & XATTR_CREATE)
-			goto out;
+			return (error);
 	}
 
 	/* Preferentially store the xattr as a SA for better performance */
@@ -660,7 +658,7 @@ zpl_xattr_set(struct inode *ip, const char *name, const void *value,
 			if (where & XATTR_IN_DIR)
 				zpl_xattr_set_dir(ip, name, NULL, 0, 0,
 				    mnt_ns, cr);
-			goto out;
+			return (error);
 		}
 	}
 
@@ -670,10 +668,30 @@ zpl_xattr_set(struct inode *ip, const char *name, const void *value,
 	 */
 	if (error == 0 && (where & XATTR_IN_SA))
 		zpl_xattr_set_sa(ip, name, NULL, 0, 0, mnt_ns, cr);
-out:
+
+	return (error);
+}
+
+static int
+zpl_xattr_set(struct inode *ip, const char *name, const void *value,
+    size_t size, int flags, zidmap_t *mnt_ns)
+{
+	znode_t *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	cred_t *cr = CRED();
+	fstrans_cookie_t cookie;
+	int error;
+
+	crhold(cr);
+	cookie = spl_fstrans_mark();
+	if ((error = zpl_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+		goto out;
+	rw_enter(&zp->z_xattr_lock, RW_WRITER);
+	error = __zpl_xattr_set_locked(ip, name, value, size, flags,
+	    mnt_ns, cr);
 	rw_exit(&zp->z_xattr_lock);
 	zpl_exit(zfsvfs, FTAG);
-out1:
+out:
 	spl_fstrans_unmark(cookie);
 	crfree(cr);
 	ASSERT3S(error, <=, 0);
@@ -893,6 +911,431 @@ static xattr_handler_t zpl_xattr_trusted_handler = {
 	.set	= zpl_xattr_trusted_set,
 };
 
+#define	ZPL_FILECAP_RECORD_SIZE	64
+#define	ZPL_FILECAP_MAGIC_SIZE	8
+#define	ZPL_FILECAP_STATE_OFFSET	8
+#define	ZPL_FILECAP_SIZE_OFFSET	12
+#define	ZPL_FILECAP_VALUE_OFFSET	16
+#define	ZPL_FILECAP_ROOT_OFFSET	40
+#define	ZPL_FILECAP_RESERVED_OFFSET	44
+
+enum zpl_filecap_state {
+	ZPL_FILECAP_TOMBSTONE = 1,
+	ZPL_FILECAP_PASSTHROUGH = 2,
+	ZPL_FILECAP_MAPPED = 3,
+};
+
+static const uint8_t zpl_filecap_magic[ZPL_FILECAP_MAGIC_SIZE] = {
+	'V', 'P', 'S', 'F', 'C', 'A', 'P', '1'
+};
+
+static uint32_t
+zpl_filecap_get_le32(const uint8_t *p)
+{
+	__le32 value;
+
+	memcpy(&value, p, sizeof (value));
+	return (le32_to_cpu(value));
+}
+
+static void
+zpl_filecap_put_le32(uint8_t *p, uint32_t value)
+{
+	__le32 encoded = cpu_to_le32(value);
+
+	memcpy(p, &encoded, sizeof (encoded));
+}
+
+static boolean_t
+zpl_filecap_value_valid(const void *value, size_t size)
+{
+	const uint8_t *bytes = value;
+	uint32_t magic;
+
+	if (value == NULL || (size != XATTR_CAPS_SZ_2 &&
+	    size != XATTR_CAPS_SZ_3))
+		return (B_FALSE);
+
+	magic = zpl_filecap_get_le32(bytes);
+	if ((magic & VFS_CAP_FLAGS_MASK) & ~VFS_CAP_FLAGS_EFFECTIVE)
+		return (B_FALSE);
+
+	if (size == XATTR_CAPS_SZ_2)
+		return ((magic & VFS_CAP_REVISION_MASK) == VFS_CAP_REVISION_2);
+
+	return ((magic & VFS_CAP_REVISION_MASK) == VFS_CAP_REVISION_3 &&
+	    zpl_filecap_get_le32(bytes + XATTR_CAPS_SZ_2) != UINT32_MAX);
+}
+
+static boolean_t
+zpl_filecap_record_valid(const uint8_t record[ZPL_FILECAP_RECORD_SIZE])
+{
+	uint32_t state, size, root;
+	size_t i;
+
+	if (memcmp(record, zpl_filecap_magic, ZPL_FILECAP_MAGIC_SIZE) != 0)
+		return (B_FALSE);
+
+	state = zpl_filecap_get_le32(record + ZPL_FILECAP_STATE_OFFSET);
+	size = zpl_filecap_get_le32(record + ZPL_FILECAP_SIZE_OFFSET);
+	root = zpl_filecap_get_le32(record + ZPL_FILECAP_ROOT_OFFSET);
+
+	for (i = ZPL_FILECAP_RESERVED_OFFSET;
+	    i < ZPL_FILECAP_RECORD_SIZE; i++) {
+		if (record[i] != 0)
+			return (B_FALSE);
+	}
+
+	if (state == ZPL_FILECAP_TOMBSTONE) {
+		if (size != 0 || root != 0)
+			return (B_FALSE);
+		for (i = ZPL_FILECAP_VALUE_OFFSET;
+		    i < ZPL_FILECAP_RESERVED_OFFSET; i++) {
+			if (record[i] != 0)
+				return (B_FALSE);
+		}
+		return (B_TRUE);
+	}
+
+	if ((state != ZPL_FILECAP_PASSTHROUGH &&
+	    state != ZPL_FILECAP_MAPPED) ||
+	    !zpl_filecap_value_valid(record + ZPL_FILECAP_VALUE_OFFSET, size))
+		return (B_FALSE);
+
+	for (i = ZPL_FILECAP_VALUE_OFFSET + size;
+	    i < ZPL_FILECAP_ROOT_OFFSET; i++) {
+		if (record[i] != 0)
+			return (B_FALSE);
+	}
+
+	if (state == ZPL_FILECAP_PASSTHROUGH)
+		return (root == 0);
+
+	return (size == XATTR_CAPS_SZ_3 && root != UINT32_MAX);
+}
+
+static void
+zpl_filecap_record_build(uint8_t record[ZPL_FILECAP_RECORD_SIZE],
+    enum zpl_filecap_state state, const void *value, size_t size,
+    uint32_t root)
+{
+	memset(record, 0, ZPL_FILECAP_RECORD_SIZE);
+	memcpy(record, zpl_filecap_magic, ZPL_FILECAP_MAGIC_SIZE);
+	zpl_filecap_put_le32(record + ZPL_FILECAP_STATE_OFFSET, state);
+	zpl_filecap_put_le32(record + ZPL_FILECAP_SIZE_OFFSET, size);
+	if (value != NULL)
+		memcpy(record + ZPL_FILECAP_VALUE_OFFSET, value, size);
+	zpl_filecap_put_le32(record + ZPL_FILECAP_ROOT_OFFSET, root);
+	ASSERT(zpl_filecap_record_valid(record));
+}
+
+static int
+zpl_filecap_record_get(znode_t *zp,
+    uint8_t record[ZPL_FILECAP_RECORD_SIZE])
+{
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	int error;
+
+	ASSERT(RW_LOCK_HELD(&zp->z_xattr_lock));
+	error = sa_lookup(zp->z_sa_hdl,
+	    SA_ZPL_VPSADMINOS_FILECAP(zfsvfs), record,
+	    ZPL_FILECAP_RECORD_SIZE);
+	if (error == ENOENT)
+		return (-ENODATA);
+	if (error != 0)
+		return (-error);
+	if (!zpl_filecap_record_valid(record))
+		return (-EIO);
+
+	return (0);
+}
+
+static int
+zpl_filecap_record_write(znode_t *zp,
+    uint8_t record[ZPL_FILECAP_RECORD_SIZE])
+{
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	dmu_tx_t *tx;
+	int error;
+
+	ASSERT(RW_WRITE_HELD(&zp->z_xattr_lock));
+	ASSERT(zpl_filecap_record_valid(record));
+
+	tx = dmu_tx_create(zfsvfs->z_os);
+	dmu_tx_hold_sa_create(tx, ZPL_FILECAP_RECORD_SIZE);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_TRUE);
+	error = dmu_tx_assign(tx, DMU_TX_WAIT);
+	if (error != 0) {
+		dmu_tx_abort(tx);
+		return (-error);
+	}
+
+	error = sa_update(zp->z_sa_hdl,
+	    SA_ZPL_VPSADMINOS_FILECAP(zfsvfs), record,
+	    ZPL_FILECAP_RECORD_SIZE, tx);
+	dmu_tx_commit(tx);
+	if (error != 0)
+		return (-error);
+
+	/*
+	 * The public xattr has its own ZIL path.  Sync the internal authority
+	 * state before changing that xattr so replay can never expose a mapped
+	 * value without the tombstone which precedes it.
+	 */
+	txg_wait_synced(dmu_objset_pool(zfsvfs->z_os), 0);
+	return (0);
+}
+
+static int
+__zpl_filecap_raw_get(struct inode *ip, void *value, size_t size, cred_t *cr)
+{
+	znode_t *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	uint8_t sa_value[XATTR_CAPS_SZ_3];
+	uint8_t dir_value[XATTR_CAPS_SZ_3];
+	int sa_size = -ENOENT;
+	int dir_size;
+	int found_size;
+	const uint8_t *found;
+
+	ASSERT(RW_LOCK_HELD(&zp->z_xattr_lock));
+
+	if (zfsvfs->z_use_sa && zp->z_is_sa)
+		sa_size = zpl_xattr_get_sa(ip, XATTR_NAME_CAPS, NULL, 0);
+	dir_size = zpl_xattr_get_dir(ip, XATTR_NAME_CAPS, NULL, 0, cr);
+
+	if (sa_size < 0 && sa_size != -ENOENT)
+		return (sa_size);
+	if (dir_size < 0 && dir_size != -ENOENT)
+		return (dir_size);
+	if (sa_size == -ENOENT && dir_size == -ENOENT)
+		return (-ENODATA);
+	if (sa_size > XATTR_CAPS_SZ_3 || dir_size > XATTR_CAPS_SZ_3)
+		return (-EIO);
+
+	if (sa_size >= 0) {
+		if (zpl_xattr_get_sa(ip, XATTR_NAME_CAPS, sa_value,
+		    sizeof (sa_value)) != sa_size)
+			return (-EIO);
+	}
+	if (dir_size >= 0) {
+		if (zpl_xattr_get_dir(ip, XATTR_NAME_CAPS, dir_value,
+		    sizeof (dir_value), cr) != dir_size)
+			return (-EIO);
+	}
+
+	if (sa_size >= 0 && dir_size >= 0) {
+		if (sa_size != dir_size ||
+		    memcmp(sa_value, dir_value, sa_size) != 0)
+			return (-EIO);
+		found_size = sa_size;
+		found = sa_value;
+	} else if (sa_size >= 0) {
+		found_size = sa_size;
+		found = sa_value;
+	} else {
+		found_size = dir_size;
+		found = dir_value;
+	}
+
+	if (value == NULL || size == 0)
+		return (found_size);
+	if (size < found_size)
+		return (-ERANGE);
+	memcpy(value, found, found_size);
+	return (found_size);
+}
+
+static int
+zpl_filecap_copyout(const uint8_t *source, size_t source_size,
+    void *value, size_t size)
+{
+	if (value == NULL || size == 0)
+		return (source_size);
+	if (size < source_size)
+		return (-ERANGE);
+	memcpy(value, source, source_size);
+	return (source_size);
+}
+
+static int
+__zpl_filecap_get(struct inode *ip, void *value, size_t size, cred_t *cr)
+{
+	znode_t *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	uint8_t record[ZPL_FILECAP_RECORD_SIZE];
+	uint8_t raw[XATTR_CAPS_SZ_3];
+	uint8_t mapped[XATTR_CAPS_SZ_3];
+	uint32_t state, record_size, root;
+	uint64_t host_root;
+	int error, raw_size;
+
+	ASSERT(RW_LOCK_HELD(&zp->z_xattr_lock));
+	error = zpl_filecap_record_get(zp, record);
+	if (error == -ENODATA)
+		return (__zpl_filecap_raw_get(ip, value, size, cr));
+	if (error != 0)
+		return (error);
+
+	state = zpl_filecap_get_le32(record + ZPL_FILECAP_STATE_OFFSET);
+	if (state == ZPL_FILECAP_TOMBSTONE)
+		return (-ENODATA);
+
+	raw_size = __zpl_filecap_raw_get(ip, raw, sizeof (raw), cr);
+	if (raw_size < 0)
+		return (raw_size);
+
+	record_size = zpl_filecap_get_le32(record + ZPL_FILECAP_SIZE_OFFSET);
+	if (raw_size != record_size || memcmp(raw,
+	    record + ZPL_FILECAP_VALUE_OFFSET, raw_size) != 0 ||
+	    state == ZPL_FILECAP_PASSTHROUGH)
+		return (zpl_filecap_copyout(raw, raw_size, value, size));
+
+	root = zpl_filecap_get_le32(record + ZPL_FILECAP_ROOT_OFFSET);
+	error = zfs_ugid_map_ns_to_host(zfsvfs->z_uid_map, root, &host_root);
+	if (error != 0 || host_root >= UINT32_MAX)
+		return (zpl_filecap_copyout(raw, raw_size, value, size));
+
+	memcpy(mapped, raw, raw_size);
+	zpl_filecap_put_le32(mapped + XATTR_CAPS_SZ_2, host_root);
+	return (zpl_filecap_copyout(mapped, raw_size, value, size));
+}
+
+static int
+zpl_filecap_get(struct inode *ip, void *value, size_t size)
+{
+	znode_t *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	cred_t *cr = CRED();
+	fstrans_cookie_t cookie;
+	int error;
+
+	crhold(cr);
+	cookie = spl_fstrans_mark();
+	if ((error = zpl_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+		goto out;
+	rw_enter(&zp->z_xattr_lock, RW_READER);
+	error = __zpl_filecap_get(ip, value, size, cr);
+	rw_exit(&zp->z_xattr_lock);
+	zpl_exit(zfsvfs, FTAG);
+out:
+	spl_fstrans_unmark(cookie);
+	crfree(cr);
+	return (error);
+}
+
+static int
+__zpl_filecap_set(zidmap_t *mnt_ns, struct inode *ip, const void *value,
+    size_t size, int flags, cred_t *cr)
+{
+	znode_t *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	uint8_t old_record[ZPL_FILECAP_RECORD_SIZE];
+	uint8_t tombstone[ZPL_FILECAP_RECORD_SIZE];
+	uint8_t final_record[ZPL_FILECAP_RECORD_SIZE];
+	uint8_t raw[XATTR_CAPS_SZ_3];
+	uint64_t canonical_root = 0;
+	uint64_t host_root, roundtrip;
+	enum zpl_filecap_state final_state = ZPL_FILECAP_PASSTHROUGH;
+	boolean_t record_exists;
+	boolean_t logical_exists;
+	int error, logical_size, raw_size;
+
+	ASSERT(RW_WRITE_HELD(&zp->z_xattr_lock));
+	error = zpl_filecap_record_get(zp, old_record);
+	record_exists = (error == 0);
+	if (error != 0 && error != -ENODATA)
+		return (error);
+
+	if (zfsvfs->z_uid_map == NULL && !record_exists)
+		return (__zpl_xattr_set_locked(ip, XATTR_NAME_CAPS, value,
+		    size, flags, mnt_ns, cr));
+
+	logical_size = __zpl_filecap_get(ip, NULL, 0, cr);
+	logical_exists = (logical_size >= 0);
+	if (logical_size < 0 && logical_size != -ENODATA)
+		return (logical_size);
+	if ((flags & XATTR_CREATE) && logical_exists)
+		return (-EEXIST);
+	if ((flags & XATTR_REPLACE) && !logical_exists)
+		return (-ENODATA);
+	if (value == NULL && !logical_exists && !record_exists)
+		return (0);
+
+	if (value != NULL) {
+		if (!zpl_filecap_value_valid(value, size))
+			return (-EINVAL);
+		if (size == XATTR_CAPS_SZ_3 && zfsvfs->z_uid_map != NULL) {
+			host_root = zpl_filecap_get_le32(
+			    (const uint8_t *)value + XATTR_CAPS_SZ_2);
+			error = zfs_ugid_map_host_to_ns_strict(
+			    zfsvfs->z_uid_map, host_root, &canonical_root);
+			if (error == 0) {
+				error = zfs_ugid_map_ns_to_host(
+				    zfsvfs->z_uid_map, canonical_root,
+				    &roundtrip);
+				if (error != 0 || roundtrip != host_root)
+					return (-EOVERFLOW);
+				final_state = ZPL_FILECAP_MAPPED;
+			}
+		}
+		zpl_filecap_record_build(final_record, final_state, value,
+		    size, canonical_root);
+	}
+
+	/* A synced tombstone makes every interrupted update fail closed. */
+	zpl_filecap_record_build(tombstone, ZPL_FILECAP_TOMBSTONE,
+	    NULL, 0, 0);
+	error = zpl_filecap_record_write(zp, tombstone);
+	if (error != 0)
+		return (error);
+
+	error = __zpl_xattr_set_locked(ip, XATTR_NAME_CAPS, value, size, 0,
+	    mnt_ns, cr);
+	if (error != 0)
+		return (error);
+
+	raw_size = __zpl_filecap_raw_get(ip, raw, sizeof (raw), cr);
+	if (value == NULL) {
+		if (raw_size == -ENODATA)
+			return (0);
+		return (raw_size < 0 ? raw_size : -EIO);
+	}
+
+	if (raw_size != size || memcmp(raw, value, size) != 0)
+		return (raw_size < 0 ? raw_size : -EIO);
+
+	error = zpl_filecap_record_write(zp, final_record);
+	if (error != 0)
+		(void) __zpl_xattr_set_locked(ip, XATTR_NAME_CAPS, NULL, 0,
+		    0, mnt_ns, cr);
+	return (error);
+}
+
+static int
+zpl_filecap_set(zidmap_t *mnt_ns, struct inode *ip, const void *value,
+    size_t size, int flags)
+{
+	znode_t *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	cred_t *cr = CRED();
+	fstrans_cookie_t cookie;
+	int error;
+
+	crhold(cr);
+	cookie = spl_fstrans_mark();
+	if ((error = zpl_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+		goto out;
+	rw_enter(&zp->z_xattr_lock, RW_WRITER);
+	error = __zpl_filecap_set(mnt_ns, ip, value, size, flags, cr);
+	rw_exit(&zp->z_xattr_lock);
+	zpl_exit(zfsvfs, FTAG);
+out:
+	spl_fstrans_unmark(cookie);
+	crfree(cr);
+	return (error);
+}
+
 /*
  * Extended security attributes
  *
@@ -919,6 +1362,10 @@ __zpl_xattr_security_get(struct inode *ip, const char *name,
 {
 	char *xattr_name;
 	int error;
+
+	if (strcmp(name, XATTR_CAPS_SUFFIX) == 0)
+		return (zpl_filecap_get(ip, value, size));
+
 	/* xattr_resolve_name will do this for us if this is defined */
 	xattr_name = kmem_asprintf("%s%s", XATTR_SECURITY_PREFIX, name);
 	error = zpl_xattr_get(ip, xattr_name, value, size);
@@ -935,6 +1382,10 @@ __zpl_xattr_security_set(zidmap_t *user_ns,
 {
 	char *xattr_name;
 	int error;
+
+	if (strcmp(name, XATTR_CAPS_SUFFIX) == 0)
+		return (zpl_filecap_set(user_ns, ip, value, size, flags));
+
 	/* xattr_resolve_name will do this for us if this is defined */
 	xattr_name = kmem_asprintf("%s%s", XATTR_SECURITY_PREFIX, name);
 	error = zpl_xattr_set(ip, xattr_name, value, size, flags, user_ns);
@@ -997,6 +1448,7 @@ zpl_set_acl_impl(zidmap_t *mnt_ns, struct inode *ip, struct posix_acl *acl,
 	char *name, *value = NULL;
 	int error = 0;
 	size_t size = 0;
+	zfsvfs_t *zfsvfs;
 
 	if (S_ISLNK(ip->i_mode))
 		return (-EOPNOTSUPP);
@@ -1044,7 +1496,9 @@ zpl_set_acl_impl(zidmap_t *mnt_ns, struct inode *ip, struct posix_acl *acl,
 		size = posix_acl_xattr_size(acl->a_count);
 		value = kmem_alloc(size, KM_SLEEP);
 
-		error = zpl_acl_to_xattr(acl, value, size);
+		zfsvfs = ITOZSB(ip);
+		error = zpl_acl_to_xattr_map(zfsvfs->z_uid_map,
+		    zfsvfs->z_gid_map, acl, value, size);
 		if (error < 0) {
 			kmem_free(value, size);
 			return (error);
@@ -1056,10 +1510,21 @@ zpl_set_acl_impl(zidmap_t *mnt_ns, struct inode *ip, struct posix_acl *acl,
 		kmem_free(value, size);
 
 	if (!error) {
-		if (acl)
-			set_cached_acl(ip, type, acl);
-		else
+		if (acl) {
+			/*
+			 * With uid/gid mappings, userspace can provide ACL
+			 * IDs in namespace form and expects mapped IDs on
+			 * readback. Caching the raw ACL can bypass mapping on
+			 * subsequent reads, so force re-read from xattr.
+			 */
+			if (zfsvfs->z_uid_map != NULL ||
+			    zfsvfs->z_gid_map != NULL)
+				forget_cached_acl(ip, type);
+			else
+				set_cached_acl(ip, type, acl);
+		} else {
 			forget_cached_acl(ip, type);
+		}
 	}
 
 	return (error);
@@ -1096,6 +1561,7 @@ zpl_get_acl_impl(struct inode *ip, int type)
 	struct posix_acl *acl;
 	void *value = NULL;
 	char *name;
+	zfsvfs_t *zfsvfs;
 
 	switch (type) {
 	case ACL_TYPE_ACCESS:
@@ -1115,7 +1581,9 @@ zpl_get_acl_impl(struct inode *ip, int type)
 	}
 
 	if (size > 0) {
-		acl = zpl_acl_from_xattr(value, size);
+		zfsvfs = ITOZSB(ip);
+		acl = zpl_acl_from_xattr_map(zfsvfs->z_uid_map,
+		    zfsvfs->z_gid_map, value, size);
 	} else if (size == -ENODATA || size == -ENOSYS) {
 		acl = NULL;
 	} else {
@@ -1287,6 +1755,7 @@ __zpl_xattr_acl_get_access(struct inode *ip, const char *name,
     void *buffer, size_t size)
 {
 	struct posix_acl *acl;
+	zfsvfs_t *zfsvfs;
 	int type = ACL_TYPE_ACCESS;
 	int error;
 	/* xattr_resolve_name will do this for us if this is defined */
@@ -1299,7 +1768,9 @@ __zpl_xattr_acl_get_access(struct inode *ip, const char *name,
 	if (acl == NULL)
 		return (-ENODATA);
 
-	error = zpl_acl_to_xattr(acl, buffer, size);
+	zfsvfs = ITOZSB(ip);
+	error = zpl_acl_to_xattr_map(zfsvfs->z_uid_map,
+	    zfsvfs->z_gid_map, acl, buffer, size);
 	zpl_posix_acl_release(acl);
 
 	return (error);
@@ -1311,6 +1782,7 @@ __zpl_xattr_acl_get_default(struct inode *ip, const char *name,
     void *buffer, size_t size)
 {
 	struct posix_acl *acl;
+	zfsvfs_t *zfsvfs;
 	int type = ACL_TYPE_DEFAULT;
 	int error;
 	/* xattr_resolve_name will do this for us if this is defined */
@@ -1323,7 +1795,9 @@ __zpl_xattr_acl_get_default(struct inode *ip, const char *name,
 	if (acl == NULL)
 		return (-ENODATA);
 
-	error = zpl_acl_to_xattr(acl, buffer, size);
+	zfsvfs = ITOZSB(ip);
+	error = zpl_acl_to_xattr_map(zfsvfs->z_uid_map,
+	    zfsvfs->z_gid_map, acl, buffer, size);
 	zpl_posix_acl_release(acl);
 
 	return (error);

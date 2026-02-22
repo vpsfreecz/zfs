@@ -63,6 +63,7 @@
 #include <sys/zpl.h>
 #include <linux/vfs_compat.h>
 #include <linux/fs.h>
+#include <sys/zfs_ugid_map.h>
 #include "zfs_comutil.h"
 
 vfs_t *
@@ -452,6 +453,10 @@ zfsvfs_init(zfsvfs_t *zfsvfs, objset_t *os)
 {
 	int error;
 	uint64_t val;
+	struct zfs_ugid_map *new_uid_map = NULL;
+	struct zfs_ugid_map *new_gid_map = NULL;
+	struct zfs_ugid_map *old_uid_map;
+	struct zfs_ugid_map *old_gid_map;
 
 	zfsvfs->z_max_blksz = SPA_OLD_MAXBLOCKSIZE;
 	zfsvfs->z_show_ctldir = ZFS_SNAPDIR_VISIBLE;
@@ -486,6 +491,29 @@ zfsvfs_init(zfsvfs_t *zfsvfs, objset_t *os)
 	if ((error = zfs_get_zplprop(os, ZFS_PROP_ACLTYPE, &val)) != 0)
 		return (error);
 	zfsvfs->z_acl_type = (uint_t)val;
+
+	error = zfs_create_ugid_map(zfsvfs->z_os, ZFS_PROP_UIDMAP,
+	    &new_uid_map);
+	if (error != 0)
+		return (error);
+	error = zfs_create_ugid_map(zfsvfs->z_os, ZFS_PROP_GIDMAP,
+	    &new_gid_map);
+	if (error != 0) {
+		zfs_free_ugid_map(new_uid_map);
+		return (error);
+	}
+
+	/*
+	 * Resume calls zfsvfs_init() with VFS operations excluded by the
+	 * teardown locks.  Publish the complete replacement pair before freeing
+	 * the old tables; on initial mount the zeroed old pointers are NULL.
+	 */
+	old_uid_map = zfsvfs->z_uid_map;
+	old_gid_map = zfsvfs->z_gid_map;
+	zfsvfs->z_uid_map = new_uid_map;
+	zfsvfs->z_gid_map = new_gid_map;
+	zfs_free_ugid_map(old_uid_map);
+	zfs_free_ugid_map(old_gid_map);
 
 	/*
 	 * Fold case on file systems that are always or sometimes case
@@ -786,6 +814,8 @@ zfsvfs_free(zfsvfs_t *zfsvfs)
 	}
 	vmem_free(zfsvfs->z_hold_trees, sizeof (avl_tree_t) * size);
 	vmem_free(zfsvfs->z_hold_locks, sizeof (kmutex_t) * size);
+	zfs_free_ugid_map(zfsvfs->z_uid_map);
+	zfs_free_ugid_map(zfsvfs->z_gid_map);
 	zfsvfs_vfs_free(zfsvfs->z_vfs);
 	dataset_kstats_destroy(&zfsvfs->z_kstat);
 	kmem_free(zfsvfs, sizeof (zfsvfs_t));

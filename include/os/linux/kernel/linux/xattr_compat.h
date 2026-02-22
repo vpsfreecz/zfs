@@ -29,6 +29,7 @@
 
 #include <linux/posix_acl_xattr.h>
 #include <sys/cred.h>
+#include <sys/zfs_ugid_map.h>
 #include <linux/user_namespace.h>
 
 /*
@@ -176,6 +177,23 @@ zpl_acl_from_xattr_idmap(zidmap_t *mnt_userns, const void *value, int size)
 
 	return (zpl_acl_from_xattr_userns(
 	    zfs_idmap_userns(mnt_userns, &ns), value, size));
+}
+
+static inline struct posix_acl *
+zpl_acl_from_xattr_map(struct zfs_ugid_map *uid_map,
+		struct zfs_ugid_map *gid_map,
+		const void *value, int size)
+{
+	return (zfs_ugid_map_acl_from_xattr(uid_map, gid_map,
+	    zpl_acl_from_xattr_userns(kcred->user_ns, value, size)));
+}
+
+static inline int
+zpl_acl_to_xattr_map(struct zfs_ugid_map *uid_map,
+		struct zfs_ugid_map *gid_map,
+		struct posix_acl *acl, void *value, int size)
+{
+	return (zfs_ugid_map_acl_to_xattr(uid_map, gid_map, acl, value, size));
 }
 
 #endif /* _ZFS_XATTR_H */
