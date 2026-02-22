@@ -940,6 +940,359 @@ dsl_prop_inherit(const char *dsname, const char *propname,
 	return (error);
 }
 
+typedef struct dsl_ugid_map_check_arg {
+	dsl_dir_t *dumca_target;
+	const char *dumca_target_name;
+	const char *dumca_propname;
+	const char *dumca_new_value;
+} dsl_ugid_map_check_arg_t;
+
+static boolean_t
+dsl_ugid_map_setpoint_below(const char *target, const char *setpoint)
+{
+	size_t target_len = strlen(target);
+
+	return (strncmp(target, setpoint, target_len) == 0 &&
+	    setpoint[target_len] == '/');
+}
+
+static boolean_t
+dsl_ugid_map_setpoint_in_subtree(const char *target, const char *setpoint)
+{
+	size_t target_len = strlen(target);
+
+	return (strncmp(target, setpoint, target_len) == 0 &&
+	    (setpoint[target_len] == '\0' || setpoint[target_len] == '/' ||
+	    setpoint[target_len] == '@'));
+}
+
+/*
+ * A mounted zfsvfs keeps immutable UID and GID tables built from the effective
+ * properties at mount time.  Property changes must not make those tables
+ * stale.  dsl_props_set_check() is repeated under dp_config_rwlock as writer
+ * immediately before the sync callback, so ds_owner cannot race from NULL to
+ * a mounting filesystem between this check and the persistent update.
+ */
+static int
+dsl_ugid_map_mounted_cb(dsl_pool_t *dp, dsl_dataset_t *ds, void *arg)
+{
+	dsl_ugid_map_check_arg_t *dumca = arg;
+	char *old_value = NULL;
+	char *setpoint = NULL;
+	objset_t *os;
+	boolean_t affected;
+	int error;
+
+	(void) dp;
+
+	/* A receive-owned inconsistent dataset cannot also be mounted. */
+	if (!dsl_dataset_has_owner(ds) || DS_IS_INCONSISTENT(ds))
+		return (0);
+
+	/* UID/GID maps are a ZPL filesystem property, not a zvol property. */
+	if (dmu_objset_from_ds(ds, &os) != 0 ||
+	    dmu_objset_type(os) != DMU_OST_ZFS)
+		return (0);
+
+	old_value = kmem_alloc(ZAP_MAXVALUELEN, KM_SLEEP);
+	setpoint = kmem_alloc(ZFS_MAX_DATASET_NAME_LEN, KM_SLEEP);
+	error = dsl_prop_get_ds(ds, dumca->dumca_propname, 1,
+	    ZAP_MAXVALUELEN, old_value, setpoint);
+	if (error != 0)
+		goto out;
+
+	affected = (ds->ds_dir == dumca->dumca_target);
+	if (!affected) {
+		/*
+		 * A received or local value below the changed dataset shields
+		 * this filesystem.  Otherwise it consumes the target's
+		 * post-change effective value, whether the current source is
+		 * the target, a more distant ancestor, or the default.
+		 */
+		affected = (strcmp(setpoint, ZPROP_SOURCE_VAL_RECVD) != 0 &&
+		    !dsl_ugid_map_setpoint_below(dumca->dumca_target_name,
+		    setpoint));
+	}
+
+	if (affected && strcmp(old_value, dumca->dumca_new_value) != 0)
+		error = SET_ERROR(EBUSY);
+
+out:
+	kmem_free(setpoint, ZFS_MAX_DATASET_NAME_LEN);
+	kmem_free(old_value, ZAP_MAXVALUELEN);
+	return (error);
+}
+
+static int
+dsl_ugid_map_lookup(objset_t *mos, uint64_t zapobj, const char *name,
+    char *value, boolean_t *found)
+{
+	int error = zap_lookup(mos, zapobj, name, 1, ZAP_MAXVALUELEN,
+	    value);
+
+	if (error == ENOENT) {
+		*found = B_FALSE;
+		return (0);
+	}
+	if (error != 0)
+		return (error);
+
+	*found = B_TRUE;
+	return (0);
+}
+
+static int
+dsl_ugid_map_predict(dsl_dataset_t *ds, const char *propname,
+    zprop_source_t source, nvpair_t *elem, char *new_value)
+{
+	dsl_dir_t *dd = ds->ds_dir;
+	objset_t *mos = dd->dd_pool->dp_meta_objset;
+	uint64_t zapobj = dsl_dir_phys(dd)->dd_props_zapobj;
+	uint64_t version = spa_version(dd->dd_pool->dp_spa);
+	uint64_t dummy;
+	nvpair_t *pair = elem;
+	char *local_value = NULL;
+	char *received_value = NULL;
+	char *inheritstr = NULL;
+	char *recvdstr = NULL;
+	boolean_t have_local;
+	boolean_t have_received;
+	boolean_t inherit;
+	int error;
+
+	if (nvpair_type(pair) == DATA_TYPE_NVLIST) {
+		nvlist_t *attrs = fnvpair_value_nvlist(pair);
+
+		if (nvlist_lookup_nvpair(attrs, ZPROP_VALUE, &pair) != 0)
+			return (SET_ERROR(EINVAL));
+	}
+
+	local_value = kmem_alloc(ZAP_MAXVALUELEN, KM_SLEEP);
+	received_value = kmem_alloc(ZAP_MAXVALUELEN, KM_SLEEP);
+	inheritstr = kmem_asprintf("%s%s", propname, ZPROP_INHERIT_SUFFIX);
+	recvdstr = kmem_asprintf("%s%s", propname, ZPROP_RECVD_SUFFIX);
+
+	error = dsl_ugid_map_lookup(mos, zapobj, propname, local_value,
+	    &have_local);
+	if (error != 0)
+		goto out;
+	error = dsl_ugid_map_lookup(mos, zapobj, recvdstr, received_value,
+	    &have_received);
+	if (error != 0)
+		goto out;
+	error = zap_contains(mos, zapobj, inheritstr);
+	if (error == 0) {
+		inherit = B_TRUE;
+	} else if (error == ENOENT) {
+		inherit = B_FALSE;
+		error = 0;
+	} else {
+		goto out;
+	}
+
+	/* Match the source normalization in dsl_prop_set_sync_impl(). */
+	if (version < SPA_VERSION_RECVD_PROPS) {
+		if (source & ZPROP_SRC_NONE)
+			source = ZPROP_SRC_NONE;
+		else if (source & ZPROP_SRC_RECEIVED)
+			source = ZPROP_SRC_LOCAL;
+	}
+
+	switch ((int)source) {
+	case ZPROP_SRC_NONE:
+		have_local = B_FALSE;
+		inherit = B_FALSE;
+		break;
+	case ZPROP_SRC_LOCAL:
+		if (nvpair_type(pair) != DATA_TYPE_STRING) {
+			error = SET_ERROR(EINVAL);
+			goto out;
+		}
+		(void) strlcpy(local_value, fnvpair_value_string(pair),
+		    ZAP_MAXVALUELEN);
+		have_local = B_TRUE;
+		inherit = B_FALSE;
+		break;
+	case ZPROP_SRC_INHERITED:
+		have_local = B_FALSE;
+		inherit = (version >= SPA_VERSION_RECVD_PROPS &&
+		    dsl_prop_get_int_ds(ds, ZPROP_HAS_RECVD, &dummy) == 0);
+		break;
+	case ZPROP_SRC_RECEIVED:
+		if (nvpair_type(pair) != DATA_TYPE_STRING) {
+			error = SET_ERROR(EINVAL);
+			goto out;
+		}
+		(void) strlcpy(received_value, fnvpair_value_string(pair),
+		    ZAP_MAXVALUELEN);
+		have_received = B_TRUE;
+		break;
+	case (ZPROP_SRC_NONE | ZPROP_SRC_LOCAL | ZPROP_SRC_RECEIVED):
+		have_local = B_FALSE;
+		inherit = B_FALSE;
+		have_received = B_FALSE;
+		break;
+	case (ZPROP_SRC_NONE | ZPROP_SRC_RECEIVED):
+		have_received = B_FALSE;
+		break;
+	default:
+		error = SET_ERROR(EINVAL);
+		goto out;
+	}
+
+	if (have_local) {
+		(void) strlcpy(new_value, local_value, ZAP_MAXVALUELEN);
+	} else if (!inherit && have_received) {
+		(void) strlcpy(new_value, received_value, ZAP_MAXVALUELEN);
+	} else if (dd->dd_parent != NULL) {
+		error = dsl_prop_get_dd(dd->dd_parent, propname, 1,
+		    ZAP_MAXVALUELEN, new_value, NULL, B_FALSE);
+	} else {
+		error = dodefault(zfs_name_to_prop(propname), 1,
+		    ZAP_MAXVALUELEN, new_value);
+	}
+
+out:
+	kmem_strfree(recvdstr);
+	kmem_strfree(inheritstr);
+	kmem_free(received_value, ZAP_MAXVALUELEN);
+	kmem_free(local_value, ZAP_MAXVALUELEN);
+	return (error);
+}
+
+static int
+dsl_ugid_map_change_check(dsl_pool_t *dp, dsl_dataset_t *ds,
+    zprop_source_t source, nvpair_t *elem)
+{
+	dsl_ugid_map_check_arg_t dumca;
+	char *target_name;
+	char *new_value;
+	int error;
+
+	if (ds->ds_is_snapshot)
+		return (0);
+
+	target_name = kmem_alloc(ZFS_MAX_DATASET_NAME_LEN, KM_SLEEP);
+	new_value = kmem_alloc(ZAP_MAXVALUELEN, KM_SLEEP);
+	dsl_dataset_name(ds, target_name);
+
+	error = dsl_ugid_map_predict(ds, nvpair_name(elem), source, elem,
+	    new_value);
+	if (error != 0)
+		goto out;
+
+	dumca.dumca_target = ds->ds_dir;
+	dumca.dumca_target_name = target_name;
+	dumca.dumca_propname = nvpair_name(elem);
+	dumca.dumca_new_value = new_value;
+	error = dmu_objset_find_dp(dp, ds->ds_dir->dd_object,
+	    dsl_ugid_map_mounted_cb, &dumca,
+	    DS_FIND_CHILDREN | DS_FIND_SNAPSHOTS | DS_FIND_SERIALIZE);
+
+out:
+	kmem_free(new_value, ZAP_MAXVALUELEN);
+	kmem_free(target_name, ZFS_MAX_DATASET_NAME_LEN);
+	return (error);
+}
+
+typedef struct dsl_ugid_map_rename_arg {
+	const char *dumra_target_name;
+	const char *dumra_propnames[2];
+	const char *dumra_new_values[2];
+} dsl_ugid_map_rename_arg_t;
+
+static int
+dsl_ugid_map_rename_cb(dsl_pool_t *dp, dsl_dataset_t *ds, void *arg)
+{
+	dsl_ugid_map_rename_arg_t *dumra = arg;
+	char *old_value = NULL;
+	char *setpoint = NULL;
+	objset_t *os;
+	int error = 0;
+
+	(void) dp;
+
+	if (!dsl_dataset_has_owner(ds) || DS_IS_INCONSISTENT(ds))
+		return (0);
+
+	if (dmu_objset_from_ds(ds, &os) != 0 ||
+	    dmu_objset_type(os) != DMU_OST_ZFS)
+		return (0);
+
+	old_value = kmem_alloc(ZAP_MAXVALUELEN, KM_SLEEP);
+	setpoint = kmem_alloc(ZFS_MAX_DATASET_NAME_LEN, KM_SLEEP);
+
+	for (uint_t i = 0; i < ARRAY_SIZE(dumra->dumra_propnames); i++) {
+		error = dsl_prop_get_ds(ds, dumra->dumra_propnames[i], 1,
+		    ZAP_MAXVALUELEN, old_value, setpoint);
+		if (error != 0)
+			break;
+
+		/*
+		 * A local or received value stored in the moved subtree moves
+		 * with it.  All other values are inherited from above the old
+		 * root and will instead come from the new parent after rename.
+		 */
+		if (strcmp(setpoint, ZPROP_SOURCE_VAL_RECVD) == 0 ||
+		    dsl_ugid_map_setpoint_in_subtree(dumra->dumra_target_name,
+		    setpoint))
+			continue;
+
+		if (strcmp(old_value, dumra->dumra_new_values[i]) != 0) {
+			error = SET_ERROR(EBUSY);
+			break;
+		}
+	}
+
+	kmem_free(setpoint, ZFS_MAX_DATASET_NAME_LEN);
+	kmem_free(old_value, ZAP_MAXVALUELEN);
+	return (error);
+}
+
+int
+dsl_prop_ugid_map_rename_check(dsl_dir_t *dd, dsl_dir_t *newparent)
+{
+	dsl_pool_t *dp = dd->dd_pool;
+	dsl_ugid_map_rename_arg_t dumra;
+	char *target_name = NULL;
+	char *new_values[2] = { NULL, NULL };
+	const zfs_prop_t props[] = { ZFS_PROP_UIDMAP, ZFS_PROP_GIDMAP };
+	int error = 0;
+
+	ASSERT3P(dp, ==, newparent->dd_pool);
+	ASSERT(dsl_pool_config_held(dp));
+
+	target_name = kmem_alloc(ZFS_MAX_DATASET_NAME_LEN, KM_SLEEP);
+	dsl_dir_name(dd, target_name);
+	dumra.dumra_target_name = target_name;
+
+	for (uint_t i = 0; i < ARRAY_SIZE(props); i++) {
+		new_values[i] = kmem_alloc(ZAP_MAXVALUELEN, KM_SLEEP);
+		dumra.dumra_propnames[i] = zfs_prop_to_name(props[i]);
+		dumra.dumra_new_values[i] = new_values[i];
+		error = dsl_prop_get_dd(newparent, dumra.dumra_propnames[i], 1,
+		    ZAP_MAXVALUELEN, new_values[i], NULL, B_FALSE);
+		if (error != 0)
+			goto out;
+	}
+
+	/*
+	 * The syncing check runs under dp_config_rwlock as writer immediately
+	 * before dsl_dir_rename_sync(), so a mount cannot acquire ownership
+	 * between this walk and the reparenting update.
+	 */
+	error = dmu_objset_find_dp(dp, dd->dd_object, dsl_ugid_map_rename_cb,
+	    &dumra, DS_FIND_CHILDREN | DS_FIND_SNAPSHOTS | DS_FIND_SERIALIZE);
+
+out:
+	for (uint_t i = 0; i < ARRAY_SIZE(new_values); i++) {
+		if (new_values[i] != NULL)
+			kmem_free(new_values[i], ZAP_MAXVALUELEN);
+	}
+	kmem_free(target_name, ZFS_MAX_DATASET_NAME_LEN);
+	return (error);
+}
+
 int
 dsl_props_set_check(void *arg, dmu_tx_t *tx)
 {
@@ -956,6 +1309,8 @@ dsl_props_set_check(void *arg, dmu_tx_t *tx)
 
 	version = spa_version(ds->ds_dir->dd_pool->dp_spa);
 	while ((elem = nvlist_next_nvpair(dpsa->dpsa_props, elem)) != NULL) {
+		zfs_prop_t prop = zfs_name_to_prop(nvpair_name(elem));
+
 		if (strlen(nvpair_name(elem)) >= ZAP_MAXNAMELEN) {
 			dsl_dataset_rele(ds, FTAG);
 			return (SET_ERROR(ENAMETOOLONG));
@@ -967,6 +1322,14 @@ dsl_props_set_check(void *arg, dmu_tx_t *tx)
 			    ZAP_OLDMAXVALUELEN : ZAP_MAXVALUELEN)) {
 				dsl_dataset_rele(ds, FTAG);
 				return (SET_ERROR(E2BIG));
+			}
+		}
+		if (prop == ZFS_PROP_UIDMAP || prop == ZFS_PROP_GIDMAP) {
+			err = dsl_ugid_map_change_check(dp, ds,
+			    dpsa->dpsa_source, elem);
+			if (err != 0) {
+				dsl_dataset_rele(ds, FTAG);
+				return (err);
 			}
 		}
 	}

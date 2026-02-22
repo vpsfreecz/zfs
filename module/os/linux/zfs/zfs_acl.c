@@ -46,6 +46,7 @@
 #include <sys/zfs_dir.h>
 #include <sys/zfs_quota.h>
 #include <sys/zfs_vfsops.h>
+#include <sys/zfs_ugid_map.h>
 #include <sys/dmu.h>
 #include <sys/dnode.h>
 #include <sys/zap.h>
@@ -1887,6 +1888,7 @@ zfs_acl_ids_create(znode_t *dzp, int flag, vattr_t *vap, cred_t *cr,
 	boolean_t	need_chmod = B_TRUE;
 	boolean_t	trim = B_FALSE;
 	boolean_t	inherited = B_FALSE;
+	uint64_t	mapped_id;
 
 	memset(acl_ids, 0, sizeof (zfs_acl_ids_t));
 	acl_ids->z_mode = vap->va_mode;
@@ -2010,6 +2012,16 @@ zfs_acl_ids_create(znode_t *dzp, int flag, vattr_t *vap, cred_t *cr,
 		    acl_ids->z_fuid, acl_ids->z_fgid);
 		if (ace_trivial_common(acl_ids->z_aclp, 0, zfs_ace_walk) == 0)
 			acl_ids->z_aclp->z_hints |= ZFS_ACL_TRIVIAL;
+	}
+
+	error = zfs_ugid_map_host_to_ns(zfsvfs->z_uid_map,
+	    acl_ids->z_fuid, &mapped_id);
+	if (error == 0)
+		error = zfs_ugid_map_host_to_ns(zfsvfs->z_gid_map,
+		    acl_ids->z_fgid, &mapped_id);
+	if (error != 0) {
+		zfs_acl_ids_free(acl_ids);
+		return (error);
 	}
 
 	return (0);

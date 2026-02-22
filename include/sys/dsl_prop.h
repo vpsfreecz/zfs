@@ -107,6 +107,8 @@ int dsl_prop_set_string(const char *dsname, const char *propname,
     zprop_source_t source, const char *value);
 int dsl_prop_inherit(const char *dsname, const char *propname,
     zprop_source_t source);
+int dsl_prop_ugid_map_rename_check(struct dsl_dir *dd,
+    struct dsl_dir *newparent);
 
 int dsl_prop_predict(dsl_dir_t *dd, const char *propname,
     zprop_source_t source, uint64_t value, uint64_t *newvalp);

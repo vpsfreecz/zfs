@@ -53,8 +53,11 @@ function edited_prop
 	case $behaviour in
 		"get")
 			is_te_enabled && te=1
+			# Identity maps are immutable for the lifetime of a mount.
 			typeset props=$(zfs inherit 2>&1 | \
-				awk -v te=$te '$2=="YES" && $1 !~ /^vol|\.\.\.$/ && (te || $1 != "mlslabel") {printf("%s,", $1)}')
+				awk -v te=$te '$2=="YES" && $1 !~ /^vol|\.\.\.$/ && \
+				$1 != "uidmap" && $1 != "gidmap" && \
+				(te || $1 != "mlslabel") {printf("%s,", $1)}')
 			log_must eval "zfs get -Ho property,value ${props%,} $ds >> $backfile"
 			;;
 		"set")
