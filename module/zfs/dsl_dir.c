@@ -2125,6 +2125,13 @@ dsl_dir_rename_check(void *arg, dmu_tx_t *tx)
 			return (SET_ERROR(EINVAL));
 		}
 
+		error = dsl_prop_ugid_map_rename_check(dd, newparent);
+		if (error != 0) {
+			dsl_dir_rele(newparent, FTAG);
+			dsl_dir_rele(dd, FTAG);
+			return (error);
+		}
+
 		error = dsl_dir_transfer_possible(dd->dd_parent,
 		    newparent, fs_cnt, ss_cnt, myspace, ddra->ddra_cred);
 		if (error != 0) {

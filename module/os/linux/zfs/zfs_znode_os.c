@@ -515,6 +515,7 @@ zfs_znode_update_vfs(znode_t *zp)
 
 	dmu_object_size_from_db(sa_get_db(zp->z_sa_hdl), &blksize, &i_blocks);
 
+
 	spin_lock(&ip->i_lock);
 	ip->i_mode = zp->z_mode;
 	ip->i_blocks = i_blocks;
@@ -532,7 +533,7 @@ zfs_znode_update_vfs(znode_t *zp)
  */
 static znode_t *
 zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
-    dmu_object_type_t obj_type, sa_handle_t *hdl)
+    dmu_object_type_t obj_type, sa_handle_t *hdl, int *errorp)
 {
 	znode_t	*zp;
 	struct inode *ip;
@@ -540,18 +541,24 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	uint64_t parent;
 	uint64_t tmp_gen;
 	uint64_t links;
-	uint64_t z_uid, z_gid;
+	uint64_t z_uid, z_gid, mapped_uid, mapped_gid;
 	uint64_t atime[2], mtime[2], ctime[2], btime[2];
 	inode_timespec_t tmp_ts;
 	uint64_t projid = ZFS_DEFAULT_PROJID;
 	sa_bulk_attr_t bulk[12];
 	int count = 0;
+	int map_error;
 
 	ASSERT(zfsvfs != NULL);
+	if (errorp != NULL)
+		*errorp = 0;
 
 	ip = new_inode(zfsvfs->z_sb);
-	if (ip == NULL)
+	if (ip == NULL) {
+		if (errorp != NULL)
+			*errorp = SET_ERROR(ENOMEM);
 		return (NULL);
+	}
 
 	zp = ITOZ(ip);
 	ASSERT(zp->z_dirlocks == NULL);
@@ -594,6 +601,21 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 		if (hdl == NULL)
 			sa_handle_destroy(zp->z_sa_hdl);
 		zp->z_sa_hdl = NULL;
+		if (errorp != NULL)
+			*errorp = SET_ERROR(EIO);
+		goto error;
+	}
+	map_error = zfs_ugid_map_ns_to_host(zfsvfs->z_uid_map, z_uid,
+	    &mapped_uid);
+	if (map_error == 0)
+		map_error = zfs_ugid_map_ns_to_host(zfsvfs->z_gid_map, z_gid,
+		    &mapped_gid);
+	if (map_error != 0) {
+		if (hdl == NULL)
+			sa_handle_destroy(zp->z_sa_hdl);
+		zp->z_sa_hdl = NULL;
+		if (errorp != NULL)
+			*errorp = map_error;
 		goto error;
 	}
 
@@ -602,8 +624,10 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	ip->i_generation = (uint32_t)tmp_gen;
 	ip->i_blkbits = SPA_MINBLOCKSHIFT;
 	set_nlink(ip, (uint32_t)links);
-	zfs_uid_write(ip, z_uid);
-	zfs_gid_write(ip, z_gid);
+
+	zfs_uid_write(ip, mapped_uid);
+	zfs_gid_write(ip, mapped_gid);
+
 	zfs_set_inode_flags(zp, ip);
 
 	/* Cache the xattr parent id */
@@ -674,6 +698,7 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 	uint64_t	crtime[2], atime[2], mtime[2], ctime[2];
 	uint64_t	mode, size, links, parent, pflags;
 	uint64_t	projid = ZFS_DEFAULT_PROJID;
+	uint64_t	offset_uid, offset_gid;
 	uint64_t	rdev = 0;
 	zfsvfs_t	*zfsvfs = ZTOZSB(dzp);
 	dmu_buf_t	*db;
@@ -795,6 +820,11 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 			pflags |= ZFS_PROJINHERIT;
 	}
 
+	VERIFY0(zfs_ugid_map_host_to_ns(zfsvfs->z_uid_map,
+	    acl_ids->z_fuid, &offset_uid));
+	VERIFY0(zfs_ugid_map_host_to_ns(zfsvfs->z_gid_map,
+	    acl_ids->z_fgid, &offset_gid));
+
 	/*
 	 * No execs denied will be determined when zfs_mode_compute() is called.
 	 */
@@ -854,9 +884,9 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_GEN(zfsvfs),
 		    NULL, &gen, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_UID(zfsvfs),
-		    NULL, &acl_ids->z_fuid, 8);
+		    NULL, &offset_uid, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_GID(zfsvfs),
-		    NULL, &acl_ids->z_fgid, 8);
+		    NULL, &offset_gid, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_PARENT(zfsvfs),
 		    NULL, &parent, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_FLAGS(zfsvfs),
@@ -890,9 +920,9 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_FLAGS(zfsvfs),
 		    NULL, &pflags, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_UID(zfsvfs), NULL,
-		    &acl_ids->z_fuid, 8);
+		    &offset_uid, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_GID(zfsvfs), NULL,
-		    &acl_ids->z_fgid, 8);
+		    &offset_gid, 8);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_PAD(zfsvfs), NULL, pad,
 		    sizeof (uint64_t) * 4);
 		SA_ADD_BULK_ATTR(sa_attrs, cnt, SA_ZPL_ZNODE_ACL(zfsvfs), NULL,
@@ -919,7 +949,8 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 		 * not fail retry until sufficient memory has been reclaimed.
 		 */
 		do {
-			*zpp = zfs_znode_alloc(zfsvfs, db, 0, obj_type, sa_hdl);
+			*zpp = zfs_znode_alloc(zfsvfs, db, 0, obj_type, sa_hdl,
+			    NULL);
 		} while (*zpp == NULL);
 
 		VERIFY(*zpp != NULL);
@@ -1158,9 +1189,10 @@ again:
 	 * bonus buffer.
 	 */
 	zp = zfs_znode_alloc(zfsvfs, db, doi.doi_data_block_size,
-	    doi.doi_bonus_type, NULL);
+	    doi.doi_bonus_type, NULL, &err);
 	if (zp == NULL) {
-		err = SET_ERROR(ENOENT);
+		if (err == 0)
+			err = SET_ERROR(ENOENT);
 	} else {
 		int iret = insert_inode_locked(ZTOI(zp));
 
@@ -1196,7 +1228,7 @@ zfs_rezget(znode_t *zp)
 	int err;
 	int count = 0;
 	uint64_t gen;
-	uint64_t z_uid, z_gid;
+	uint64_t z_uid, z_gid, mapped_uid, mapped_gid;
 	uint64_t atime[2], mtime[2], ctime[2], btime[2];
 	inode_timespec_t tmp_ts;
 	uint64_t projid = ZFS_DEFAULT_PROJID;
@@ -1285,11 +1317,20 @@ zfs_rezget(znode_t *zp)
 			return (SET_ERROR(err));
 		}
 	}
+	if ((err = zfs_ugid_map_ns_to_host(zfsvfs->z_uid_map, z_uid,
+	    &mapped_uid)) != 0 ||
+	    (err = zfs_ugid_map_ns_to_host(zfsvfs->z_gid_map, z_gid,
+	    &mapped_gid)) != 0) {
+		zfs_znode_dmu_fini(zp);
+		zfs_znode_hold_exit(zfsvfs, zh);
+		return (err);
+	}
 
 	zp->z_projid = projid;
 	zp->z_mode = ZTOI(zp)->i_mode = mode;
-	zfs_uid_write(ZTOI(zp), z_uid);
-	zfs_gid_write(ZTOI(zp), z_gid);
+
+	zfs_uid_write(ZTOI(zp), mapped_uid);
+	zfs_gid_write(ZTOI(zp), mapped_gid);
 
 	ZFS_TIME_DECODE(&tmp_ts, atime);
 	zpl_inode_set_atime_to_ts(ZTOI(zp), tmp_ts);

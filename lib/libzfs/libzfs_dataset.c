@@ -60,6 +60,7 @@
 #include <sys/spa.h>
 #include <sys/zap.h>
 #include <sys/dsl_crypt.h>
+#include <sys/zfs_ugid_map.h>
 #include <libzfs.h>
 #include <libzutil.h>
 
@@ -1525,6 +1526,33 @@ badlabel:
 		case ZFS_PROP_NORMALIZE:
 			chosen_normal = (int)intval;
 			break;
+
+		case ZFS_PROP_UIDMAP:
+		case ZFS_PROP_GIDMAP:
+		{
+			uint64_t entries;
+
+			if (zfs_ugid_map_parse(strval, NULL, &entries) != 0) {
+				zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+				    "'%s' is not in the expected format"),
+				    propname);
+				(void) zfs_error(hdl, EZFS_BADPROP, errbuf);
+				goto error;
+			}
+
+			if (zhp == NULL)
+				break;
+
+			if (zfs_prop_get_int(zhp, ZFS_PROP_MOUNTED)) {
+				zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+				    "'%s' cannot be changed while the file "
+				    "system is mounted"), propname);
+				(void) zfs_error(hdl, EZFS_BADPROP, errbuf);
+				goto error;
+			}
+
+			break;
+		}
 
 		default:
 			break;
