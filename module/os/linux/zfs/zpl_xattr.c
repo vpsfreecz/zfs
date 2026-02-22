@@ -812,11 +812,32 @@ static xattr_handler_t zpl_xattr_user_handler =
  * the kernel) which keep information in extended attributes to which
  * ordinary processes should not have access." - xattr(7)
  */
+static uint_t zfs_xattr_trusted_userns_enable = 0;
+ZFS_MODULE_PARAM(zfs, zfs_, xattr_trusted_userns_enable, UINT, ZMOD_RW,
+	"Allow trusted.* xattr access from first-level user namespaces");
+
+bool __xattr_trusted(void);
+
+bool
+__xattr_trusted(void)
+{
+	struct user_namespace *ns = current_user_ns();
+	if (ns == &init_user_ns)
+		return (ns_capable(ns, CAP_SYS_ADMIN));
+
+	if (zfs_xattr_trusted_userns_enable != 0 &&
+	    ns->parent == &init_user_ns)
+		return (ns_capable(ns, CAP_SYS_ADMIN));
+
+	return (false);
+}
+
+
 static int
 __zpl_xattr_trusted_list(struct inode *ip, char *list, size_t list_size,
     const char *name, size_t name_len)
 {
-	return (capable(CAP_SYS_ADMIN));
+	return (__xattr_trusted());
 }
 ZPL_XATTR_LIST_WRAPPER(zpl_xattr_trusted_list);
 
@@ -827,7 +848,7 @@ __zpl_xattr_trusted_get(struct inode *ip, const char *name,
 	char *xattr_name;
 	int error;
 
-	if (!capable(CAP_SYS_ADMIN))
+	if (!__xattr_trusted())
 		return (-EACCES);
 	/* xattr_resolve_name will do this for us if this is defined */
 	xattr_name = kmem_asprintf("%s%s", XATTR_TRUSTED_PREFIX, name);
@@ -847,7 +868,7 @@ __zpl_xattr_trusted_set(zidmap_t *user_ns,
 	char *xattr_name;
 	int error;
 
-	if (!capable(CAP_SYS_ADMIN))
+	if (!__xattr_trusted())
 		return (-EACCES);
 	/* xattr_resolve_name will do this for us if this is defined */
 	xattr_name = kmem_asprintf("%s%s", XATTR_TRUSTED_PREFIX, name);
