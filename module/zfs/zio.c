@@ -3703,9 +3703,9 @@ zio_ddt_child_write_ready(zio_t *zio)
 				 * 2.3.x metaslab throttling is tag-based (see
 				 * metaslab_group_alloc_{in,de}crement()).
 				 *
-				 * Upstream uses a newer API; when retrying we only
-				 * need to drop the reservation so throttle accounting
-				 * doesn't leak.
+				 * Upstream uses a newer API; when retrying we
+				 * only need to drop the reservation so throttle
+				 * accounting doesn't leak.
 				 */
 				metaslab_group_alloc_decrement(zio->io_spa,
 				    DVA_GET_VDEV(d), zio, METASLAB_ASYNC_ALLOC,
@@ -4466,10 +4466,10 @@ zio_vdev_io_start(zio_t *zio)
 			 * A deadlock workaround. The ddt_prune_unique_entries()
 			 * -> prune_candidates_sync() code path takes the
 			 * SCL_ZIO reader lock and may request it again here.
-			 * If there is another thread who wants the SCL_ZIO
-			 * writer lock, then scl_write_wanted will be set.
-				 * Thus, the spa_config_enter_mmp() is used to
-				 * ignore pending writer requests.
+			 * If there is another thread who wants the
+			 * SCL_ZIO writer lock, then scl_write_wanted
+			 * will be set.  Thus, the spa_config_enter_mmp()
+			 * is used to ignore pending writer requests.
 			 *
 			 * The locking should be revised to remove the need
 			 * for this workaround.  If that's not workable then

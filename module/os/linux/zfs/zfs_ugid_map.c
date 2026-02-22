@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: CDDL-1.0
+
 #include <sys/types.h>
 #include <sys/fs/zfs.h>
 #include <sys/dsl_prop.h>
@@ -5,7 +7,7 @@
 #include <sys/zap.h>
 #include <sys/dmu_objset.h>
 #include <sys/zfs_ugid_map.h>
-
+#include <linux/vfs_compat.h>
 
 struct zfs_ugid_map *
 zfs_create_ugid_map(objset_t *os, zfs_prop_t prop)
@@ -24,19 +26,17 @@ zfs_create_ugid_map(objset_t *os, zfs_prop_t prop)
 
 	dsl_pool_config_exit(dmu_objset_pool(os), FTAG);
 
-	if (error != 0) {
+	if (error != 0)
 		goto out;
-	}
 
 	if (strcmp(value, "none") == 0)
 		goto out;
 
-	ugid_map = vmem_zalloc(sizeof(struct zfs_ugid_map), KM_SLEEP);
+	ugid_map = vmem_zalloc(sizeof (struct zfs_ugid_map), KM_SLEEP);
 	ugid_map->m_size = ZFS_UGID_MAP_SIZE;
 	ugid_map->m_entries = 0;
 	ugid_map->m_map = vmem_zalloc(
-	    sizeof (struct zfs_ugid_map_entry *) * ugid_map->m_size,
-	    KM_SLEEP);
+	    sizeof (struct zfs_ugid_map_entry *) * ugid_map->m_size, KM_SLEEP);
 
 	while (value[pos] != '\0') {
 		unsigned long long ns_id, host_id, count;
@@ -50,7 +50,8 @@ zfs_create_ugid_map(objset_t *os, zfs_prop_t prop)
 			goto fail;
 		pos += i;
 
-			entry = vmem_zalloc(sizeof (struct zfs_ugid_map_entry), KM_SLEEP);
+		entry = vmem_zalloc(sizeof (struct zfs_ugid_map_entry),
+		    KM_SLEEP);
 		entry->e_ns_id = ns_id;
 		entry->e_host_id = host_id;
 		entry->e_count = count;
@@ -88,11 +89,13 @@ zfs_free_ugid_map(struct zfs_ugid_map *ugid_map)
 		return;
 
 	for (i = 0; i < ugid_map->m_size; i++) {
-		vmem_free(ugid_map->m_map[i], sizeof(struct zfs_ugid_map_entry));
+		vmem_free(ugid_map->m_map[i],
+		    sizeof (struct zfs_ugid_map_entry));
 	}
 
-	vmem_free(ugid_map->m_map, sizeof(struct zfs_ugid_map_entry*) * ugid_map->m_size);
-	vmem_free(ugid_map, sizeof(struct zfs_ugid_map));
+	vmem_free(ugid_map->m_map,
+	    sizeof (struct zfs_ugid_map_entry *) * ugid_map->m_size);
+	vmem_free(ugid_map, sizeof (struct zfs_ugid_map));
 }
 
 uint64_t
@@ -105,28 +108,26 @@ zfs_ugid_map_ns_to_host(struct zfs_ugid_map *ugid_map, uint64_t id)
 	if (ugid_map == NULL)
 		return (id);
 
-	/* look for a matching mapping */
+	/* Look for a matching mapping. */
 	for (i = 0; i < ugid_map->m_entries; i++) {
 		entry = ugid_map->m_map[i];
 
-		/* check if we're already mapped into the entry */
-		if (id >= entry->e_host_id && id < (entry->e_host_id + entry->e_count)) {
-			pr_debug("zfs_ugid_map_ns_to_host: %lld already mapped via mapping %lld:%lld:%lld",
-				id, entry->e_ns_id, entry->e_host_id, entry->e_count);
+		/* Check if we're already mapped into the entry. */
+		if (id >= entry->e_host_id &&
+		    id < (entry->e_host_id + entry->e_count)) {
 			return (id);
 		}
 
-		/* check if we can map the entry */
-		if (id >= entry->e_ns_id && id < (entry->e_ns_id + entry->e_count)) {
+		/* Check if we can map the entry. */
+		if (id >= entry->e_ns_id &&
+		    id < (entry->e_ns_id + entry->e_count)) {
 			res = entry->e_host_id + (id - entry->e_ns_id);
-			pr_debug("zfs_ugid_map_ns_to_host: %lld -> %lld via mapping %lld:%lld:%lld",
-				id, res, entry->e_ns_id, entry->e_host_id, entry->e_count);
 			VERIFY3U(0, <=, res);
 			return (res);
 		}
 	}
 
-	/* id not mapped, return nobody */
+	/* ID not mapped, return nobody. */
 	return (65534);
 }
 
@@ -140,27 +141,95 @@ zfs_ugid_map_host_to_ns(struct zfs_ugid_map *ugid_map, uint64_t id)
 	if (ugid_map == NULL)
 		return (id);
 
-	/* look for a matching mapping */
+	/* Look for a matching mapping. */
 	for (i = 0; i < ugid_map->m_entries; i++) {
 		entry = ugid_map->m_map[i];
 
-		/* check if we're already mapped into the entry */
-		if (id >= entry->e_ns_id && id < (entry->e_ns_id + entry->e_count)) {
-			pr_debug("zfs_ugid_map_host_to_ns: %lld already mapped via mapping %lld:%lld:%lld",
-				id, entry->e_ns_id, entry->e_host_id, entry->e_count);
+		/* Check if we're already mapped into the entry. */
+		if (id >= entry->e_ns_id &&
+		    id < (entry->e_ns_id + entry->e_count)) {
 			return (id);
 		}
 
-		/* check if we can map the entry */
-		if (id >= entry->e_host_id && id < (entry->e_host_id + entry->e_count)) {
+		/* Check if we can map the entry. */
+		if (id >= entry->e_host_id &&
+		    id < (entry->e_host_id + entry->e_count)) {
 			res = (id - entry->e_host_id) + entry->e_ns_id;
-			pr_debug("zfs_ugid_map_host_to_ns: %lld -> %lld via mapping %lld:%lld:%lld",
-				id, res, entry->e_ns_id, entry->e_host_id, entry->e_count);
 			VERIFY3U(0, <=, res);
 			return (res);
 		}
 	}
 
-	/* id not mapped, return nobody */
+	/* ID not mapped, return nobody. */
 	return (65534);
+}
+
+struct posix_acl *
+zfs_ugid_map_acl_from_xattr(struct zfs_ugid_map *uid_map,
+    struct zfs_ugid_map *gid_map, struct posix_acl *acl)
+{
+	struct posix_acl_entry *pa, *pe;
+
+	if (IS_ERR(acl))
+		return (acl);
+
+	if (uid_map == NULL && gid_map == NULL)
+		return (acl);
+
+	FOREACH_ACL_ENTRY(pa, acl, pe) {
+		switch (pa->e_tag) {
+		case ACL_USER:
+			pa->e_uid = SUID_TO_KUID(zfs_ugid_map_ns_to_host(
+			    uid_map, KUID_TO_SUID(pa->e_uid)));
+			break;
+		case ACL_GROUP:
+			pa->e_gid = SGID_TO_KGID(zfs_ugid_map_ns_to_host(
+			    gid_map, KGID_TO_SGID(pa->e_gid)));
+			break;
+		default:
+			continue;
+		}
+	}
+
+	return (acl);
+}
+
+int
+zfs_ugid_map_acl_to_xattr(struct zfs_ugid_map *uid_map,
+    struct zfs_ugid_map *gid_map, struct posix_acl *acl, void *value, int size)
+{
+	struct posix_acl *acl_map;
+	struct posix_acl_entry *pa, *pe;
+	int ret;
+
+	if (uid_map == NULL && gid_map == NULL)
+		return (posix_acl_to_xattr(kcred->user_ns, acl, value, size));
+
+	acl_map = posix_acl_clone(acl, GFP_KERNEL);
+	if (acl_map == NULL)
+		return (-ENOMEM);
+	if (IS_ERR(acl_map))
+		return (PTR_ERR(acl_map));
+
+	/* Map the entries. */
+	FOREACH_ACL_ENTRY(pa, acl_map, pe) {
+		switch (pa->e_tag) {
+		case ACL_USER:
+			pa->e_uid = SUID_TO_KUID(zfs_ugid_map_host_to_ns(
+			    uid_map, KUID_TO_SUID(pa->e_uid)));
+			break;
+		case ACL_GROUP:
+			pa->e_gid = SGID_TO_KGID(zfs_ugid_map_host_to_ns(
+			    gid_map, KGID_TO_SGID(pa->e_gid)));
+			break;
+		default:
+			continue;
+		}
+	}
+
+	/* Make the xattr with mapped entries. */
+	ret = posix_acl_to_xattr(kcred->user_ns, acl_map, value, size);
+	zpl_posix_acl_release(acl_map);
+
+	return (ret);
 }

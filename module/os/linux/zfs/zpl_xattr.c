@@ -968,6 +968,7 @@ zpl_set_acl_impl(struct inode *ip, struct posix_acl *acl, int type)
 	char *name, *value = NULL;
 	int error = 0;
 	size_t size = 0;
+	zfsvfs_t *zfsvfs;
 
 	if (S_ISLNK(ip->i_mode))
 		return (-EOPNOTSUPP);
@@ -1015,7 +1016,9 @@ zpl_set_acl_impl(struct inode *ip, struct posix_acl *acl, int type)
 		size = posix_acl_xattr_size(acl->a_count);
 		value = kmem_alloc(size, KM_SLEEP);
 
-		error = zpl_acl_to_xattr(acl, value, size);
+		zfsvfs = ITOZSB(ip);
+		error = zpl_acl_to_xattr_map(zfsvfs->z_uid_map,
+		    zfsvfs->z_gid_map, acl, value, size);
 		if (error < 0) {
 			kmem_free(value, size);
 			return (error);
@@ -1027,10 +1030,21 @@ zpl_set_acl_impl(struct inode *ip, struct posix_acl *acl, int type)
 		kmem_free(value, size);
 
 	if (!error) {
-		if (acl)
-			set_cached_acl(ip, type, acl);
-		else
+		if (acl) {
+			/*
+			 * With uid/gid mappings, userspace can provide ACL
+			 * IDs in namespace form and expects mapped IDs on
+			 * readback. Caching the raw ACL can bypass mapping on
+			 * subsequent reads, so force re-read from xattr.
+			 */
+			if (zfsvfs->z_uid_map != NULL ||
+			    zfsvfs->z_gid_map != NULL)
+				forget_cached_acl(ip, type);
+			else
+				set_cached_acl(ip, type, acl);
+		} else {
 			forget_cached_acl(ip, type);
+		}
 	}
 
 	return (error);
@@ -1065,6 +1079,7 @@ zpl_get_acl_impl(struct inode *ip, int type)
 	struct posix_acl *acl;
 	void *value = NULL;
 	char *name;
+	zfsvfs_t *zfsvfs;
 
 	switch (type) {
 	case ACL_TYPE_ACCESS:
@@ -1084,7 +1099,9 @@ zpl_get_acl_impl(struct inode *ip, int type)
 	}
 
 	if (size > 0) {
-		acl = zpl_acl_from_xattr(value, size);
+		zfsvfs = ITOZSB(ip);
+		acl = zpl_acl_from_xattr_map(zfsvfs->z_uid_map,
+		    zfsvfs->z_gid_map, value, size);
 	} else if (size == -ENODATA || size == -ENOSYS) {
 		acl = NULL;
 	} else {
