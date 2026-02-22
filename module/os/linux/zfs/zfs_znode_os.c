@@ -170,6 +170,33 @@ zfs_znode_hold_cache_destructor(void *buf, void *arg)
 	mutex_destroy(&zh->zh_lock);
 }
 
+static znode_t *
+zfs_znode_cache_alloc_for_inode(struct super_block *sb)
+{
+	znode_t *zp;
+
+#ifdef HAVE_ALLOC_INODE_SB
+	if (znode_cache->skc_linux_cache != NULL) {
+		zp = alloc_inode_sb(sb, znode_cache->skc_linux_cache,
+		    GFP_KERNEL);
+		if (zp == NULL)
+			return (NULL);
+
+		/*
+		 * alloc_inode_sb() allocates from the raw Linux slab and
+		 * bypasses spl_kmem_cache_alloc(), so run the ZFS constructor
+		 * explicitly to initialize the embedded VFS inode.
+		 */
+		VERIFY0(zfs_znode_cache_constructor(zp, NULL, KM_SLEEP));
+		return (zp);
+	}
+#else
+	(void) sb;
+#endif
+
+	return (kmem_cache_alloc(znode_cache, KM_SLEEP));
+}
+
 void
 zfs_znode_init(void)
 {
@@ -360,7 +387,10 @@ zfs_inode_alloc(struct super_block *sb, struct inode **ip)
 {
 	znode_t *zp;
 
-	zp = kmem_cache_alloc(znode_cache, KM_SLEEP);
+	zp = zfs_znode_cache_alloc_for_inode(sb);
+	if (zp == NULL)
+		return (SET_ERROR(ENOMEM));
+
 	*ip = ZTOI(zp);
 
 	return (0);
@@ -369,12 +399,11 @@ zfs_inode_alloc(struct super_block *sb, struct inode **ip)
 void
 zfs_inode_free(struct inode *ip)
 {
-	kmem_cache_free(znode_cache, ITOZ(ip));
+	znode_t *zp = ITOZ(ip);
+
+	kmem_cache_free(znode_cache, zp);
 }
 
-/*
- * Called in multiple places when an inode should be destroyed.
- */
 void
 zfs_inode_destroy(struct inode *ip)
 {
@@ -396,13 +425,8 @@ zfs_inode_destroy(struct inode *ip)
 		nvlist_free(zp->z_xattr_cached);
 		zp->z_xattr_cached = NULL;
 	}
-#ifndef HAVE_SOPS_FREE_INODE
-	/*
-	 * inode needs to be freed in RCU callback.  If we have
-	 * super_operations->free_inode, Linux kernel will do call_rcu
-	 * for us.  But if we don't have it, since call_rcu is GPL-only
-	 * symbol, we can only free synchronously and accept the risk.
-	 */
+
+#ifndef HAVE_INODE_FREE
 	zfs_inode_free(ip);
 #endif
 }
