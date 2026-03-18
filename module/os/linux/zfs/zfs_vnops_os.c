@@ -234,6 +234,99 @@ zfs_close(struct inode *ip, int flag, cred_t *cr)
 
 static int zfs_fillpage(struct inode *ip, struct page *pp);
 
+static boolean_t
+zfs_page_revalidate(struct inode *ip, struct page *pp,
+    struct address_space *mapping, pgoff_t index, u_offset_t *io_offp,
+    size_t *io_lenp)
+{
+	loff_t i_size;
+	u_offset_t io_off;
+	size_t io_len = PAGE_SIZE;
+
+	if (mapping != NULL && (pp->mapping != mapping || pp->mapping == NULL ||
+	    pp->mapping->host != ip || pp->index != index))
+		return (B_FALSE);
+
+	i_size = i_size_read(ip);
+	io_off = page_offset(pp);
+	if (unlikely(io_off >= i_size))
+		return (B_FALSE);
+
+	if (io_off + io_len > i_size)
+		io_len = i_size - io_off;
+
+	*io_offp = io_off;
+	*io_lenp = io_len;
+	return (B_TRUE);
+}
+/*
+ * Snapshot the current Linux file view into a kernel buffer.  Existing page
+ * cache pages win over the DMU view.  The caller holds the matching ZFS range
+ * lock, which also excludes page_mkwrite() while each slice is captured.
+ */
+int
+zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
+    int flags)
+{
+	struct inode *ip = ZTOI(zp);
+	struct address_space *mp = ip->i_mapping;
+	uint64_t off = start & (PAGE_SIZE - 1);
+	char *dst = buf;
+	int error = 0;
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+
+	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
+		uint64_t nbytes = MIN(PAGE_SIZE - off, len);
+		struct page *pp;
+
+		pp = find_lock_page(mp, start >> PAGE_SHIFT);
+		if (pp != NULL) {
+			void *pb;
+
+			/*
+			 * If filemap_fault() retries there exists a window
+			 * where the page will be unlocked and not up to date.
+			 * In this case we must try and fill the page.
+			 */
+			if (unlikely(!PageUptodate(pp))) {
+				error = zfs_fillpage(ip, pp);
+				if (error) {
+					unlock_page(pp);
+					put_page(pp);
+					return (error);
+				}
+			}
+
+			ASSERT(PageUptodate(pp) || PageDirty(pp));
+
+			if (zn_writably_mapped(zp))
+				flush_dcache_page(pp);
+
+			pb = kmap(pp);
+			memcpy(dst, pb + off, nbytes);
+			kunmap(pp);
+
+			if (zn_writably_mapped(zp))
+				flush_dcache_page(pp);
+
+			unlock_page(pp);
+			mark_page_accessed(pp);
+			put_page(pp);
+		} else {
+			error = dmu_read(zfsvfs->z_os, zp->z_id, start + off,
+			    nbytes, dst, flags);
+		}
+		if (error != 0)
+			return (error);
+
+		dst += nbytes;
+		len -= nbytes;
+		off = 0;
+	}
+
+	return (0);
+}
+
 /*
  * When a file is memory mapped, we must keep the IO data synchronized
  * between the DMU cache and the memory mapped pages.  Update all mapped
@@ -250,7 +343,9 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 
 		struct page *pp = find_lock_page(mp, start >> PAGE_SHIFT);
 		if (pp) {
-			if (mapping_writably_mapped(mp))
+			boolean_t was_uptodate = PageUptodate(pp);
+
+			if (zn_writably_mapped(zp))
 				flush_dcache_page(pp);
 
 			void *pb = kmap(pp);
@@ -262,10 +357,10 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 				SetPageError(pp);
 				ClearPageUptodate(pp);
 			} else {
-				ClearPageError(pp);
-				SetPageUptodate(pp);
+				zpl_page_range_write_done(pp,
+				    was_uptodate, off, nbytes);
 
-				if (mapping_writably_mapped(mp))
+				if (zn_writably_mapped(zp))
 					flush_dcache_page(pp);
 
 				mark_page_accessed(pp);
@@ -278,6 +373,53 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 		len -= nbytes;
 		off = 0;
 	}
+}
+
+/*
+ * Writable shared mappings may instantiate and dirty a page after zfs_read()
+ * has decided this chunk has no cached data.  Snapshot each page-sized slice
+ * under a slice-local ZFS range lock into a bounce buffer, then drop that lock
+ * before copying the stable snapshot to the caller.  User-buffer faults
+ * therefore cannot deadlock against page_mkwrite(), truncate, or hole-punch.
+ */
+int
+mappedread_writable(znode_t *zp, int nbytes, zfs_uio_t *uio)
+{
+	void *buf = kmem_alloc(PAGE_SIZE, KM_SLEEP);
+	int64_t start = uio->uio_loffset;
+	int64_t off = start & (PAGE_SIZE - 1);
+	int len = nbytes;
+	int error = 0;
+
+	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
+		uint64_t bytes = MIN(PAGE_SIZE - off, len);
+		uint64_t file_off = start + off;
+		zfs_locked_range_t *lr;
+
+		lr = zfs_rangelock_enter(&zp->z_rangelock, file_off, bytes,
+		    RL_READER);
+		if (file_off >= zp->z_size) {
+			zfs_rangelock_exit(lr);
+			break;
+		}
+		bytes = MIN(bytes, zp->z_size - file_off);
+
+		error = zfs_read_mapped_range(zp, file_off, bytes, buf,
+		    DMU_READ_PREFETCH);
+		zfs_rangelock_exit(lr);
+		if (error != 0)
+			goto out;
+
+		error = zfs_uiomove(buf, bytes, UIO_READ, uio);
+		if (error != 0)
+			goto out;
+
+		len -= bytes;
+		off = 0;
+	}
+out:
+	kmem_free(buf, PAGE_SIZE);
+	return (error);
 }
 
 /*
@@ -322,9 +464,6 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 			void *pb = kmap(pp);
 			error = zfs_uiomove(pb + off, bytes, UIO_READ, uio);
 			kunmap(pp);
-
-			if (mapping_writably_mapped(mp))
-				flush_dcache_page(pp);
 
 			mark_page_accessed(pp);
 			put_page(pp);
@@ -3734,6 +3873,39 @@ zfs_page_writeback_done(struct page *pp, int err)
 	end_page_writeback(pp);
 }
 
+typedef enum zfs_putpage_relock_state {
+	ZFS_PUTPAGE_RELOCK_ABORT = 0,
+	ZFS_PUTPAGE_RELOCK_WAIT_WRITEBACK,
+	ZFS_PUTPAGE_RELOCK_WRITE
+} zfs_putpage_relock_state_t;
+
+static zfs_putpage_relock_state_t
+zfs_putpage_revalidate(struct inode *ip, znode_t *zp, struct page *pp,
+    struct address_space *mapping, loff_t pgoff, unsigned int *pglenp)
+{
+	loff_t eof = i_size_read(ip);
+	unsigned int pglen;
+
+	if (unlikely((mapping != pp->mapping) || !PageDirty(pp)))
+		return (ZFS_PUTPAGE_RELOCK_ABORT);
+
+	if (eof > zp->z_size)
+		eof = zp->z_size;
+
+	if (pgoff >= eof)
+		return (ZFS_PUTPAGE_RELOCK_ABORT);
+
+	if (PageWriteback(pp))
+		return (ZFS_PUTPAGE_RELOCK_WAIT_WRITEBACK);
+
+	pglen = MIN(PAGE_SIZE, P2ROUNDUP(eof, PAGE_SIZE) - pgoff);
+	if (pgoff + pglen > eof)
+		pglen = eof - pgoff;
+
+	*pglenp = pglen;
+	return (ZFS_PUTPAGE_RELOCK_WRITE);
+}
+
 /*
  * ZIL callback for page writeback. Passes to zfs_log_write() in zfs_putpage()
  * for syncing writes. Called when the ZIL itx has been written to the log or
@@ -3849,16 +4021,14 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 	    pgoff, pglen, RL_WRITER);
 	lock_page(pp);
 
-	/* Page mapping changed or it was no longer dirty, we're done */
-	if (unlikely((mapping != pp->mapping) || !PageDirty(pp))) {
+	switch (zfs_putpage_revalidate(ip, zp, pp, mapping, pgoff, &pglen)) {
+	case ZFS_PUTPAGE_RELOCK_ABORT:
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 		zfs_exit(zfsvfs, FTAG);
 		return (0);
-	}
 
-	/* Another process started write block if required */
-	if (PageWriteback(pp)) {
+	case ZFS_PUTPAGE_RELOCK_WAIT_WRITEBACK:
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 
@@ -3873,6 +4043,9 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 
 		zfs_exit(zfsvfs, FTAG);
 		return (0);
+
+	default:
+		break;
 	}
 
 	/* Clear the dirty flag the required locks are held */
@@ -4154,19 +4327,11 @@ zfs_inactive(struct inode *ip)
  * Fill pages with data from the disk.
  */
 static int
-zfs_fillpage(struct inode *ip, struct page *pp)
+zfs_fillpage_range(struct inode *ip, struct page *pp, u_offset_t io_off,
+    size_t io_len)
 {
 	znode_t *zp = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
-	loff_t i_size = i_size_read(ip);
-	u_offset_t io_off = page_offset(pp);
-	size_t io_len = PAGE_SIZE;
-
-	ASSERT3U(io_off, <, i_size);
-
-	if (io_off + io_len > i_size)
-		io_len = i_size - io_off;
-
 	void *va = kmap(pp);
 	int error = dmu_read(zfsvfs->z_os, zp->z_id, io_off,
 	    io_len, va, DMU_READ_PREFETCH);
@@ -4189,6 +4354,20 @@ zfs_fillpage(struct inode *ip, struct page *pp)
 	return (error);
 }
 
+static int
+zfs_fillpage(struct inode *ip, struct page *pp)
+{
+	u_offset_t io_off;
+	size_t io_len;
+
+	if (unlikely(!zfs_page_revalidate(ip, pp, NULL, 0, &io_off, &io_len))) {
+		ClearPageUptodate(pp);
+		return (SET_ERROR(EIO));
+	}
+
+	return (zfs_fillpage_range(ip, pp, io_off, io_len));
+}
+
 /*
  * Uses zfs_fillpage to read data from the file and fill the page.
  *
@@ -4201,22 +4380,23 @@ zfs_fillpage(struct inode *ip, struct page *pp)
  *	vp - atime updated
  */
 int
-zfs_getpage(struct inode *ip, struct page *pp)
+zfs_getpage(struct inode *ip, struct page *pp, struct address_space *mapping,
+    pgoff_t index)
 {
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
 	znode_t *zp = ITOZ(ip);
 	int error;
-	loff_t i_size = i_size_read(ip);
-	u_offset_t io_off = page_offset(pp);
-	size_t io_len = PAGE_SIZE;
+	u_offset_t io_off;
+	size_t io_len;
+
+	if (unlikely(!zfs_page_revalidate(ip, pp, mapping, index, &io_off,
+	    &io_len))) {
+		unlock_page(pp);
+		return (AOP_TRUNCATED_PAGE);
+	}
 
 	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
 		return (error);
-
-	ASSERT3U(io_off, <, i_size);
-
-	if (io_off + io_len > i_size)
-		io_len = i_size - io_off;
 
 	/*
 	 * It is important to hold the rangelock here because it is possible
@@ -4244,9 +4424,17 @@ zfs_getpage(struct inode *ip, struct page *pp)
 		lr = zfs_rangelock_enter(&zp->z_rangelock, io_off,
 		    io_len, RL_READER);
 		lock_page(pp);
+		if (unlikely(!zfs_page_revalidate(ip, pp, mapping,
+		    index, &io_off, &io_len))) {
+			unlock_page(pp);
+			put_page(pp);
+			zfs_rangelock_exit(lr);
+			zfs_exit(zfsvfs, FTAG);
+			return (AOP_TRUNCATED_PAGE);
+		}
 		put_page(pp);
 	}
-	error = zfs_fillpage(ip, pp);
+	error = zfs_fillpage_range(ip, pp, io_off, io_len);
 	zfs_rangelock_exit(lr);
 
 	if (error == 0)
