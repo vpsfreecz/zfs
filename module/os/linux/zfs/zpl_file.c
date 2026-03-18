@@ -398,17 +398,24 @@ zpl_mmap(struct file *filp, struct vm_area_struct *vma)
 static inline int
 zpl_readpage_common(struct page *pp)
 {
+	struct address_space *mapping = pp->mapping;
+	struct inode *ip = mapping->host;
+	pgoff_t index = pp->index;
 	fstrans_cookie_t cookie;
+	int error;
 
 	ASSERT(PageLocked(pp));
 
 	cookie = spl_fstrans_mark();
-	int error = -zfs_getpage(pp->mapping->host, pp);
+	error = zfs_getpage(ip, pp, mapping, index);
 	spl_fstrans_unmark(cookie);
+
+	if (error == AOP_TRUNCATED_PAGE)
+		return (error);
 
 	unlock_page(pp);
 
-	return (error);
+	return (-error);
 }
 
 #ifdef HAVE_VFS_READ_FOLIO
