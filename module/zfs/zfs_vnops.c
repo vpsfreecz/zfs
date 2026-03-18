@@ -124,11 +124,12 @@ zfs_fsync(znode_t *zp, int syncflag, cred_t *cr)
 static int
 zfs_holey_common(znode_t *zp, ulong_t cmd, loff_t *off)
 {
-	zfs_locked_range_t *lr;
+	zfs_locked_range_t *lr = NULL;
 	uint64_t noff = (uint64_t)*off; /* new offset */
 	uint64_t file_sz;
 	int error;
 	boolean_t hole;
+	boolean_t cached_locked = B_FALSE;
 
 	file_sz = zp->z_size;
 	if (noff >= file_sz)  {
@@ -140,13 +141,27 @@ zfs_holey_common(znode_t *zp, ulong_t cmd, loff_t *off)
 	else
 		hole = B_FALSE;
 
-	/* Flush any mmap()'d data to disk */
-	if (zn_has_cached_data(zp, 0, file_sz - 1))
-		zn_flush_cached_data(zp, B_TRUE);
+	/*
+	 * Flush existing cached pages and freeze later writable-mmap arrivals
+	 * while we query the DMU view.
+	 */
+	if (zn_has_cached_data(zp, 0, file_sz - 1) ||
+	    zn_writably_mapped(zp)) {
+		zn_lock_cached_data(zp);
+		cached_locked = B_TRUE;
+		error = zn_sync_cached_data(zp, 0, file_sz - 1);
+		if (error != 0)
+			goto out;
+	}
 
 	lr = zfs_rangelock_enter(&zp->z_rangelock, 0, UINT64_MAX, RL_READER);
 	error = dmu_offset_next(ZTOZSB(zp)->z_os, zp->z_id, hole, &noff);
-	zfs_rangelock_exit(lr);
+
+out:
+	if (lr != NULL)
+		zfs_rangelock_exit(lr);
+	if (cached_locked)
+		zn_unlock_cached_data(zp);
 
 	if (error == ESRCH)
 		return (SET_ERROR(ENXIO));
@@ -228,14 +243,12 @@ zfs_access(znode_t *zp, int mode, int flag, cred_t *cr)
  * is it allows the property to be safely set on a dataset without forcing
  * all of the applications to be aware of the alignment restrictions. When
  * O_DIRECT is explicitly requested by an application return EINVAL if the
- * request is unaligned.  In all cases, if the range for this request has
- * been mmap'ed then we will perform buffered I/O to keep the mapped region
- * synhronized with the ARC.
+ * request is unaligned.
  *
- * It is possible that a file's pages could be mmap'ed after it is checked
- * here. If so, that is handled coorarding in zfs_write(). See comments in the
- * following area for how this is handled:
- * zfs_write() -> update_pages()
+ * On Linux the actual cached-data decision is made later under the ZFS range
+ * lock held by zfs_read() or zfs_write().  page_mkwrite() participates in the
+ * same range-lock protocol, so a writable mapping cannot change authority
+ * after the decision.  FreeBSD keeps the earlier cached-data fallback here.
  */
 static boolean_t
 zfs_direct_io_enabled(objset_t *os)
@@ -281,6 +294,7 @@ zfs_setup_direct(struct znode *zp, zfs_uio_t *uio, zfs_uio_rw_t rw,
 		goto out;
 	}
 
+#if !defined(__linux__)
 	if (zn_has_cached_data(zp, zfs_uio_offset(uio),
 	    zfs_uio_offset(uio) + zfs_uio_resid(uio) - 1)) {
 		/*
@@ -289,6 +303,7 @@ zfs_setup_direct(struct znode *zp, zfs_uio_t *uio, zfs_uio_rw_t rw,
 		 */
 		goto out;
 	}
+#endif
 
 	/*
 	 * For short writes the page mapping of Direct I/O makes no sense.
@@ -306,6 +321,36 @@ out:
 	*ioflagp = ioflag;
 	return (error);
 }
+
+#if defined(__linux__)
+/*
+ * zfs_read() and zfs_write() already hold the matching ZFS range lock.
+ * page_mkwrite() takes that lock after invalidate_lock_shared, so checking
+ * the cache here cannot race a writable mmap transition.  Do not acquire the
+ * invalidate lock after the range lock; that would invert the global order.
+ */
+static boolean_t
+zfs_direct_chunk_begin(znode_t *zp, zfs_uio_t *uio, uint64_t size)
+{
+	if ((uio->uio_extflg & UIO_DIRECT) == 0 || size == 0)
+		return (B_FALSE);
+
+	if (zn_has_cached_data(zp, zfs_uio_offset(uio),
+	    zfs_uio_offset(uio) + size - 1)) {
+		uio->uio_extflg &= ~UIO_DIRECT;
+		return (B_FALSE);
+	}
+
+	return (B_TRUE);
+}
+
+static void
+zfs_direct_chunk_end(zfs_uio_t *uio, boolean_t restore_direct)
+{
+	if (restore_direct)
+		uio->uio_extflg |= UIO_DIRECT;
+}
+#endif
 
 /*
  * Read bytes from specified file into supplied buffer.
@@ -450,18 +495,38 @@ zfs_read(struct znode *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 	while (n > 0) {
 		ssize_t nbytes = MIN(n, chunk_size -
 		    P2PHASE(zfs_uio_offset(uio), blksz));
+#if defined(__linux__)
+		boolean_t direct_requested = !!(uio->uio_extflg & UIO_DIRECT);
+		boolean_t direct_chunk =
+		    zfs_direct_chunk_begin(zp, uio, nbytes);
+		boolean_t restore_direct = direct_requested && !direct_chunk;
+		boolean_t use_mappedread =
+		    zn_has_cached_data(zp, zfs_uio_offset(uio),
+		    zfs_uio_offset(uio) + nbytes - 1);
+
+		if (!use_mappedread && !(uio->uio_extflg & UIO_DIRECT) &&
+		    zn_writably_mapped(zp)) {
+			use_mappedread = B_TRUE;
+		}
+#else
+		boolean_t use_mappedread =
+		    zn_has_cached_data(zp, zfs_uio_offset(uio),
+		    zfs_uio_offset(uio) + nbytes - 1);
+#endif
 #ifdef UIO_NOCOPY
 		if (zfs_uio_segflg(uio) == UIO_NOCOPY)
 			error = mappedread_sf(zp, nbytes, uio);
 		else
 #endif
-		if (zn_has_cached_data(zp, zfs_uio_offset(uio),
-		    zfs_uio_offset(uio) + nbytes - 1)) {
+		if (use_mappedread) {
 			error = mappedread(zp, nbytes, uio);
 		} else {
 			error = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl),
 			    uio, nbytes, dflags);
 		}
+#if defined(__linux__)
+		zfs_direct_chunk_end(uio, restore_direct);
+#endif
 
 		if (error) {
 			/* convert checksum errors into IO errors */
@@ -512,8 +577,19 @@ zfs_read(struct znode *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 		uio->uio_extflg &= ~UIO_DIRECT;
 		dflags &= ~DMU_DIRECTIO;
 
-		if (zn_has_cached_data(zp, zfs_uio_offset(uio),
-		    zfs_uio_offset(uio) + dio_remaining_resid - 1)) {
+#if defined(__linux__)
+		boolean_t use_mappedread =
+		    zn_has_cached_data(zp, zfs_uio_offset(uio),
+		    zfs_uio_offset(uio) + dio_remaining_resid - 1);
+
+		if (!use_mappedread && zn_writably_mapped(zp))
+			use_mappedread = B_TRUE;
+#else
+		boolean_t use_mappedread =
+		    zn_has_cached_data(zp, zfs_uio_offset(uio),
+		    zfs_uio_offset(uio) + dio_remaining_resid - 1);
+#endif
+		if (use_mappedread) {
 			error = mappedread(zp, dio_remaining_resid, uio);
 		} else {
 			error = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl), uio,
@@ -899,12 +975,29 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 			dflags |= DMU_DIRECTIO;
 
 		ssize_t tx_bytes;
+		dmu_flags_t chunk_dflags = dflags;
+#if defined(__linux__)
+		boolean_t direct_chunk = B_FALSE;
+#endif
 		if (abuf == NULL) {
+#if defined(__linux__)
+			boolean_t direct_requested =
+			    !!(uio->uio_extflg & UIO_DIRECT);
+			boolean_t restore_direct;
+
+			direct_chunk = zfs_direct_chunk_begin(zp, uio, nbytes);
+			if (!direct_chunk)
+				chunk_dflags &= ~DMU_DIRECTIO;
+			restore_direct = direct_requested && !direct_chunk;
+#endif
 			tx_bytes = zfs_uio_resid(uio);
 			zfs_uio_fault_disable(uio, B_TRUE);
 			error = dmu_write_uio_dbuf(sa_get_db(zp->z_sa_hdl),
-			    uio, nbytes, tx, dflags);
+			    uio, nbytes, tx, chunk_dflags);
 			zfs_uio_fault_disable(uio, B_FALSE);
+#if defined(__linux__)
+			zfs_direct_chunk_end(uio, restore_direct);
+#endif
 			/*
 			 * On FreeBSD, EFAULT should be propagated back to the
 			 * VFS, which will handle faulting and will retry.
@@ -943,29 +1036,19 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 			tx_bytes = nbytes;
 		}
 		/*
-		 * There is a window where a file's pages can be mmap'ed after
-		 * zfs_setup_direct() is called. This is due to the fact that
-		 * the rangelock in this function is acquired after calling
-		 * zfs_setup_direct(). This is done so that
-		 * zfs_uio_prefaultpages() does not attempt to fault in pages
-		 * on Linux for Direct I/O requests. This is not necessary as
-		 * the pages are pinned in memory and can not be faulted out.
-		 * Ideally, the rangelock would be held before calling
-		 * zfs_setup_direct() and zfs_uio_prefaultpages(); however,
-		 * this can lead to a deadlock as zfs_getpage() also acquires
-		 * the rangelock as a RL_WRITER and prefaulting the pages can
-		 * lead to zfs_getpage() being called.
-		 *
-		 * In the case of the pages being mapped after
-		 * zfs_setup_direct() is called, the call to update_pages()
-		 * will still be made to make sure there is consistency between
-		 * the ARC and the Linux page cache. This is an ufortunate
-		 * situation as the data will be read back into the ARC after
-		 * the Direct I/O write has completed, but this is the penality
-		 * for writing to a mmap'ed region of a file using Direct I/O.
+		 * Linux decides each Direct I/O write chunk under the ZFS
+		 * range writer lock.  If cached pages are present we route
+		 * that chunk through the buffered path; otherwise no
+		 * page-cache repair is needed because page_mkwrite() uses
+		 * the same range-lock protocol.
 		 */
+#if defined(__linux__)
+		if (!direct_chunk && tx_bytes &&
+		    zn_has_cached_data(zp, woff, woff + tx_bytes - 1)) {
+#else
 		if (tx_bytes &&
 		    zn_has_cached_data(zp, woff, woff + tx_bytes - 1)) {
+#endif
 			update_pages(zp, woff, tx_bytes, zfsvfs->z_os);
 		}
 
@@ -1042,6 +1125,10 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 		o_direct_defer = B_FALSE;
 	}
 
+	uint64_t old_isize = i_size_read(ZTOI(zp));
+	if (zp->z_size > old_isize)
+		zn_pagecache_isize_extended(zp, old_isize, zp->z_size);
+
 	zfs_znode_update_vfs(zp);
 	zfs_rangelock_exit(lr);
 
@@ -1099,6 +1186,7 @@ zfs_rewrite(znode_t *zp, uint64_t off, uint64_t len, uint64_t flags,
     uint64_t arg)
 {
 	int error;
+	boolean_t cached_locked = B_FALSE;
 
 	if (flags != 0 || arg != 0)
 		return (SET_ERROR(EINVAL));
@@ -1119,9 +1207,21 @@ zfs_rewrite(znode_t *zp, uint64_t off, uint64_t len, uint64_t flags,
 	if (len == 0 || len > zp->z_size - off)
 		len = zp->z_size - off;
 
-	/* Flush any mmap()'d data to disk */
-	if (zn_has_cached_data(zp, off, off + len - 1))
-		zn_flush_cached_data(zp, B_TRUE);
+	/*
+	 * Flush existing cached pages and freeze later writable-mmap arrivals
+	 * while we rewrite the DMU view.
+	 */
+	if (zn_has_cached_data(zp, off, off + len - 1) ||
+	    zn_writably_mapped(zp)) {
+		zn_lock_cached_data(zp);
+		cached_locked = B_TRUE;
+		error = zn_sync_cached_data(zp, off, off + len - 1);
+		if (error != 0) {
+			zn_unlock_cached_data(zp);
+			zfs_exit(zfsvfs, FTAG);
+			return (error);
+		}
+	}
 
 	zfs_locked_range_t *lr;
 	lr = zfs_rangelock_enter(&zp->z_rangelock, off, len, RL_WRITER);
@@ -1215,6 +1315,8 @@ zfs_rewrite(znode_t *zp, uint64_t off, uint64_t len, uint64_t flags,
 	dataset_kstats_update_write_kstats(&zfsvfs->z_kstat, nw);
 
 	zfs_rangelock_exit(lr);
+	if (cached_locked)
+		zn_unlock_cached_data(zp);
 	zfs_exit(zfsvfs, FTAG);
 	return (error);
 }
@@ -1360,8 +1462,17 @@ zfs_get_data(void *arg, uint64_t gen, lr_write_t *lr, char *buf,
 		if (offset >= zp->z_size) {
 			error = SET_ERROR(ENOENT);
 		} else {
-			error = dmu_read(os, object, offset, size, buf,
-			    DMU_READ_NO_PREFETCH | DMU_KEEP_CACHING);
+#if defined(__linux__)
+			if (zn_writably_mapped(zp)) {
+				error = zfs_read_mapped_range(zp, offset, size,
+				    buf, DMU_READ_NO_PREFETCH |
+				    DMU_KEEP_CACHING);
+			} else
+#endif
+			{
+				error = dmu_read(os, object, offset, size, buf,
+				    DMU_READ_NO_PREFETCH | DMU_KEEP_CACHING);
+			}
 		}
 		ASSERT(error == 0 || error == ENOENT);
 	} else { /* indirect write */
@@ -1676,9 +1787,15 @@ zfs_clone_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 		}
 	}
 
-	/* Flush any mmap()'d data to disk */
+
+#if !defined(__linux__)
+	/*
+	 * Linux callers already freeze and sync both mappings before entry.
+	 * FreeBSD still needs the older source-cache flush here.
+	 */
 	if (zn_has_cached_data(inzp, inoff, inoff + len - 1))
 		zn_flush_cached_data(inzp, B_TRUE);
+#endif
 
 	/*
 	 * Maintain predictable lock order.
@@ -1918,6 +2035,9 @@ zfs_clone_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 	}
 
 	vmem_free(bps, sizeof (bps[0]) * maxblocks);
+	uint64_t old_isize = i_size_read(ZTOI(outzp));
+	if (outzp->z_size > old_isize)
+		zn_pagecache_isize_extended(outzp, old_isize, outzp->z_size);
 	zfs_znode_update_vfs(outzp);
 
 unlock:

@@ -43,6 +43,7 @@
 #include <sys/zfs_sa.h>
 #include <sys/zfs_stat.h>
 #include <sys/zfs_rlock.h>
+#include <linux/mm_compat.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -78,6 +79,111 @@ extern "C" {
 #define	zn_flush_cached_data(zp, sync)	write_inode_now(ZTOI(zp), sync)
 #define	zn_rlimit_fsize(size)		(0)
 #define	zn_rlimit_fsize_uio(zp, uio)	(0)
+
+static inline void
+zn_lock_mapping_shared(struct address_space *mapping)
+{
+	filemap_invalidate_lock_shared(mapping);
+}
+
+#define	zn_lock_cached_data_shared(zp) \
+	zn_lock_mapping_shared(ZTOI(zp)->i_mapping)
+
+static inline void
+zn_unlock_mapping_shared(struct address_space *mapping)
+{
+	filemap_invalidate_unlock_shared(mapping);
+}
+
+#define	zn_unlock_cached_data_shared(zp) \
+	zn_unlock_mapping_shared(ZTOI(zp)->i_mapping)
+
+static inline void
+zn_pagecache_isize_extended_impl(struct inode *ip, uint64_t from,
+    uint64_t to)
+{
+	if (!S_ISREG(ip->i_mode) || to <= from)
+		return;
+
+	i_size_write(ip, to);
+	pagecache_isize_extended(ip, from, to);
+}
+
+#define	zn_pagecache_isize_extended(zp, from, to) \
+	zn_pagecache_isize_extended_impl(ZTOI(zp), (from), (to))
+
+static inline boolean_t
+zn_mapping_writably_mapped(struct address_space *mapping)
+{
+	return (mapping_writably_mapped(mapping));
+}
+
+#define	zn_writably_mapped(zp) \
+	zn_mapping_writably_mapped(ZTOI(zp)->i_mapping)
+
+static inline void
+zn_lock_mapping(struct address_space *mapping)
+{
+	filemap_invalidate_lock(mapping);
+}
+
+#define	zn_lock_cached_data(zp) \
+	zn_lock_mapping(ZTOI(zp)->i_mapping)
+
+static inline void
+zn_unlock_mapping(struct address_space *mapping)
+{
+	filemap_invalidate_unlock(mapping);
+}
+
+#define	zn_unlock_cached_data(zp) \
+	zn_unlock_mapping(ZTOI(zp)->i_mapping)
+
+static inline void
+zn_lock_mapping_pair(struct address_space *ma, struct address_space *mb)
+{
+	if (ma == mb) {
+		zn_lock_mapping(ma);
+	} else if (ma < mb) {
+		zn_lock_mapping(ma);
+		zn_lock_mapping(mb);
+	} else {
+		zn_lock_mapping(mb);
+		zn_lock_mapping(ma);
+	}
+}
+
+#define	zn_lock_cached_data_pair(za, zb) \
+	zn_lock_mapping_pair(ZTOI(za)->i_mapping, ZTOI(zb)->i_mapping)
+
+static inline void
+zn_unlock_mapping_pair(struct address_space *ma, struct address_space *mb)
+{
+	if (ma == mb) {
+		zn_unlock_mapping(ma);
+	} else if (ma < mb) {
+		zn_unlock_mapping(mb);
+		zn_unlock_mapping(ma);
+	} else {
+		zn_unlock_mapping(ma);
+		zn_unlock_mapping(mb);
+	}
+}
+
+#define	zn_unlock_cached_data_pair(za, zb) \
+	zn_unlock_mapping_pair(ZTOI(za)->i_mapping, ZTOI(zb)->i_mapping)
+
+static inline int
+zn_sync_mapping(struct address_space *mapping, uint64_t start, uint64_t end)
+{
+	if (start > end)
+		return (0);
+
+	return (filemap_write_and_wait_range(mapping, start, end));
+}
+
+#define	zn_sync_cached_data(zp, start, end) \
+	zn_sync_mapping(ZTOI(zp)->i_mapping, (start), (end))
 
 /*
  * zhold() wraps igrab() on Linux, and igrab() may fail when the
