@@ -274,15 +274,127 @@ free_verify(dmu_buf_impl_t *db, uint64_t start, uint64_t end, dmu_tx_t *tx)
  * being freed.  Therefore, we free the indirect blocks immediately in that
  * case.
  */
+typedef struct free_children_view {
+	uint64_t fcv_dbstart;
+	uint64_t fcv_start;
+	uint64_t fcv_end;
+	uint64_t fcv_first;
+	uint64_t fcv_count;
+	uint64_t fcv_nslots;
+	blkptr_t *fcv_bps;
+} free_children_view_t;
+
+static void
+free_children_view_init(dmu_buf_impl_t *db, unsigned int epbs, uint64_t blkid,
+    uint64_t nblks, free_children_view_t *view)
+{
+	size_t size;
+	uint64_t dbend;
+	unsigned int shift = (db->db_level - 1) * epbs;
+
+	view->fcv_nslots = db->db.db_size >> SPA_BLKPTRSHIFT;
+	view->fcv_dbstart = db->db_blkid << epbs;
+	view->fcv_start = blkid >> shift;
+	if (view->fcv_dbstart < view->fcv_start) {
+		view->fcv_first = view->fcv_start - view->fcv_dbstart;
+	} else {
+		view->fcv_start = view->fcv_dbstart;
+		view->fcv_first = 0;
+	}
+	view->fcv_end = (blkid + nblks - 1) >> shift;
+	dbend = view->fcv_dbstart + view->fcv_nslots - 1;
+	if (dbend <= view->fcv_end)
+		view->fcv_end = dbend;
+
+	ASSERT3U(view->fcv_start, <=, view->fcv_end);
+	view->fcv_count = view->fcv_end - view->fcv_start + 1;
+	ASSERT3U(view->fcv_first + view->fcv_count, <=, view->fcv_nslots);
+
+	size = view->fcv_nslots * sizeof (*view->fcv_bps);
+	view->fcv_bps = kmem_alloc(size, KM_SLEEP);
+
+	mutex_enter(&db->db_mtx);
+	rw_enter(&db->db_rwlock, RW_READER);
+	VERIFY3P(db->db.db_data, !=, NULL);
+	memcpy(view->fcv_bps, db->db.db_data, size);
+	rw_exit(&db->db_rwlock);
+	mutex_exit(&db->db_mtx);
+}
+
+static blkptr_t *
+free_children_view_bp(const free_children_view_t *view, uint64_t id)
+{
+	ASSERT3U(id, >=, view->fcv_dbstart);
+	ASSERT3U(id, <, view->fcv_dbstart + view->fcv_nslots);
+
+	return (&view->fcv_bps[id - view->fcv_dbstart]);
+}
+
+static void
+free_children_view_writeback_range(dmu_buf_impl_t *db,
+    const free_children_view_t *view)
+{
+	size_t size = view->fcv_count * sizeof (*view->fcv_bps);
+
+	mutex_enter(&db->db_mtx);
+	rw_enter(&db->db_rwlock, RW_WRITER);
+	VERIFY3P(db->db.db_data, !=, NULL);
+	memcpy(&((blkptr_t *)db->db.db_data)[view->fcv_first],
+	    &view->fcv_bps[view->fcv_first], size);
+	rw_exit(&db->db_rwlock);
+	mutex_exit(&db->db_mtx);
+}
+
+static void
+free_children_view_writeback_all(dmu_buf_impl_t *db,
+    const free_children_view_t *view)
+{
+	size_t size = view->fcv_nslots * sizeof (*view->fcv_bps);
+
+	mutex_enter(&db->db_mtx);
+	rw_enter(&db->db_rwlock, RW_WRITER);
+	VERIFY3P(db->db.db_data, !=, NULL);
+	memcpy(db->db.db_data, view->fcv_bps, size);
+	rw_exit(&db->db_rwlock);
+	mutex_exit(&db->db_mtx);
+}
+
+static boolean_t
+free_children_view_all_holes(const free_children_view_t *view)
+{
+	for (uint64_t i = 0; i < view->fcv_nslots; i++) {
+		if (!BP_IS_HOLE(&view->fcv_bps[i]))
+			return (B_FALSE);
+	}
+
+	return (B_TRUE);
+}
+
+static void
+free_children_view_fini(free_children_view_t *view)
+{
+	kmem_free(view->fcv_bps, view->fcv_nslots * sizeof (*view->fcv_bps));
+}
+
+static void
+free_children_free_indirect(dnode_t *dn, dmu_buf_impl_t *db, dmu_tx_t *tx)
+{
+	db_lock_type_t dblt = dmu_buf_lock_parent(db, RW_WRITER, FTAG);
+
+	free_blocks(dn, db->db_blkptr, 1, tx);
+	dmu_buf_unlock_parent(db, dblt, FTAG);
+}
+
 static void
 free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
     boolean_t free_indirects, dmu_tx_t *tx)
 {
 	dnode_t *dn;
-	blkptr_t *bp;
 	dmu_buf_impl_t *subdb;
-	uint64_t start, end, dbstart, dbend;
-	unsigned int epbs, shift, i;
+	free_children_view_t view;
+	boolean_t writeback_range = B_FALSE;
+	boolean_t writeback_all = B_FALSE;
+	unsigned int epbs;
 
 	/*
 	 * There is a small possibility that this block will not be cached:
@@ -314,65 +426,52 @@ free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
 	dmu_buf_unlock_parent(db, dblt, FTAG);
 
 	dbuf_release_bp(db);
-	/*
-	 * XXX db_mtx isn't held, but should be.  But locking it here causes a
-	 * recurse-on-non-recursive mutex panic many levels downstack:
-	 * free_verify->dbuf_hold_impl->dbuf_findbp->dbuf_hold_impl->dbuf_find
-	 */
-	/* mutex_enter(&db->db_mtx); */
-	bp = db->db.db_data;
 
 	DB_DNODE_ENTER(db);
 	dn = DB_DNODE(db);
 	epbs = dn->dn_phys->dn_indblkshift - SPA_BLKPTRSHIFT;
 	ASSERT3U(epbs, <, 31);
-	shift = (db->db_level - 1) * epbs;
-	dbstart = db->db_blkid << epbs;
-	start = blkid >> shift;
-	if (dbstart < start) {
-		bp += start - dbstart;
-	} else {
-		start = dbstart;
-	}
-	dbend = ((db->db_blkid + 1) << epbs) - 1;
-	end = (blkid + nblks - 1) >> shift;
-	if (dbend <= end)
-		end = dbend;
-
-	ASSERT3U(start, <=, end);
+	free_children_view_init(db, epbs, blkid, nblks, &view);
 
 	if (db->db_level == 1) {
-		FREE_VERIFY(db, start, end, tx);
-		rw_enter(&db->db_rwlock, RW_WRITER);
-		free_blocks(dn, bp, end - start + 1, tx);
-		rw_exit(&db->db_rwlock);
+		FREE_VERIFY(db, view.fcv_start, view.fcv_end, tx);
+		free_blocks(dn, &view.fcv_bps[view.fcv_first],
+		    view.fcv_count, tx);
+		writeback_range = !free_indirects;
 	} else {
-		for (uint64_t id = start; id <= end; id++, bp++) {
-			/*
-			 * XXX should really have db_rwlock here.  But we can't
-			 * hold it when we recurse into free_children.
-			 */
+		for (uint64_t id = view.fcv_start; id <= view.fcv_end; id++) {
+			blkptr_t *bp = free_children_view_bp(&view, id);
+
 			if (BP_IS_HOLE(bp))
 				continue;
 			rw_enter(&dn->dn_struct_rwlock, RW_READER);
 			VERIFY0(dbuf_hold_impl(dn, db->db_level - 1,
 			    id, TRUE, FALSE, FTAG, &subdb));
 			rw_exit(&dn->dn_struct_rwlock);
-			ASSERT3P(bp, ==, subdb->db_blkptr);
+			ASSERT(BP_EQUAL(bp, subdb->db_blkptr));
 
 			free_children(subdb, blkid, nblks, free_indirects, tx);
+			if (free_indirects)
+				*bp = *subdb->db_blkptr;
 			dbuf_rele(subdb, FTAG);
 		}
 	}
 
 	if (free_indirects) {
-		rw_enter(&db->db_rwlock, RW_WRITER);
-		for (i = 0, bp = db->db.db_data; i < 1 << epbs; i++, bp++)
-			ASSERT(BP_IS_HOLE(bp));
-		memset(db->db.db_data, 0, db->db.db_size);
-		free_blocks(dn, db->db_blkptr, 1, tx);
-		rw_exit(&db->db_rwlock);
+		ASSERT(free_children_view_all_holes(&view));
+		memset(view.fcv_bps, 0,
+		    view.fcv_nslots * sizeof (*view.fcv_bps));
+		writeback_all = B_TRUE;
 	}
+
+	if (writeback_all)
+		free_children_view_writeback_all(db, &view);
+	else if (writeback_range)
+		free_children_view_writeback_range(db, &view);
+	free_children_view_fini(&view);
+
+	if (free_indirects)
+		free_children_free_indirect(dn, db, tx);
 
 	DB_DNODE_EXIT(db);
 	arc_buf_freeze(db->db_buf);
