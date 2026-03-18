@@ -2265,6 +2265,45 @@ dnode_set_dirtyctx(dnode_t *dn, dmu_tx_t *tx, const void *tag)
 	}
 }
 
+static boolean_t
+dnode_partial_zero_has_dirty_records_locked(dmu_buf_impl_t *db)
+{
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+
+	return (!list_is_empty(&db->db_dirty_records));
+}
+
+static boolean_t
+dnode_partial_zero_has_backing_locked(dmu_buf_impl_t *db)
+{
+	blkptr_t *bp = NULL;
+	db_lock_type_t dblt;
+	boolean_t has_backing = B_FALSE;
+
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+
+	dblt = dmu_buf_lock_parent(db, RW_READER, FTAG);
+	if (dmu_buf_get_bp_from_dbuf(db, &bp) == 0 &&
+	    bp != NULL && !BP_IS_HOLE(bp))
+		has_backing = B_TRUE;
+	dmu_buf_unlock_parent(db, dblt, FTAG);
+
+	return (has_backing);
+}
+
+static boolean_t
+dnode_partial_zero_should_dirty(dmu_buf_impl_t *db)
+{
+	boolean_t dirty;
+
+	mutex_enter(&db->db_mtx);
+	dirty = dnode_partial_zero_has_dirty_records_locked(db) ||
+	    dnode_partial_zero_has_backing_locked(db);
+	mutex_exit(&db->db_mtx);
+
+	return (dirty);
+}
+
 static void
 dnode_partial_zero(dnode_t *dn, uint64_t off, uint64_t blkoff, uint64_t len,
     dmu_tx_t *tx)
@@ -2277,15 +2316,7 @@ dnode_partial_zero(dnode_t *dn, uint64_t off, uint64_t blkoff, uint64_t len,
 	    FTAG, &db);
 	rw_exit(&dn->dn_struct_rwlock);
 	if (res == 0) {
-		db_lock_type_t dblt;
-		boolean_t dirty;
-
-		dblt = dmu_buf_lock_parent(db, RW_READER, FTAG);
-		/* don't dirty if not on disk and not dirty */
-		dirty = !list_is_empty(&db->db_dirty_records) ||
-		    (db->db_blkptr && !BP_IS_HOLE(db->db_blkptr));
-		dmu_buf_unlock_parent(db, dblt, FTAG);
-		if (dirty) {
+		if (dnode_partial_zero_should_dirty(db)) {
 			caddr_t data;
 
 			dmu_buf_will_dirty(&db->db, tx);
