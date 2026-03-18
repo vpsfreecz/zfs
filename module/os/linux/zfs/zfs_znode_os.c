@@ -1599,6 +1599,61 @@ zfs_zero_partial_page(znode_t *zp, uint64_t start, uint64_t len)
 	}
 }
 
+static void
+zfs_free_range_invalidate(znode_t *zp, uint64_t off, uint64_t len)
+{
+	struct address_space *mapping = ZTOI(zp)->i_mapping;
+	loff_t first_page, last_page, page_len;
+	loff_t first_page_offset, last_page_offset;
+
+	filemap_invalidate_lock(mapping);
+	if (zn_has_cached_data(zp, off, off + len - 1)) {
+		/* first possible full page in hole */
+		first_page = (off + PAGE_SIZE - 1) >> PAGE_SHIFT;
+		/* last page of hole */
+		last_page = (off + len) >> PAGE_SHIFT;
+
+		/* offset of first_page */
+		first_page_offset = first_page << PAGE_SHIFT;
+		/* offset of last_page */
+		last_page_offset = last_page << PAGE_SHIFT;
+
+		/* truncate whole pages */
+		if (last_page_offset > first_page_offset) {
+			truncate_inode_pages_range(mapping, first_page_offset,
+			    last_page_offset - 1);
+		}
+
+		/* truncate sub-page ranges */
+		if (first_page > last_page) {
+			/* entire punched area within a single page */
+			zfs_zero_partial_page(zp, off, len);
+		} else {
+			/* beginning of punched area at the end of a page */
+			page_len = first_page_offset - off;
+			if (page_len > 0)
+				zfs_zero_partial_page(zp, off, page_len);
+
+			/* end of punched area at the beginning of a page */
+			page_len = off + len - last_page_offset;
+			if (page_len > 0)
+				zfs_zero_partial_page(zp, last_page_offset,
+				    page_len);
+		}
+	}
+	filemap_invalidate_unlock(mapping);
+}
+
+static void
+zfs_truncate_setsize_invalidate(znode_t *zp, uint64_t end)
+{
+	struct inode *ip = ZTOI(zp);
+
+	filemap_invalidate_lock(ip->i_mapping);
+	truncate_setsize(ip, end);
+	filemap_invalidate_unlock(ip->i_mapping);
+}
+
 /*
  * Free space in a file.
  *
@@ -1634,46 +1689,10 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, off, len);
 
 	/*
-	 * Zero partial page cache entries.  This must be done under a
-	 * range lock in order to keep the ARC and page cache in sync.
+	 * Zero partial page cache entries.  Keep the Linux invalidate barrier
+	 * around the page-cache invalidate and repair window.
 	 */
-	if (zn_has_cached_data(zp, off, off + len - 1)) {
-		loff_t first_page, last_page, page_len;
-		loff_t first_page_offset, last_page_offset;
-
-		/* first possible full page in hole */
-		first_page = (off + PAGE_SIZE - 1) >> PAGE_SHIFT;
-		/* last page of hole */
-		last_page = (off + len) >> PAGE_SHIFT;
-
-		/* offset of first_page */
-		first_page_offset = first_page << PAGE_SHIFT;
-		/* offset of last_page */
-		last_page_offset = last_page << PAGE_SHIFT;
-
-		/* truncate whole pages */
-		if (last_page_offset > first_page_offset) {
-			truncate_inode_pages_range(ZTOI(zp)->i_mapping,
-			    first_page_offset, last_page_offset - 1);
-		}
-
-		/* truncate sub-page ranges */
-		if (first_page > last_page) {
-			/* entire punched area within a single page */
-			zfs_zero_partial_page(zp, off, len);
-		} else {
-			/* beginning of punched area at the end of a page */
-			page_len  = first_page_offset - off;
-			if (page_len > 0)
-				zfs_zero_partial_page(zp, off, page_len);
-
-			/* end of punched area at the beginning of a page */
-			page_len = off + len - last_page_offset;
-			if (page_len > 0)
-				zfs_zero_partial_page(zp, last_page_offset,
-				    page_len);
-		}
-	}
+	zfs_free_range_invalidate(zp, off, len);
 	zfs_rangelock_exit(lr);
 
 	return (error);
@@ -1814,12 +1833,15 @@ log:
 
 out:
 	/*
-	 * Truncate the page cache - for file truncate operations, use
-	 * the purpose-built API for truncations.  For punching operations,
-	 * the truncation is handled under a range lock in zfs_free_range.
+	 * Truncate the page cache - for file truncate operations, use the
+	 * purpose-built API for truncations. For punching operations, the
+	 * truncation is handled under a range lock in zfs_free_range().
+	 *
+	 * Keep the existing zfs_freesp(len == 0) contract and only change the
+	 * serialization window around truncate_setsize().
 	 */
 	if (len == 0)
-		truncate_setsize(ZTOI(zp), off);
+		zfs_truncate_setsize_invalidate(zp, off);
 	return (error);
 }
 
