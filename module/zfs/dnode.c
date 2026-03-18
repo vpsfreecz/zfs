@@ -2485,42 +2485,68 @@ done:
 }
 
 static boolean_t
-dnode_spill_freed(dnode_t *dn)
+dnode_is_freed_locked(dnode_t *dn)
 {
-	int i;
+	ASSERT(MUTEX_HELD(&dn->dn_mtx));
 
-	mutex_enter(&dn->dn_mtx);
-	for (i = 0; i < TXG_SIZE; i++) {
-		if (dn->dn_rm_spillblk[i] == DN_KILL_SPILLBLK)
-			break;
-	}
-	mutex_exit(&dn->dn_mtx);
-	return (i < TXG_SIZE);
+	return (dn->dn_free_txg != 0);
 }
 
-/* return TRUE if this blkid was freed in a recent txg, or FALSE if it wasn't */
-uint64_t
-dnode_block_freed(dnode_t *dn, uint64_t blkid)
+static boolean_t
+dnode_spill_block_freed_locked(dnode_t *dn)
 {
-	int i;
+	ASSERT(MUTEX_HELD(&dn->dn_mtx));
 
-	if (blkid == DMU_BONUS_BLKID)
-		return (FALSE);
+	for (int i = 0; i < TXG_SIZE; i++) {
+		if (dn->dn_rm_spillblk[i] == DN_KILL_SPILLBLK)
+			return (B_TRUE);
+	}
 
-	if (dn->dn_free_txg)
-		return (TRUE);
+	return (B_FALSE);
+}
 
-	if (blkid == DMU_SPILL_BLKID)
-		return (dnode_spill_freed(dn));
+static boolean_t
+dnode_data_block_freed_locked(dnode_t *dn, uint64_t blkid)
+{
+	ASSERT(MUTEX_HELD(&dn->dn_mtx));
 
-	mutex_enter(&dn->dn_mtx);
-	for (i = 0; i < TXG_SIZE; i++) {
+	for (int i = 0; i < TXG_SIZE; i++) {
 		if (dn->dn_free_ranges[i] != NULL &&
 		    zfs_range_tree_contains(dn->dn_free_ranges[i], blkid, 1))
-			break;
+			return (B_TRUE);
 	}
+
+	return (B_FALSE);
+}
+
+static boolean_t
+dnode_block_freed_locked(dnode_t *dn, uint64_t blkid)
+{
+	ASSERT(MUTEX_HELD(&dn->dn_mtx));
+
+	if (blkid == DMU_BONUS_BLKID)
+		return (B_FALSE);
+
+	if (dnode_is_freed_locked(dn))
+		return (B_TRUE);
+
+	if (blkid == DMU_SPILL_BLKID)
+		return (dnode_spill_block_freed_locked(dn));
+
+	return (dnode_data_block_freed_locked(dn, blkid));
+}
+
+/* return B_TRUE if this blkid was freed in a recent txg, or B_FALSE if not */
+boolean_t
+dnode_block_freed(dnode_t *dn, uint64_t blkid)
+{
+	boolean_t freed;
+
+	mutex_enter(&dn->dn_mtx);
+	freed = dnode_block_freed_locked(dn, blkid);
 	mutex_exit(&dn->dn_mtx);
-	return (i < TXG_SIZE);
+
+	return (freed);
 }
 
 /* call from syncing context when we actually write/free space for this dnode */
