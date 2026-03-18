@@ -1581,6 +1581,8 @@ zfs_zero_partial_page(znode_t *zp, uint64_t start, uint64_t len)
 
 	pp = find_lock_page(mp, start >> PAGE_SHIFT);
 	if (pp) {
+		boolean_t was_uptodate = PageUptodate(pp);
+
 		if (mapping_writably_mapped(mp))
 			flush_dcache_page(pp);
 
@@ -1592,8 +1594,7 @@ zfs_zero_partial_page(znode_t *zp, uint64_t start, uint64_t len)
 			flush_dcache_page(pp);
 
 		mark_page_accessed(pp);
-		SetPageUptodate(pp);
-		ClearPageError(pp);
+		zpl_page_range_write_done(pp, was_uptodate, off, len);
 		unlock_page(pp);
 		put_page(pp);
 	}
