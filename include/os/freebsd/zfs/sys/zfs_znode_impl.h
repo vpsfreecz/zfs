@@ -124,6 +124,54 @@ typedef struct zfs_soft_state {
 #define	zn_rlimit_fsize_uio(zp, uio) \
     vn_rlimit_fsize(ZTOV(zp), GET_UIO_STRUCT(uio), zfs_uio_td(uio))
 
+static inline void
+zn_lock_cached_data_shared(znode_t *zp)
+{
+	(void) zp;
+}
+
+static inline void
+zn_unlock_cached_data_shared(znode_t *zp)
+{
+	(void) zp;
+}
+
+static inline void
+zn_pagecache_isize_extended(znode_t *zp, uint64_t from, uint64_t to)
+{
+	(void) zp;
+	(void) from;
+	(void) to;
+}
+
+static inline boolean_t
+zn_writably_mapped(znode_t *zp)
+{
+	(void) zp;
+	return (B_FALSE);
+}
+
+static inline void
+zn_lock_cached_data(znode_t *zp)
+{
+	(void) zp;
+}
+
+static inline void
+zn_unlock_cached_data(znode_t *zp)
+{
+	(void) zp;
+}
+
+static inline int
+zn_sync_cached_data(znode_t *zp, uint64_t start, uint64_t end)
+{
+	(void) start;
+	(void) end;
+	zn_flush_cached_data(zp, B_TRUE);
+	return (0);
+}
+
 /* Called on entry to each ZFS vnode and vfs operation  */
 static inline int
 zfs_enter(zfsvfs_t *zfsvfs, const char *tag)

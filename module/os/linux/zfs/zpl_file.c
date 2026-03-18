@@ -39,6 +39,7 @@
 #include <sys/zfs_vnops.h>
 #include <sys/zfs_project.h>
 #include <linux/pagemap_compat.h>
+#include <linux/mm_compat.h>
 #include <linux/fadvise.h>
 #ifdef HAVE_VFS_FILEMAP_DIRTY_FOLIO
 #include <linux/writeback.h>
@@ -339,18 +340,73 @@ zpl_llseek(struct file *filp, loff_t offset, int whence)
  * helpful to move the ARC buffers to a scatter-gather lists
  * rather than a vmalloc'ed region.
  */
+static vm_fault_t
+zpl_page_mkwrite(struct vm_fault *vmf)
+{
+	struct address_space *mapping = vmf->vma->vm_file->f_mapping;
+	znode_t *zp = ITOZ(mapping->host);
+	zfs_locked_range_t *lr;
+	vm_fault_t ret;
+
+	zn_lock_cached_data_shared(zp);
+	lr = zfs_rangelock_enter(&zp->z_rangelock, page_offset(vmf->page),
+	    PAGE_SIZE, RL_WRITER);
+	ret = filemap_page_mkwrite(vmf);
+	zfs_rangelock_exit(lr);
+	zn_unlock_cached_data_shared(zp);
+
+	return (ret);
+}
+
+static const struct vm_operations_struct zpl_file_vm_ops = {
+	.fault		= filemap_fault,
+	.map_pages	= filemap_map_pages,
+	.page_mkwrite	= zpl_page_mkwrite,
+};
+
+static int
+zpl_mmap_common(struct file *filp, pgoff_t pgoff, unsigned long start,
+    unsigned long end, unsigned long flags)
+{
+	struct inode *ip = filp->f_mapping->host;
+	fstrans_cookie_t cookie;
+	int error;
+
+	cookie = spl_fstrans_mark();
+	error = -zfs_map(ip, pgoff, (caddr_t *)start,
+	    (size_t)(end - start), flags);
+	spl_fstrans_unmark(cookie);
+
+	return (error);
+}
+
+#ifdef HAVE_FILE_OPERATIONS_MMAP_PREPARE
+static int
+zpl_mmap_prepare(struct vm_area_desc *desc)
+{
+	int error;
+
+	error = zpl_mmap_common(desc->file, desc->pgoff, desc->start,
+	    desc->end, desc->vm_flags);
+	if (error)
+		return (error);
+
+	error = generic_file_mmap_prepare(desc);
+	if (error)
+		return (error);
+
+	desc->vm_ops = &zpl_file_vm_ops;
+
+	return (0);
+}
+#else
 static int
 zpl_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-	struct inode *ip = filp->f_mapping->host;
 	int error;
-	fstrans_cookie_t cookie;
 
-	cookie = spl_fstrans_mark();
-	error = -zfs_map(ip, vma->vm_pgoff, (caddr_t *)vma->vm_start,
-	    (size_t)(vma->vm_end - vma->vm_start), vma->vm_flags);
-	spl_fstrans_unmark(cookie);
-
+	error = zpl_mmap_common(filp, vma->vm_pgoff, vma->vm_start,
+	    vma->vm_end, vma->vm_flags);
 	if (error)
 		return (error);
 
@@ -358,8 +414,11 @@ zpl_mmap(struct file *filp, struct vm_area_struct *vma)
 	if (error)
 		return (error);
 
-	return (error);
+	vma->vm_ops = &zpl_file_vm_ops;
+
+	return (0);
 }
+#endif
 
 /*
  * Populate a page with data for the Linux page cache.  This function is
@@ -369,17 +428,24 @@ zpl_mmap(struct file *filp, struct vm_area_struct *vma)
 static inline int
 zpl_readpage_common(struct page *pp)
 {
+	struct address_space *mapping = pp->mapping;
+	struct inode *ip = mapping->host;
+	pgoff_t index = pp->index;
 	fstrans_cookie_t cookie;
+	int error;
 
 	ASSERT(PageLocked(pp));
 
 	cookie = spl_fstrans_mark();
-	int error = -zfs_getpage(pp->mapping->host, pp);
+	error = zfs_getpage(ip, pp, mapping, index);
 	spl_fstrans_unmark(cookie);
+
+	if (error == AOP_TRUNCATED_PAGE)
+		return (error);
 
 	unlock_page(pp);
 
-	return (error);
+	return (-error);
 }
 
 #ifdef HAVE_VFS_READ_FOLIO
@@ -1210,7 +1276,11 @@ const struct file_operations zpl_file_operations = {
 	.splice_read	= generic_file_splice_read,
 #endif
 	.splice_write	= iter_file_splice_write,
+#ifdef HAVE_FILE_OPERATIONS_MMAP_PREPARE
+	.mmap_prepare	= zpl_mmap_prepare,
+#else
 	.mmap		= zpl_mmap,
+#endif
 	.fsync		= zpl_fsync,
 	.fallocate	= zpl_fallocate,
 	.setlease	= generic_setlease,
