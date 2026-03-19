@@ -360,6 +360,91 @@ zfs_external_acl(znode_t *zp)
 	}
 }
 
+typedef struct zfs_acl_read_plan {
+	size_t zarp_aclsize;
+	uint64_t zarp_aclcount;
+} zfs_acl_read_plan_t;
+
+static int
+zfs_acl_legacy_count_valid(uint32_t acl_entries)
+{
+	if (acl_entries == 0 || acl_entries > MAX_ACL_ENTRIES)
+		return (SET_ERROR(EINVAL));
+
+	return (0);
+}
+
+static int
+zfs_acl_legacy_embedded_bytes_valid(const zfs_acl_phys_t *aclphys,
+    uint32_t acl_bytes)
+{
+	if (aclphys->z_acl_extern_obj == 0 && acl_bytes > ZFS_ACE_SPACE)
+		return (SET_ERROR(EINVAL));
+
+	return (0);
+}
+
+static int
+zfs_acl_legacy_initial_read_plan(const zfs_acl_phys_t *aclphys,
+    zfs_acl_read_plan_t *plan)
+{
+	uint32_t acl_entries = aclphys->z_acl_size;
+	uint32_t acl_bytes;
+	int error;
+
+	error = zfs_acl_legacy_count_valid(acl_entries);
+	if (error != 0)
+		return (error);
+
+	acl_bytes = ZFS_ACL_SIZE(acl_entries);
+	error = zfs_acl_legacy_embedded_bytes_valid(aclphys, acl_bytes);
+	if (error != 0)
+		return (error);
+
+	plan->zarp_aclsize = acl_bytes;
+	plan->zarp_aclcount = acl_entries;
+	return (0);
+}
+
+static int
+zfs_acl_legacy_fuid_read_plan(const zfs_acl_phys_t *aclphys,
+    zfs_acl_read_plan_t *plan)
+{
+	uint32_t acl_entries = aclphys->z_acl_count;
+	uint32_t acl_bytes = aclphys->z_acl_size;
+	int error;
+
+	error = zfs_acl_legacy_count_valid(acl_entries);
+	if (error != 0)
+		return (error);
+
+	if (acl_bytes < acl_entries * sizeof (zfs_ace_hdr_t) ||
+	    acl_bytes > acl_entries * sizeof (zfs_object_ace_t))
+		return (SET_ERROR(EINVAL));
+
+	error = zfs_acl_legacy_embedded_bytes_valid(aclphys, acl_bytes);
+	if (error != 0)
+		return (error);
+
+	plan->zarp_aclsize = acl_bytes;
+	plan->zarp_aclcount = acl_entries;
+	return (0);
+}
+
+static int
+zfs_acl_legacy_read_plan(const zfs_acl_phys_t *aclphys,
+    zfs_acl_read_plan_t *plan)
+{
+	switch (aclphys->z_acl_version) {
+	case ZFS_ACL_VERSION_INITIAL:
+		return (zfs_acl_legacy_initial_read_plan(aclphys, plan));
+	case ZFS_ACL_VERSION_FUID:
+		return (zfs_acl_legacy_fuid_read_plan(aclphys, plan));
+	default:
+		return (SET_ERROR(EINVAL));
+	}
+}
+
 /*
  * Determine size of ACL in bytes
  *
@@ -367,7 +452,7 @@ zfs_external_acl(znode_t *zp)
  * with old external ACLs.
  */
 static int
-zfs_acl_znode_info(znode_t *zp, int *aclsize, int *aclcount,
+zfs_acl_znode_info(znode_t *zp, zfs_acl_read_plan_t *plan,
     zfs_acl_phys_t *aclphys)
 {
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
@@ -380,23 +465,17 @@ zfs_acl_znode_info(znode_t *zp, int *aclsize, int *aclcount,
 		if ((error = sa_size(zp->z_sa_hdl, SA_ZPL_DACL_ACES(zfsvfs),
 		    &size)) != 0)
 			return (error);
-		*aclsize = size;
+		plan->zarp_aclsize = size;
 		if ((error = sa_lookup(zp->z_sa_hdl, SA_ZPL_DACL_COUNT(zfsvfs),
 		    &acl_count, sizeof (acl_count))) != 0)
 			return (error);
-		*aclcount = acl_count;
+		plan->zarp_aclcount = acl_count;
 	} else {
 		if ((error = sa_lookup(zp->z_sa_hdl, SA_ZPL_ZNODE_ACL(zfsvfs),
 		    aclphys, sizeof (*aclphys))) != 0)
 			return (error);
 
-		if (aclphys->z_acl_version == ZFS_ACL_VERSION_INITIAL) {
-			*aclsize = ZFS_ACL_SIZE(aclphys->z_acl_size);
-			*aclcount = aclphys->z_acl_size;
-		} else {
-			*aclsize = aclphys->z_acl_size;
-			*aclcount = aclphys->z_acl_count;
-		}
+		return (zfs_acl_legacy_read_plan(aclphys, plan));
 	}
 	return (0);
 }
@@ -1073,10 +1152,9 @@ zfs_acl_node_read(struct znode *zp, boolean_t have_lock, zfs_acl_t **aclpp,
     boolean_t will_modify)
 {
 	zfs_acl_t	*aclp;
-	int		aclsize = 0;
-	int		acl_count = 0;
 	zfs_acl_node_t	*aclnode;
 	zfs_acl_phys_t	znode_acl;
+	zfs_acl_read_plan_t plan;
 	int		version;
 	int		error;
 	boolean_t	drop_lock = B_FALSE;
@@ -1101,19 +1179,18 @@ zfs_acl_node_read(struct znode *zp, boolean_t have_lock, zfs_acl_t **aclpp,
 	}
 	version = zfs_znode_acl_version(zp);
 
-	if ((error = zfs_acl_znode_info(zp, &aclsize,
-	    &acl_count, &znode_acl)) != 0) {
+	if ((error = zfs_acl_znode_info(zp, &plan, &znode_acl)) != 0) {
 		goto done;
 	}
 
 	aclp = zfs_acl_alloc(version);
 
-	aclp->z_acl_count = acl_count;
-	aclp->z_acl_bytes = aclsize;
+	aclp->z_acl_count = plan.zarp_aclcount;
+	aclp->z_acl_bytes = plan.zarp_aclsize;
 
-	aclnode = zfs_acl_node_alloc(aclsize);
-	aclnode->z_ace_count = aclp->z_acl_count;
-	aclnode->z_size = aclsize;
+	aclnode = zfs_acl_node_alloc(plan.zarp_aclsize);
+	aclnode->z_ace_count = plan.zarp_aclcount;
+	aclnode->z_size = plan.zarp_aclsize;
 
 	if (!zp->z_is_sa) {
 		if (znode_acl.z_acl_extern_obj) {
