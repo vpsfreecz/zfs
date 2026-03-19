@@ -384,6 +384,10 @@ dbuf_dirty_record_t *dbuf_dirty_lightweight(dnode_t *dn, uint64_t blkid,
     dmu_tx_t *tx);
 boolean_t dbuf_undirty(dmu_buf_impl_t *db, dmu_tx_t *tx);
 int dmu_buf_get_bp_from_dbuf(dmu_buf_impl_t *db, blkptr_t **bp);
+int dmu_buf_get_bp_copy_from_dbuf_locked(dmu_buf_impl_t *db,
+    blkptr_t *bp, boolean_t *have_bp);
+boolean_t dmu_buf_get_diowrite_bp_copy_locked(dmu_buf_impl_t *db,
+    uint64_t txg, blkptr_t *bp);
 int dmu_buf_untransform_direct(dmu_buf_impl_t *db, spa_t *spa);
 arc_buf_t *dbuf_loan_arcbuf(dmu_buf_impl_t *db);
 void dmu_buf_write_embedded(dmu_buf_t *dbuf, void *data,

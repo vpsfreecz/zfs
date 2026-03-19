@@ -2788,6 +2788,52 @@ dmu_buf_get_bp_from_dbuf(dmu_buf_impl_t *db, blkptr_t **bp)
 	return (error);
 }
 
+static dbuf_dirty_record_t *
+dbuf_find_dirty_eq_locked(dmu_buf_impl_t *db, uint64_t txg)
+{
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+
+	return (dbuf_find_dirty_eq(db, txg));
+}
+
+int
+dmu_buf_get_bp_copy_from_dbuf_locked(dmu_buf_impl_t *db,
+    blkptr_t *bp, boolean_t *have_bp)
+{
+	blkptr_t *src = NULL;
+	int error;
+
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+
+	*have_bp = B_FALSE;
+	error = dmu_buf_get_bp_from_dbuf(db, &src);
+	if (error != 0 || src == NULL)
+		return (error);
+
+	*bp = *src;
+	*have_bp = B_TRUE;
+
+	return (0);
+}
+
+boolean_t
+dmu_buf_get_diowrite_bp_copy_locked(dmu_buf_impl_t *db,
+    uint64_t txg, blkptr_t *bp)
+{
+	dbuf_dirty_record_t *dr;
+
+	ASSERT0(db->db_level);
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+
+	dr = dbuf_find_dirty_eq_locked(db, txg);
+	if (dr != NULL && dr->dt.dl.dr_diowrite) {
+		*bp = dr->dt.dl.dr_overridden_by;
+		return (B_TRUE);
+	}
+
+	return (B_FALSE);
+}
+
 /*
  * Direct I/O reads can read directly from the ARC, but the data has
  * to be untransformed in order to copy it over into user pages.
