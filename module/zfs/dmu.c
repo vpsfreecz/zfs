@@ -978,6 +978,15 @@ dmu_objset_zfs_unmounting(objset_t *os)
 	return (B_FALSE);
 }
 
+int
+dmu_free_long_range_validate(uint64_t offset, uint64_t length)
+{
+	if (length != DMU_OBJECT_END && offset + length < offset)
+		return (SET_ERROR(EINVAL));
+
+	return (0);
+}
+
 static int
 dmu_free_long_range_impl(objset_t *os, dnode_t *dn, uint64_t offset,
     uint64_t length)
