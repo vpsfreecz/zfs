@@ -85,6 +85,7 @@
 
 #include <sys/dataset_kstats.h>
 #include <sys/dbuf.h>
+#include <sys/dmu_impl.h>
 #include <sys/dmu_traverse.h>
 #include <sys/dsl_dataset.h>
 #include <sys/dsl_prop.h>
@@ -460,29 +461,19 @@ zvol_replay_truncate(void *arg1, void *arg2, boolean_t byteswap)
 {
 	zvol_state_t *zv = arg1;
 	lr_truncate_t *lr = arg2;
-	uint64_t offset, length;
+	int error;
 
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr));
 
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
 
-	offset = lr->lr_offset;
-	length = lr->lr_length;
+	error = dmu_free_long_range_validate(lr->lr_offset, lr->lr_length);
+	if (error != 0)
+		return (error);
 
-	dmu_tx_t *tx = dmu_tx_create(zv->zv_objset);
-	dmu_tx_mark_netfree(tx);
-	int error = dmu_tx_assign(tx, DMU_TX_WAIT);
-	if (error != 0) {
-		dmu_tx_abort(tx);
-	} else {
-		(void) zil_replaying(zv->zv_zilog, tx);
-		dmu_tx_commit(tx);
-		error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ, offset,
-		    length);
-	}
-
-	return (error);
+	return (dmu_free_long_range_replay(zv->zv_objset, ZVOL_OBJ,
+	    lr->lr_offset, lr->lr_length, zv->zv_zilog));
 }
 
 /*
@@ -531,6 +522,26 @@ zvol_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 	return (error);
 }
 
+static boolean_t
+zvol_replay_clone_range_record_valid(const lr_clone_range_t *lr)
+{
+	size_t len;
+	uint64_t expected_nbps;
+
+	if (lr->lr_common.lrc_reclen < sizeof (*lr))
+		return (B_FALSE);
+
+	len = lr->lr_common.lrc_reclen - offsetof(lr_clone_range_t, lr_bps);
+	if (lr->lr_nbps > len / sizeof (lr->lr_bps[0]))
+		return (B_FALSE);
+
+	if (lr->lr_length == 0 || lr->lr_blksz == 0)
+		return (B_FALSE);
+
+	expected_nbps = ((lr->lr_length - 1) / lr->lr_blksz) + 1;
+	return (lr->lr_nbps == expected_nbps);
+}
+
 /*
  * Replay a TX_CLONE_RANGE ZIL transaction that didn't get committed
  * after a system failure
@@ -553,6 +564,14 @@ zvol_replay_clone_range(void *arg1, void *arg2, boolean_t byteswap)
 
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
+
+	if (!zvol_replay_clone_range_record_valid(lr))
+		return (SET_ERROR(EINVAL));
+
+	if (byteswap) {
+		byteswap_uint64_array(lr->lr_bps,
+		    lr->lr_nbps * sizeof (lr->lr_bps[0]));
+	}
 
 	ASSERT(spa_feature_is_enabled(dmu_objset_spa(os),
 	    SPA_FEATURE_BLOCK_CLONING));

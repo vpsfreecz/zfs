@@ -55,6 +55,7 @@
 #include <sys/zfeature.h>
 #include <sys/abd.h>
 #include <sys/brt.h>
+#include <sys/zil.h>
 #include <sys/trace_zfs.h>
 #include <sys/zfs_racct.h>
 #include <sys/zfs_rlock.h>
@@ -978,9 +979,39 @@ dmu_objset_zfs_unmounting(objset_t *os)
 	return (B_FALSE);
 }
 
+int
+dmu_free_long_range_validate(uint64_t offset, uint64_t length)
+{
+	if (length != DMU_OBJECT_END && offset + length < offset)
+		return (SET_ERROR(EINVAL));
+
+	return (0);
+}
+
+static int
+dmu_free_long_range_replay_done(objset_t *os, zilog_t *zilog)
+{
+	dmu_tx_t *tx;
+	int err;
+
+	ASSERT3P(zilog, !=, NULL);
+
+	tx = dmu_tx_create(os);
+	err = dmu_tx_assign(tx, DMU_TX_WAIT);
+	if (err != 0) {
+		dmu_tx_abort(tx);
+		return (err);
+	}
+
+	VERIFY(zil_replaying(zilog, tx));
+	dmu_tx_commit(tx);
+
+	return (0);
+}
+
 static int
 dmu_free_long_range_impl(objset_t *os, dnode_t *dn, uint64_t offset,
-    uint64_t length)
+    uint64_t length, zilog_t *replay_zilog)
 {
 	uint64_t object_size;
 	int err;
@@ -991,8 +1022,13 @@ dmu_free_long_range_impl(objset_t *os, dnode_t *dn, uint64_t offset,
 		return (SET_ERROR(EINVAL));
 
 	object_size = (dn->dn_maxblkid + 1) * dn->dn_datablksz;
-	if (offset >= object_size)
+	if (offset >= object_size) {
+		if (replay_zilog != NULL) {
+			return (dmu_free_long_range_replay_done(os,
+			    replay_zilog));
+		}
 		return (0);
+	}
 
 	if (zfs_per_txg_dirty_frees_percent <= 100)
 		dirty_frees_threshold =
@@ -1002,6 +1038,13 @@ dmu_free_long_range_impl(objset_t *os, dnode_t *dn, uint64_t offset,
 
 	if (length == DMU_OBJECT_END || offset + length > object_size)
 		length = object_size - offset;
+	if (length == 0) {
+		if (replay_zilog != NULL) {
+			return (dmu_free_long_range_replay_done(os,
+			    replay_zilog));
+		}
+		return (0);
+	}
 
 	while (length != 0) {
 		uint64_t chunk_end, chunk_begin, chunk_len;
@@ -1074,6 +1117,8 @@ dmu_free_long_range_impl(objset_t *os, dnode_t *dn, uint64_t offset,
 		    uint64_t, long_free_dirty, uint64_t, chunk_len,
 		    uint64_t, txg);
 		dnode_free_range(dn, chunk_begin, chunk_len, tx);
+		if (replay_zilog != NULL && chunk_len == length)
+			VERIFY(zil_replaying(replay_zilog, tx));
 
 		dmu_tx_commit(tx);
 
@@ -1082,9 +1127,9 @@ dmu_free_long_range_impl(objset_t *os, dnode_t *dn, uint64_t offset,
 	return (0);
 }
 
-int
-dmu_free_long_range(objset_t *os, uint64_t object,
-    uint64_t offset, uint64_t length)
+static int
+dmu_free_long_range_common(objset_t *os, uint64_t object,
+    uint64_t offset, uint64_t length, zilog_t *replay_zilog)
 {
 	dnode_t *dn;
 	int err;
@@ -1092,7 +1137,7 @@ dmu_free_long_range(objset_t *os, uint64_t object,
 	err = dnode_hold(os, object, FTAG, &dn);
 	if (err != 0)
 		return (err);
-	err = dmu_free_long_range_impl(os, dn, offset, length);
+	err = dmu_free_long_range_impl(os, dn, offset, length, replay_zilog);
 
 	/*
 	 * It is important to zero out the maxblkid when freeing the entire
@@ -1105,6 +1150,20 @@ dmu_free_long_range(objset_t *os, uint64_t object,
 
 	dnode_rele(dn, FTAG);
 	return (err);
+}
+
+int
+dmu_free_long_range(objset_t *os, uint64_t object,
+    uint64_t offset, uint64_t length)
+{
+	return (dmu_free_long_range_common(os, object, offset, length, NULL));
+}
+
+int
+dmu_free_long_range_replay(objset_t *os, uint64_t object,
+    uint64_t offset, uint64_t length, zilog_t *zilog)
+{
+	return (dmu_free_long_range_common(os, object, offset, length, zilog));
 }
 
 int

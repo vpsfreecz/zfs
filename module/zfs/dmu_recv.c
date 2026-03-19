@@ -2658,9 +2658,10 @@ receive_free(struct receive_writer_arg *rwa, struct drr_free *drrf)
 {
 	int err;
 
-	if (drrf->drr_length != -1ULL &&
-	    drrf->drr_offset + drrf->drr_length < drrf->drr_offset)
-		return (SET_ERROR(EINVAL));
+	err = dmu_free_long_range_validate(drrf->drr_offset,
+	    drrf->drr_length);
+	if (err != 0)
+		return (err);
 
 	if (dmu_object_info(rwa->os, drrf->drr_object, NULL) != 0)
 		return (SET_ERROR(EINVAL));
