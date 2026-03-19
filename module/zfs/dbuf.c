@@ -3023,6 +3023,52 @@ dmu_buf_will_fill(dmu_buf_t *db_fake, dmu_tx_t *tx, boolean_t canfail)
 	dmu_buf_will_fill_flags(db_fake, tx, canfail, DMU_READ_NO_PREFETCH);
 }
 
+typedef struct dbuf_raw_crypt_params {
+	boolean_t byteorder;
+	uint8_t salt[ZIO_DATA_SALT_LEN];
+	uint8_t iv[ZIO_DATA_IV_LEN];
+	uint8_t mac[ZIO_DATA_MAC_LEN];
+} dbuf_raw_crypt_params_t;
+
+static void
+dbuf_raw_crypt_params_init(dbuf_raw_crypt_params_t *params,
+    boolean_t byteorder, const uint8_t *salt, const uint8_t *iv,
+    const uint8_t *mac)
+{
+	params->byteorder = byteorder;
+	memcpy(params->salt, salt, ZIO_DATA_SALT_LEN);
+	memcpy(params->iv, iv, ZIO_DATA_IV_LEN);
+	memcpy(params->mac, mac, ZIO_DATA_MAC_LEN);
+}
+
+static void
+dbuf_install_raw_crypt_params_locked(dmu_buf_impl_t *db,
+    dbuf_dirty_record_t *dr, const dbuf_raw_crypt_params_t *params)
+{
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+	ASSERT3P(dr, !=, NULL);
+	ASSERT3U(dr->dt.dl.dr_override_state, ==, DR_NOT_OVERRIDDEN);
+
+	dr->dt.dl.dr_has_raw_params = B_TRUE;
+	dr->dt.dl.dr_byteorder = params->byteorder;
+	memcpy(dr->dt.dl.dr_salt, params->salt, ZIO_DATA_SALT_LEN);
+	memcpy(dr->dt.dl.dr_iv, params->iv, ZIO_DATA_IV_LEN);
+	memcpy(dr->dt.dl.dr_mac, params->mac, ZIO_DATA_MAC_LEN);
+}
+
+static void
+dbuf_install_raw_crypt_params(dmu_buf_impl_t *db, uint64_t txg,
+    const dbuf_raw_crypt_params_t *params)
+{
+	dbuf_dirty_record_t *dr;
+
+	mutex_enter(&db->db_mtx);
+	dr = dbuf_find_dirty_eq_locked(db, txg);
+	ASSERT3P(dr, !=, NULL);
+	dbuf_install_raw_crypt_params_locked(db, dr, params);
+	mutex_exit(&db->db_mtx);
+}
+
 /*
  * This function is effectively the same as dmu_buf_will_dirty(), but
  * indicates the caller expects raw encrypted data in the db, and provides
@@ -3035,7 +3081,7 @@ dmu_buf_set_crypt_params(dmu_buf_t *db_fake, boolean_t byteorder,
     const uint8_t *salt, const uint8_t *iv, const uint8_t *mac, dmu_tx_t *tx)
 {
 	dmu_buf_impl_t *db = (dmu_buf_impl_t *)db_fake;
-	dbuf_dirty_record_t *dr;
+	dbuf_raw_crypt_params_t params;
 
 	/*
 	 * dr_has_raw_params is only processed for blocks of dnodes
@@ -3048,16 +3094,8 @@ dmu_buf_set_crypt_params(dmu_buf_t *db_fake, boolean_t byteorder,
 	dmu_buf_will_dirty_flags(db_fake, tx,
 	    DMU_READ_NO_PREFETCH | DMU_READ_NO_DECRYPT);
 
-	dr = dbuf_find_dirty_eq(db, tx->tx_txg);
-
-	ASSERT3P(dr, !=, NULL);
-	ASSERT3U(dr->dt.dl.dr_override_state, ==, DR_NOT_OVERRIDDEN);
-
-	dr->dt.dl.dr_has_raw_params = B_TRUE;
-	dr->dt.dl.dr_byteorder = byteorder;
-	memcpy(dr->dt.dl.dr_salt, salt, ZIO_DATA_SALT_LEN);
-	memcpy(dr->dt.dl.dr_iv, iv, ZIO_DATA_IV_LEN);
-	memcpy(dr->dt.dl.dr_mac, mac, ZIO_DATA_MAC_LEN);
+	dbuf_raw_crypt_params_init(&params, byteorder, salt, iv, mac);
+	dbuf_install_raw_crypt_params(db, tx->tx_txg, &params);
 }
 
 static void
