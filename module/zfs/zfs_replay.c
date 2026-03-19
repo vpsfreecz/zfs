@@ -1423,7 +1423,7 @@ zfs_replay_truncate_plan(const lr_truncate_t *lr,
 	if (lr->lr_offset > MAXOFFSET_T || lr->lr_length > MAXOFFSET_T)
 		return (SET_ERROR(EINVAL));
 
-	plan->zrfp_fl = (flock64_t) { 0 };
+	bzero(&plan->zrfp_fl, sizeof (plan->zrfp_fl));
 	plan->zrfp_fl.l_type = F_WRLCK;
 	plan->zrfp_fl.l_whence = SEEK_SET;
 	plan->zrfp_fl.l_start = (offset_t)lr->lr_offset;
