@@ -3761,6 +3761,39 @@ zfs_page_writeback_done(struct page *pp, int err)
 	end_page_writeback(pp);
 }
 
+typedef enum zfs_putpage_relock_state {
+	ZFS_PUTPAGE_RELOCK_ABORT = 0,
+	ZFS_PUTPAGE_RELOCK_WAIT_WRITEBACK,
+	ZFS_PUTPAGE_RELOCK_WRITE
+} zfs_putpage_relock_state_t;
+
+static zfs_putpage_relock_state_t
+zfs_putpage_revalidate(struct inode *ip, znode_t *zp, struct page *pp,
+    struct address_space *mapping, loff_t pgoff, unsigned int *pglenp)
+{
+	loff_t eof = i_size_read(ip);
+	unsigned int pglen;
+
+	if (unlikely((mapping != pp->mapping) || !PageDirty(pp)))
+		return (ZFS_PUTPAGE_RELOCK_ABORT);
+
+	if (eof > zp->z_size)
+		eof = zp->z_size;
+
+	if (pgoff >= eof)
+		return (ZFS_PUTPAGE_RELOCK_ABORT);
+
+	if (PageWriteback(pp))
+		return (ZFS_PUTPAGE_RELOCK_WAIT_WRITEBACK);
+
+	pglen = MIN(PAGE_SIZE, P2ROUNDUP(eof, PAGE_SIZE) - pgoff);
+	if (pgoff + pglen > eof)
+		pglen = eof - pgoff;
+
+	*pglenp = pglen;
+	return (ZFS_PUTPAGE_RELOCK_WRITE);
+}
+
 /*
  * ZIL callback for page writeback. Passes to zfs_log_write() in zfs_putpage()
  * for syncing writes. Called when the ZIL itx has been written to the log or
@@ -3876,16 +3909,14 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 	    pgoff, pglen, RL_WRITER);
 	lock_page(pp);
 
-	/* Page mapping changed or it was no longer dirty, we're done */
-	if (unlikely((mapping != pp->mapping) || !PageDirty(pp))) {
+	switch (zfs_putpage_revalidate(ip, zp, pp, mapping, pgoff, &pglen)) {
+	case ZFS_PUTPAGE_RELOCK_ABORT:
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 		zfs_exit(zfsvfs, FTAG);
 		return (0);
-	}
 
-	/* Another process started write block if required */
-	if (PageWriteback(pp)) {
+	case ZFS_PUTPAGE_RELOCK_WAIT_WRITEBACK:
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 
@@ -3900,6 +3931,9 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 
 		zfs_exit(zfsvfs, FTAG);
 		return (0);
+
+	default:
+		break;
 	}
 
 	/* Clear the dirty flag the required locks are held */
