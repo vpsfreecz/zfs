@@ -1202,6 +1202,71 @@ zfs_replay_rename_whiteout(void *arg1, void *arg2, boolean_t byteswap)
 #endif
 }
 
+typedef struct zfs_replay_size_plan {
+	boolean_t zrsp_has_size;
+	uint64_t zrsp_size;
+} zfs_replay_size_plan_t;
+
+static int
+zfs_replay_write_range_valid(uint64_t offset, uint64_t length)
+{
+	uint64_t limit = MAXOFFSET_T;
+
+	if (offset >= limit || length > limit - offset)
+		return (SET_ERROR(EINVAL));
+
+	return (0);
+}
+
+static int
+zfs_replay_file_size_valid(uint64_t size)
+{
+	if (size > (uint64_t)MAXOFFSET_T)
+		return (SET_ERROR(EINVAL));
+
+	return (0);
+}
+
+static int
+zfs_replay_exact_size_plan(uint64_t size, zfs_replay_size_plan_t *plan)
+{
+	int error;
+
+	error = zfs_replay_file_size_valid(size);
+	if (error != 0)
+		return (error);
+
+	plan->zrsp_has_size = B_TRUE;
+	plan->zrsp_size = size;
+	return (0);
+}
+
+static int
+zfs_replay_write_size_plan(const lr_write_t *lr, zfs_replay_size_plan_t *plan)
+{
+	int error;
+
+	error = zfs_replay_write_range_valid(lr->lr_offset, lr->lr_length);
+	if (error != 0)
+		return (error);
+
+	return (zfs_replay_exact_size_plan(lr->lr_offset + lr->lr_length,
+	    plan));
+}
+
+static int
+zfs_replay_setattr_size_plan(const lr_setattr_t *lr,
+    zfs_replay_size_plan_t *plan)
+{
+	if ((lr->lr_mask & ATTR_SIZE) == 0) {
+		plan->zrsp_has_size = B_FALSE;
+		plan->zrsp_size = 0;
+		return (0);
+	}
+
+	return (zfs_replay_exact_size_plan(lr->lr_size, plan));
+}
+
 static int
 zfs_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 {
@@ -1210,6 +1275,7 @@ zfs_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 	char *data = &lr->lr_data[0];	/* data follows lr_write_t */
 	znode_t	*zp;
 	int error;
+	zfs_replay_size_plan_t plan;
 	uint64_t eod, offset, length;
 
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr));
@@ -1231,9 +1297,17 @@ zfs_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 		return (error);
 	}
 
+	zfsvfs->z_replay_eof = 0; /* 0 means don't change end of file */
+
+	error = zfs_replay_write_size_plan(lr, &plan);
+	if (error != 0) {
+		zrele(zp);
+		return (error);
+	}
+
 	offset = lr->lr_offset;
 	length = lr->lr_length;
-	eod = offset + length;	/* end of data for this write */
+	eod = plan.zrsp_size;	/* end of data for this write */
 
 	/*
 	 * This may be a write from a dmu_sync() for a whole block,
@@ -1245,8 +1319,6 @@ zfs_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 	 * transaction created within vn_rdwr -> zfs_write. So a possible
 	 * new end of file is passed through in zfsvfs->z_replay_eof
 	 */
-
-	zfsvfs->z_replay_eof = 0; /* 0 means don't change end of file */
 
 	/* If it's a dmu_sync() block, write the whole block */
 	if (lr->lr_common.lrc_reclen == sizeof (lr_write_t)) {
@@ -1278,6 +1350,7 @@ zfs_replay_write2(void *arg1, void *arg2, boolean_t byteswap)
 	lr_write_t *lr = arg2;
 	znode_t	*zp;
 	int error;
+	zfs_replay_size_plan_t plan;
 	uint64_t end;
 
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr));
@@ -1288,8 +1361,14 @@ zfs_replay_write2(void *arg1, void *arg2, boolean_t byteswap)
 	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0)
 		return (error);
 
+	error = zfs_replay_write_size_plan(lr, &plan);
+	if (error != 0) {
+		zrele(zp);
+		return (error);
+	}
+
 top:
-	end = lr->lr_offset + lr->lr_length;
+	end = plan.zrsp_size;
 	if (end > zp->z_size) {
 		dmu_tx_t *tx = dmu_tx_create(zfsvfs->z_os);
 
@@ -1393,6 +1472,7 @@ zfs_replay_setattr(void *arg1, void *arg2, boolean_t byteswap)
 	xvattr_t xva;
 	vattr_t *vap = &xva.xva_vattr;
 	int error;
+	zfs_replay_size_plan_t plan;
 	void *start;
 
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr));
@@ -1411,10 +1491,17 @@ zfs_replay_setattr(void *arg1, void *arg2, boolean_t byteswap)
 	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0)
 		return (error);
 
+	error = zfs_replay_setattr_size_plan(lr, &plan);
+	if (error != 0) {
+		zrele(zp);
+		return (error);
+	}
+
 	zfs_init_vattr(vap, lr->lr_mask, lr->lr_mode,
 	    lr->lr_uid, lr->lr_gid, 0, lr->lr_foid);
 
-	vap->va_size = lr->lr_size;
+	if (plan.zrsp_has_size)
+		vap->va_size = plan.zrsp_size;
 	ZFS_TIME_DECODE(&vap->va_atime, lr->lr_atime);
 	ZFS_TIME_DECODE(&vap->va_mtime, lr->lr_mtime);
 	gethrestime(&vap->va_ctime);
