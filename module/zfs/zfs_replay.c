@@ -285,6 +285,375 @@ zfs_replay_swap_attrs(lr_attr_t *lrattr)
 	    (lrattr->lr_attr_masksize - 1)), 3 * sizeof (uint64_t));
 }
 
+
+static boolean_t
+zfs_replay_record_cstr_valid(const char *start, size_t len, const char **nextp)
+{
+	size_t slen;
+
+	slen = strnlen(start, len);
+	if (slen == len)
+		return (B_FALSE);
+
+	if (nextp != NULL)
+		*nextp = start + slen + 1;
+
+	return (B_TRUE);
+}
+
+static boolean_t
+zfs_replay_record_domains_valid(const char *start, size_t len, uint64_t domcnt,
+    const char **nextp)
+{
+	const char *p = start;
+	uint64_t ii;
+
+	for (ii = 0; ii < domcnt; ii++) {
+		if (!zfs_replay_record_cstr_valid(p, len - (p - start), &p))
+			return (B_FALSE);
+	}
+
+	if (nextp != NULL)
+		*nextp = p;
+
+	return (B_TRUE);
+}
+
+static boolean_t
+zfs_replay_record_xvattr_valid(const lr_attr_t *lrattr, size_t len,
+    boolean_t byteswap, size_t *xvatlenp)
+{
+	size_t xvatlen = ZIL_XVAT_SIZE(XVA_MAPSIZE);
+	uint32_t masksize;
+
+	if (len < sizeof (*lrattr) || len < xvatlen)
+		return (B_FALSE);
+
+	masksize = byteswap ? BSWAP_32(lrattr->lr_attr_masksize) :
+	    lrattr->lr_attr_masksize;
+	if (masksize != XVA_MAPSIZE)
+		return (B_FALSE);
+
+	if (xvatlenp != NULL)
+		*xvatlenp = xvatlen;
+
+	return (B_TRUE);
+}
+
+static boolean_t
+zfs_replay_record_name_pair_valid(const char *start, size_t len)
+{
+	const char *next;
+
+	if (!zfs_replay_record_cstr_valid(start, len, &next))
+		return (B_FALSE);
+
+	return (zfs_replay_record_cstr_valid(next,
+	    len - (next - start), NULL));
+}
+
+static boolean_t
+zfs_replay_record_acl_tail_valid(const char *start, size_t len,
+    uint64_t acl_bytes, uint64_t aclcnt, uint64_t fuidcnt,
+    uint64_t domcnt, const char **nextp)
+{
+	size_t acl_len;
+	const char *p;
+
+	if (acl_bytes > len)
+		return (B_FALSE);
+
+	acl_len = ZIL_ACE_LENGTH(acl_bytes);
+	if (acl_len < acl_bytes || acl_len > len)
+		return (B_FALSE);
+
+	if (aclcnt > acl_bytes / sizeof (ace_t))
+		return (B_FALSE);
+
+	p = start + acl_len;
+	len -= acl_len;
+
+	if (fuidcnt > len / sizeof (uint64_t))
+		return (B_FALSE);
+
+	p += fuidcnt * sizeof (uint64_t);
+	len -= fuidcnt * sizeof (uint64_t);
+
+	if (!zfs_replay_record_domains_valid(p, len, domcnt, &p))
+		return (B_FALSE);
+
+	if (nextp != NULL)
+		*nextp = p;
+
+	return (B_TRUE);
+}
+
+static boolean_t
+zfs_replay_create_record_valid(const lr_create_t *lrc, boolean_t byteswap)
+{
+	const _lr_create_t *lr = &lrc->lr_create;
+	const char *start = (const char *)&lrc->lr_data[0];
+	const char *next;
+	size_t len;
+	size_t xvatlen;
+	uint64_t txtype = lr->lr_common.lrc_txtype & ~TX_CI;
+
+	if (lr->lr_common.lrc_reclen <= sizeof (*lrc))
+		return (B_FALSE);
+
+	len = lr->lr_common.lrc_reclen - sizeof (*lrc);
+
+	if (txtype == TX_CREATE_ATTR || txtype == TX_MKDIR_ATTR) {
+		if (!zfs_replay_record_xvattr_valid(
+		    (const lr_attr_t *)start, len, byteswap, &xvatlen))
+			return (B_FALSE);
+		start += xvatlen;
+		len -= xvatlen;
+	}
+
+	if (txtype != TX_SYMLINK) {
+		if (!zfs_replay_record_domains_valid(start, len,
+		    zfs_replay_domain_cnt(lr->lr_uid, lr->lr_gid), &next))
+			return (B_FALSE);
+		len -= next - start;
+		start = next;
+	}
+
+	if (!zfs_replay_record_cstr_valid(start, len, &next))
+		return (B_FALSE);
+
+	if (txtype != TX_SYMLINK)
+		return (B_TRUE);
+
+	return (zfs_replay_record_cstr_valid(next,
+	    len - (next - start), NULL));
+}
+
+static boolean_t
+zfs_replay_create_acl_record_valid(const lr_acl_create_t *lracl,
+    boolean_t byteswap)
+{
+	const _lr_create_t *lr = &lracl->lr_create;
+	const char *start = (const char *)&lracl->lr_data[0];
+	const char *next;
+	size_t len;
+	size_t xvatlen;
+	uint64_t txtype = lr->lr_common.lrc_txtype & ~TX_CI;
+
+	if (lr->lr_common.lrc_reclen < sizeof (*lracl))
+		return (B_FALSE);
+
+	len = lr->lr_common.lrc_reclen - sizeof (*lracl);
+
+	if (txtype == TX_CREATE_ACL_ATTR || txtype == TX_MKDIR_ACL_ATTR) {
+		if (!zfs_replay_record_xvattr_valid(
+		    (const lr_attr_t *)start, len, byteswap, &xvatlen))
+			return (B_FALSE);
+		start += xvatlen;
+		len -= xvatlen;
+	}
+
+	if (!zfs_replay_record_acl_tail_valid(start, len, lracl->lr_acl_bytes,
+	    lracl->lr_aclcnt, lracl->lr_fuidcnt, lracl->lr_domcnt, &next))
+		return (B_FALSE);
+
+	return (zfs_replay_record_cstr_valid(next,
+	    len - (next - start), NULL));
+}
+
+static boolean_t
+zfs_replay_remove_record_valid(const lr_remove_t *lr)
+{
+	if (lr->lr_common.lrc_reclen <= sizeof (*lr))
+		return (B_FALSE);
+
+	return (zfs_replay_record_cstr_valid((const char *)&lr->lr_data[0],
+	    lr->lr_common.lrc_reclen - sizeof (*lr), NULL));
+}
+
+static boolean_t
+zfs_replay_link_record_valid(const lr_link_t *lr)
+{
+	if (lr->lr_common.lrc_reclen <= sizeof (*lr))
+		return (B_FALSE);
+
+	return (zfs_replay_record_cstr_valid((const char *)&lr->lr_data[0],
+	    lr->lr_common.lrc_reclen - sizeof (*lr), NULL));
+}
+
+static boolean_t
+zfs_replay_rename_record_valid(const lr_rename_t *lrr)
+{
+	const _lr_rename_t *lr = &lrr->lr_rename;
+
+	if (lr->lr_common.lrc_reclen <= sizeof (*lrr))
+		return (B_FALSE);
+
+	return (zfs_replay_record_name_pair_valid(
+	    (const char *)&lrr->lr_data[0],
+	    lr->lr_common.lrc_reclen - sizeof (*lrr)));
+}
+
+static boolean_t
+zfs_replay_rename_whiteout_record_valid(const lr_rename_whiteout_t *lrrw)
+{
+	const _lr_rename_t *lr = &lrrw->lr_rename;
+
+	if (lr->lr_common.lrc_reclen <= sizeof (*lrrw))
+		return (B_FALSE);
+
+	return (zfs_replay_record_name_pair_valid(
+	    (const char *)&lrrw->lr_data[0],
+	    lr->lr_common.lrc_reclen - sizeof (*lrrw)));
+}
+
+static boolean_t
+zfs_replay_write_record_valid(const lr_write_t *lr)
+{
+	size_t len;
+
+	if (lr->lr_common.lrc_reclen < sizeof (*lr))
+		return (B_FALSE);
+
+	if (lr->lr_common.lrc_reclen == sizeof (*lr))
+		return (B_TRUE);
+
+	len = lr->lr_common.lrc_reclen - sizeof (*lr);
+	return (lr->lr_length <= len);
+}
+
+static boolean_t
+zfs_replay_setattr_record_valid(const lr_setattr_t *lr, boolean_t byteswap)
+{
+	const char *start = (const char *)&lr->lr_data[0];
+	size_t len;
+	size_t xvatlen;
+
+	if (lr->lr_common.lrc_reclen < sizeof (*lr))
+		return (B_FALSE);
+
+	len = lr->lr_common.lrc_reclen - sizeof (*lr);
+
+	if (lr->lr_mask & ATTR_XVATTR) {
+		if (!zfs_replay_record_xvattr_valid(
+		    (const lr_attr_t *)start, len, byteswap, &xvatlen))
+			return (B_FALSE);
+		start += xvatlen;
+		len -= xvatlen;
+	}
+
+	return (zfs_replay_record_domains_valid(start, len,
+	    zfs_replay_domain_cnt(lr->lr_uid, lr->lr_gid), NULL));
+}
+
+static boolean_t
+zfs_replay_setsaxattr_record_valid(const lr_setsaxattr_t *lr)
+{
+	const char *name = (const char *)&lr->lr_data[0];
+	const char *value;
+	size_t len;
+
+	if (lr->lr_common.lrc_reclen < sizeof (*lr))
+		return (B_FALSE);
+
+	len = lr->lr_common.lrc_reclen - sizeof (*lr);
+	if (!zfs_replay_record_cstr_valid(name, len, &value))
+		return (B_FALSE);
+
+	return (lr->lr_size <= len - (value - name));
+}
+
+static boolean_t
+zfs_replay_acl_v0_record_valid(const lr_acl_v0_t *lr)
+{
+	size_t len;
+
+	if (lr->lr_common.lrc_reclen < sizeof (*lr))
+		return (B_FALSE);
+
+	len = lr->lr_common.lrc_reclen - sizeof (*lr);
+	return (lr->lr_aclcnt <= len / sizeof (ace_t));
+}
+
+static boolean_t
+zfs_replay_acl_record_valid(const lr_acl_t *lr)
+{
+	if (lr->lr_common.lrc_reclen < sizeof (*lr))
+		return (B_FALSE);
+
+	return (zfs_replay_record_acl_tail_valid((const char *)&lr->lr_data[0],
+	    lr->lr_common.lrc_reclen - sizeof (*lr), lr->lr_acl_bytes,
+	    lr->lr_aclcnt, lr->lr_fuidcnt, lr->lr_domcnt, NULL));
+}
+
+static boolean_t
+zfs_replay_clone_range_record_valid(const lr_clone_range_t *lr)
+{
+	size_t len;
+
+	if (lr->lr_common.lrc_reclen < sizeof (*lr))
+		return (B_FALSE);
+
+	len = lr->lr_common.lrc_reclen - offsetof(lr_clone_range_t, lr_bps);
+	return (lr->lr_nbps <= len / sizeof (lr->lr_bps[0]));
+}
+
+static boolean_t
+zfs_replay_variable_record_valid(const lr_t *lrc, boolean_t byteswap)
+{
+	uint64_t txtype = lrc->lrc_txtype & ~TX_CI;
+
+	switch (txtype) {
+	case TX_CREATE:
+	case TX_MKDIR:
+	case TX_MKXATTR:
+	case TX_SYMLINK:
+	case TX_CREATE_ATTR:
+	case TX_MKDIR_ATTR:
+		return (zfs_replay_create_record_valid(
+		    (const lr_create_t *)lrc, byteswap));
+	case TX_REMOVE:
+	case TX_RMDIR:
+		return (zfs_replay_remove_record_valid(
+		    (const lr_remove_t *)lrc));
+	case TX_LINK:
+		return (zfs_replay_link_record_valid(
+		    (const lr_link_t *)lrc));
+	case TX_RENAME:
+	case TX_RENAME_EXCHANGE:
+		return (zfs_replay_rename_record_valid(
+		    (const lr_rename_t *)lrc));
+	case TX_RENAME_WHITEOUT:
+		return (zfs_replay_rename_whiteout_record_valid(
+		    (const lr_rename_whiteout_t *)lrc));
+	case TX_WRITE:
+		return (zfs_replay_write_record_valid(
+		    (const lr_write_t *)lrc));
+	case TX_SETATTR:
+		return (zfs_replay_setattr_record_valid(
+		    (const lr_setattr_t *)lrc, byteswap));
+	case TX_ACL_V0:
+		return (zfs_replay_acl_v0_record_valid(
+		    (const lr_acl_v0_t *)lrc));
+	case TX_ACL:
+		return (zfs_replay_acl_record_valid((const lr_acl_t *)lrc));
+	case TX_CREATE_ACL:
+	case TX_CREATE_ACL_ATTR:
+	case TX_MKDIR_ACL:
+	case TX_MKDIR_ACL_ATTR:
+		return (zfs_replay_create_acl_record_valid(
+		    (const lr_acl_create_t *)lrc, byteswap));
+	case TX_SETSAXATTR:
+		return (zfs_replay_setsaxattr_record_valid(
+		    (const lr_setsaxattr_t *)lrc));
+	case TX_CLONE_RANGE:
+		return (zfs_replay_clone_range_record_valid(
+		    (const lr_clone_range_t *)lrc));
+	default:
+		return (B_TRUE);
+	}
+}
+
 /*
  * Replay file create with optional ACL, xvattr information as well
  * as option FUID information.
@@ -312,9 +681,14 @@ zfs_replay_create_acl(void *arg1, void *arg2, boolean_t byteswap)
 
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lracl));
 
-	txtype = (lr->lr_common.lrc_txtype & ~TX_CI);
-	if (byteswap) {
+	if (byteswap)
 		byteswap_uint64_array(lracl, sizeof (*lracl));
+
+	txtype = (lr->lr_common.lrc_txtype & ~TX_CI);
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
+
+	if (byteswap) {
 		if (txtype == TX_CREATE_ACL_ATTR ||
 		    txtype == TX_MKDIR_ACL_ATTR) {
 			lrattr = (lr_attr_t *)&lracl->lr_data[0];
@@ -474,13 +848,16 @@ zfs_replay_create(void *arg1, void *arg2, boolean_t byteswap)
 
 	ASSERT3U(lr->lr_common.lrc_reclen, >, sizeof (*lr));
 
-	txtype = (lr->lr_common.lrc_txtype & ~TX_CI);
-	if (byteswap) {
+	if (byteswap)
 		byteswap_uint64_array(lrc, sizeof (*lrc));
-		if (txtype == TX_CREATE_ATTR || txtype == TX_MKDIR_ATTR)
-			zfs_replay_swap_attrs((lr_attr_t *)&lrc->lr_data[0]);
-	}
 
+	txtype = (lr->lr_common.lrc_txtype & ~TX_CI);
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
+
+	if (byteswap &&
+	    (txtype == TX_CREATE_ATTR || txtype == TX_MKDIR_ATTR))
+		zfs_replay_swap_attrs((lr_attr_t *)&lrc->lr_data[0]);
 
 	if ((error = zfs_zget(zfsvfs, lr->lr_doid, &dzp)) != 0)
 		return (error);
@@ -622,6 +999,9 @@ zfs_replay_remove(void *arg1, void *arg2, boolean_t byteswap)
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
 
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
+
 	if ((error = zfs_zget(zfsvfs, lr->lr_doid, &dzp)) != 0)
 		return (error);
 
@@ -658,6 +1038,9 @@ zfs_replay_link(void *arg1, void *arg2, boolean_t byteswap)
 
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
+
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
 
 	if ((error = zfs_zget(zfsvfs, lr->lr_doid, &dzp)) != 0)
 		return (error);
@@ -730,6 +1113,9 @@ zfs_replay_rename(void *arg1, void *arg2, boolean_t byteswap)
 	if (byteswap)
 		byteswap_uint64_array(lrr, sizeof (*lrr));
 
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
+
 	/* sname and tname follow lr_rename_t */
 	char *sname = (char *)&lrr->lr_data[0];
 	char *tname = (char *)&lrr->lr_data[strlen(sname)+1];
@@ -748,6 +1134,9 @@ zfs_replay_rename_exchange(void *arg1, void *arg2, boolean_t byteswap)
 
 	if (byteswap)
 		byteswap_uint64_array(lrr, sizeof (*lrr));
+
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
 
 	/* sname and tname follow lr_rename_t */
 	char *sname = (char *)&lrr->lr_data[0];
@@ -776,6 +1165,9 @@ zfs_replay_rename_whiteout(void *arg1, void *arg2, boolean_t byteswap)
 
 	if (byteswap)
 		byteswap_uint64_array(lrrw, sizeof (*lrrw));
+
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
 
 	objid = LR_FOID_GET_OBJ(lrrw->lr_wfoid);
 	dnodesize = LR_FOID_GET_SLOTS(lrrw->lr_wfoid) << DNODE_SHIFT;
@@ -824,6 +1216,9 @@ zfs_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
+
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
 
 	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0) {
 		/*
@@ -969,13 +1364,15 @@ zfs_replay_setattr(void *arg1, void *arg2, boolean_t byteswap)
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr));
 
 	xva_init(&xva);
-	if (byteswap) {
+	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
 
-		if ((lr->lr_mask & ATTR_XVATTR) &&
-		    zfsvfs->z_version >= ZPL_VERSION_INITIAL)
-			zfs_replay_swap_attrs((lr_attr_t *)&lr->lr_data[0]);
-	}
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
+
+	if (byteswap && (lr->lr_mask & ATTR_XVATTR) &&
+	    zfsvfs->z_version >= ZPL_VERSION_INITIAL)
+		zfs_replay_swap_attrs((lr_attr_t *)&lr->lr_data[0]);
 
 	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0)
 		return (error);
@@ -1037,6 +1434,9 @@ zfs_replay_setsaxattr(void *arg1, void *arg2, boolean_t byteswap)
 	    SPA_FEATURE_ZILSAXATTR));
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
+
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
 
 	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0)
 		return (error);
@@ -1114,10 +1514,14 @@ zfs_replay_acl_v0(void *arg1, void *arg2, boolean_t byteswap)
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr) +
 	    sizeof (ace_t) * lr->lr_aclcnt);
 
-	if (byteswap) {
+	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
+
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
+
+	if (byteswap)
 		zfs_oldace_byteswap(ace, lr->lr_aclcnt);
-	}
 
 	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0)
 		return (error);
@@ -1162,8 +1566,13 @@ zfs_replay_acl(void *arg1, void *arg2, boolean_t byteswap)
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr));
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr) + lr->lr_acl_bytes);
 
-	if (byteswap) {
+	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
+
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
+
+	if (byteswap) {
 		zfs_ace_byteswap(ace, lr->lr_acl_bytes, B_FALSE);
 		if (lr->lr_fuidcnt) {
 			byteswap_uint64_array(&lr->lr_data[
@@ -1215,6 +1624,9 @@ zfs_replay_clone_range(void *arg1, void *arg2, boolean_t byteswap)
 
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
+
+	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
+		return (SET_ERROR(EINVAL));
 
 	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0) {
 		/*
