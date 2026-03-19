@@ -1407,12 +1407,12 @@ zfs_get_data(void *arg, uint64_t gen, lr_write_t *lr, char *buf,
 		if (error == 0) {
 			zgd->zgd_db = dbp;
 			dmu_buf_impl_t *db = (dmu_buf_impl_t *)dbp;
-			boolean_t direct_write = B_FALSE;
+			blkptr_t direct_bp = { 0 };
+			boolean_t direct_write;
+
 			mutex_enter(&db->db_mtx);
-			dbuf_dirty_record_t *dr =
-			    dbuf_find_dirty_eq(db, lr->lr_common.lrc_txg);
-			if (dr != NULL && dr->dt.dl.dr_diowrite)
-				direct_write = B_TRUE;
+			direct_write = dmu_buf_get_diowrite_bp_copy_locked(db,
+			    lr->lr_common.lrc_txg, &direct_bp);
 			mutex_exit(&db->db_mtx);
 
 			/*
@@ -1426,7 +1426,7 @@ zfs_get_data(void *arg, uint64_t gen, lr_write_t *lr, char *buf,
 				 * block.
 				 */
 				ASSERT3U(dbp->db_size, ==, zp->z_blksz);
-				lr->lr_blkptr = dr->dt.dl.dr_overridden_by;
+				lr->lr_blkptr = direct_bp;
 				zfs_get_done(zgd, 0);
 				return (0);
 			}
