@@ -1857,16 +1857,22 @@ dbuf_read(dmu_buf_impl_t *db, zio_t *pio, dmu_flags_t flags)
 		ASSERT(db->db_state == DB_UNCACHED ||
 		    db->db_state == DB_NOFILL);
 		db_lock_type_t dblt = dmu_buf_lock_parent(db, RW_READER, FTAG);
-		blkptr_t *bp;
+		blkptr_t *bp = NULL;
+		blkptr_t bp_copy;
+		boolean_t have_bp = B_FALSE;
 
 		/*
 		 * If a block clone or Direct I/O write has occurred we will
 		 * get the dirty records overridden BP so we get the most
 		 * recent data.
 		 */
-		err = dmu_buf_get_bp_from_dbuf(db, &bp);
+		err = dmu_buf_get_bp_copy_from_dbuf_locked(db,
+		    &bp_copy, &have_bp);
 
 		if (!err) {
+			if (have_bp)
+				bp = &bp_copy;
+
 			if (pio == NULL && (db->db_state == DB_NOFILL ||
 			    (bp != NULL && !BP_IS_HOLE(bp)))) {
 				spa_t *spa = dn->dn_objset->os_spa;
