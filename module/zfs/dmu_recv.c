@@ -86,7 +86,7 @@ typedef enum {
 } or_need_sync_t;
 
 static int receive_read_payload_and_next_header(dmu_recv_cookie_t *ra, int len,
-    void *buf);
+    int max_len, void *buf);
 
 struct receive_record_arg {
 	dmu_replay_record_t header;
@@ -1323,7 +1323,8 @@ dmu_recv_begin(const char *tofs, const char *tosnap,
 	 * upper limit. Systems with less than 1GB of RAM will see a lower
 	 * limit from `arc_all_memory() / 4`.
 	 */
-	if (payloadlen > (MIN((1U << 28), arc_all_memory() / 4))) {
+	uint64_t payload_limit = MIN((1U << 28), arc_all_memory() / 4);
+	if (payloadlen > payload_limit) {
 		crfree(cr);
 		drc->drc_cred = NULL;
 		return (SET_ERROR(E2BIG));
@@ -1340,7 +1341,7 @@ dmu_recv_begin(const char *tofs, const char *tosnap,
 		 */
 
 		err = receive_read_payload_and_next_header(drc, payloadlen,
-		    payload);
+		    payload_limit, payload);
 		if (err != 0) {
 			vmem_free(payload, payloadlen);
 			crfree(cr);
@@ -2438,7 +2439,7 @@ receive_process_write_record(struct receive_writer_arg *rwa,
 			dmu_object_byteswap_t byteswap =
 			    DMU_OT_BYTESWAP(drrw->drr_type);
 			dmu_ot_byteswap[byteswap].ob_func(abd_to_buf(rrd->abd),
-			    DRR_WRITE_PAYLOAD_SIZE(drrw));
+			    rrd->payload_size);
 		}
 
 		err = dmu_buf_hold_noread(rwa->os, drrw->drr_object,
@@ -2637,11 +2638,11 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 			dmu_object_byteswap_t byteswap =
 			    DMU_OT_BYTESWAP(drrs->drr_type);
 			dmu_ot_byteswap[byteswap].ob_func(abd_to_buf(abd),
-			    DRR_SPILL_PAYLOAD_SIZE(drrs));
+			    abd_get_size(abd));
 		}
 	}
 
-	memcpy(abuf->b_data, abd_to_buf(abd), DRR_SPILL_PAYLOAD_SIZE(drrs));
+	memcpy(abuf->b_data, abd_to_buf(abd), abd_get_size(abd));
 	abd_free(abd);
 	dbuf_assign_arcbuf((dmu_buf_impl_t *)db_spill, abuf, tx,
 	    DMU_UNCACHEDIO);
@@ -2793,12 +2794,15 @@ receive_cksum(dmu_recv_cookie_t *drc, int len, void *buf)
  * Verify checksum of payload and next record.
  */
 static int
-receive_read_payload_and_next_header(dmu_recv_cookie_t *drc, int len, void *buf)
+receive_read_payload_and_next_header(dmu_recv_cookie_t *drc, int len,
+    int max_len, void *buf)
 {
 	int err;
 
+	if (len < 0 || len > max_len)
+		return (SET_ERROR(EINVAL));
+
 	if (len != 0) {
-		ASSERT3U(len, <=, SPA_MAXBLOCKSIZE);
 		err = receive_read(drc, len, buf);
 		if (err != 0)
 			return (err);
@@ -2889,6 +2893,119 @@ receive_read_prefetch(dmu_recv_cookie_t *drc, uint64_t object, uint64_t offset,
 	}
 }
 
+typedef struct receive_payload_read_plan {
+	uint64_t rprp_size;
+} receive_payload_read_plan_t;
+
+static int
+receive_payload_read_size_valid(uint64_t size)
+{
+	if (size > SPA_MAXBLOCKSIZE)
+		return (SET_ERROR(EINVAL));
+
+	return (0);
+}
+
+static int
+receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
+    const dmu_replay_record_t *drr, receive_payload_read_plan_t *plan)
+{
+	spa_t *spa = dmu_objset_spa(drc->drc_os);
+	uint64_t max_dnodesize = spa_maxdnodesize(spa);
+	uint64_t max_bonuslen = DN_BONUS_SIZE(max_dnodesize);
+	uint64_t max_blksz = spa_maxblocksize(spa);
+	uint64_t size = 0;
+	int err;
+
+	plan->rprp_size = 0;
+
+	switch (drr->drr_type) {
+	case DRR_OBJECT:
+	{
+		const struct drr_object *drro = &drr->drr_u.drr_object;
+		uint8_t dn_slots = drro->drr_dn_slots != 0 ?
+		    drro->drr_dn_slots : DNODE_MIN_SLOTS;
+		uint64_t slot_bonuslen;
+
+		if (dn_slots > (max_dnodesize >> DNODE_SHIFT))
+			return (SET_ERROR(EINVAL));
+
+		slot_bonuslen = DN_SLOTS_TO_BONUSLEN(dn_slots);
+		if (drc->drc_raw) {
+			if (drro->drr_raw_bonuslen < drro->drr_bonuslen ||
+			    drro->drr_raw_bonuslen > slot_bonuslen) {
+				return (SET_ERROR(EINVAL));
+			}
+		} else if (drro->drr_raw_bonuslen != 0 ||
+		    drro->drr_bonuslen > slot_bonuslen) {
+			return (SET_ERROR(EINVAL));
+		}
+
+		size = drro->drr_raw_bonuslen != 0 ? drro->drr_raw_bonuslen :
+		    P2ROUNDUP((uint64_t)drro->drr_bonuslen, 8);
+		if (size > max_bonuslen)
+			return (SET_ERROR(EINVAL));
+		break;
+	}
+	case DRR_WRITE:
+	{
+		const struct drr_write *drrw = &drr->drr_u.drr_write;
+
+		if (DRR_WRITE_COMPRESSED(drrw)) {
+			if (drrw->drr_compressed_size == 0 ||
+			    drrw->drr_logical_size < drrw->drr_compressed_size)
+				return (SET_ERROR(EINVAL));
+			size = drrw->drr_compressed_size;
+		} else {
+			if (drrw->drr_compressed_size != 0)
+				return (SET_ERROR(EINVAL));
+			size = drrw->drr_logical_size;
+		}
+		break;
+	}
+	case DRR_WRITE_EMBEDDED:
+	{
+		const struct drr_write_embedded *drrwe =
+		    &drr->drr_u.drr_write_embedded;
+
+		if (drc->drc_raw || drrwe->drr_psize > BPE_PAYLOAD_SIZE)
+			return (SET_ERROR(EINVAL));
+
+		size = P2ROUNDUP((uint64_t)drrwe->drr_psize, 8);
+		break;
+	}
+	case DRR_SPILL:
+	{
+		const struct drr_spill *drrs = &drr->drr_u.drr_spill;
+
+		if (drrs->drr_length < SPA_MINBLOCKSIZE ||
+		    drrs->drr_length > max_blksz) {
+			return (SET_ERROR(EINVAL));
+		}
+
+		if (drc->drc_raw) {
+			if (drrs->drr_compressed_size == 0)
+				return (SET_ERROR(EINVAL));
+			size = drrs->drr_compressed_size;
+		} else {
+			if (drrs->drr_compressed_size != 0)
+				return (SET_ERROR(EINVAL));
+			size = drrs->drr_length;
+		}
+		break;
+	}
+	default:
+		return (SET_ERROR(EINVAL));
+	}
+
+	err = receive_payload_read_size_valid(size);
+	if (err != 0)
+		return (err);
+
+	plan->rprp_size = size;
+	return (0);
+}
+
 /*
  * Read records off the stream, issuing any necessary prefetches.
  */
@@ -2902,16 +3019,22 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	{
 		struct drr_object *drro =
 		    &drc->drc_rrd->header.drr_u.drr_object;
-		uint32_t size = DRR_OBJECT_PAYLOAD_SIZE(drro);
+		receive_payload_read_plan_t plan;
 		void *buf = NULL;
 		dmu_object_info_t doi;
 
-		if (size != 0)
-			buf = kmem_zalloc(size, KM_SLEEP);
+		err = receive_build_payload_read_plan(drc,
+		    &drc->drc_rrd->header, &plan);
+		if (err != 0)
+			return (err);
 
-		err = receive_read_payload_and_next_header(drc, size, buf);
+		if (plan.rprp_size != 0)
+			buf = kmem_zalloc(plan.rprp_size, KM_SLEEP);
+
+		err = receive_read_payload_and_next_header(drc,
+		    (int)plan.rprp_size, SPA_MAXBLOCKSIZE, buf);
 		if (err != 0) {
-			kmem_free(buf, size);
+			kmem_free(buf, plan.rprp_size);
 			return (err);
 		}
 		err = dmu_object_info(drc->drc_os, drro->drr_object, &doi);
@@ -2929,40 +3052,58 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	}
 	case DRR_FREEOBJECTS:
 	{
-		err = receive_read_payload_and_next_header(drc, 0, NULL);
+		err = receive_read_payload_and_next_header(drc, 0,
+		    SPA_MAXBLOCKSIZE, NULL);
 		return (err);
 	}
 	case DRR_WRITE:
 	{
-		struct drr_write *drrw = &drc->drc_rrd->header.drr_u.drr_write;
-		int size = DRR_WRITE_PAYLOAD_SIZE(drrw);
-		abd_t *abd = abd_alloc_linear(size, B_FALSE);
-		err = receive_read_payload_and_next_header(drc, size,
+		struct drr_write *drrw =
+		    &drc->drc_rrd->header.drr_u.drr_write;
+		receive_payload_read_plan_t plan;
+		abd_t *abd;
+
+		err = receive_build_payload_read_plan(drc,
+		    &drc->drc_rrd->header, &plan);
+		if (err != 0)
+			return (err);
+
+		abd = abd_alloc_linear(plan.rprp_size, B_FALSE);
+		err = receive_read_payload_and_next_header(drc,
+		    (int)plan.rprp_size, SPA_MAXBLOCKSIZE,
 		    abd_to_buf(abd));
 		if (err != 0) {
 			abd_free(abd);
 			return (err);
 		}
 		drc->drc_rrd->abd = abd;
-		receive_read_prefetch(drc, drrw->drr_object, drrw->drr_offset,
-		    drrw->drr_logical_size);
+		receive_read_prefetch(drc, drrw->drr_object,
+		    drrw->drr_offset, drrw->drr_logical_size);
 		return (err);
 	}
 	case DRR_WRITE_EMBEDDED:
 	{
 		struct drr_write_embedded *drrwe =
 		    &drc->drc_rrd->header.drr_u.drr_write_embedded;
-		uint32_t size = P2ROUNDUP(drrwe->drr_psize, 8);
-		void *buf = kmem_zalloc(size, KM_SLEEP);
+		receive_payload_read_plan_t plan;
+		void *buf;
 
-		err = receive_read_payload_and_next_header(drc, size, buf);
+		err = receive_build_payload_read_plan(drc,
+		    &drc->drc_rrd->header, &plan);
+		if (err != 0)
+			return (err);
+
+		buf = kmem_zalloc(plan.rprp_size, KM_SLEEP);
+
+		err = receive_read_payload_and_next_header(drc,
+		    (int)plan.rprp_size, SPA_MAXBLOCKSIZE, buf);
 		if (err != 0) {
-			kmem_free(buf, size);
+			kmem_free(buf, plan.rprp_size);
 			return (err);
 		}
 
-		receive_read_prefetch(drc, drrwe->drr_object, drrwe->drr_offset,
-		    drrwe->drr_length);
+		receive_read_prefetch(drc, drrwe->drr_object,
+		    drrwe->drr_offset, drrwe->drr_length);
 		return (err);
 	}
 	case DRR_FREE:
@@ -2972,7 +3113,8 @@ receive_read_record(dmu_recv_cookie_t *drc)
 		 * It might be beneficial to prefetch indirect blocks here, but
 		 * we don't really have the data to decide for sure.
 		 */
-		err = receive_read_payload_and_next_header(drc, 0, NULL);
+		err = receive_read_payload_and_next_header(drc, 0,
+		    SPA_MAXBLOCKSIZE, NULL);
 		return (err);
 	}
 	case DRR_END:
@@ -2985,10 +3127,19 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	}
 	case DRR_SPILL:
 	{
-		struct drr_spill *drrs = &drc->drc_rrd->header.drr_u.drr_spill;
-		int size = DRR_SPILL_PAYLOAD_SIZE(drrs);
-		abd_t *abd = abd_alloc_linear(size, B_FALSE);
-		err = receive_read_payload_and_next_header(drc, size,
+		struct drr_spill *drrs =
+		    &drc->drc_rrd->header.drr_u.drr_spill;
+		receive_payload_read_plan_t plan;
+		abd_t *abd;
+
+		err = receive_build_payload_read_plan(drc,
+		    &drc->drc_rrd->header, &plan);
+		if (err != 0)
+			return (err);
+
+		abd = abd_alloc_linear(plan.rprp_size, B_FALSE);
+		err = receive_read_payload_and_next_header(drc,
+		    (int)plan.rprp_size, SPA_MAXBLOCKSIZE,
 		    abd_to_buf(abd));
 		if (err != 0)
 			abd_free(abd);
@@ -2998,7 +3149,8 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	}
 	case DRR_OBJECT_RANGE:
 	{
-		err = receive_read_payload_and_next_header(drc, 0, NULL);
+		err = receive_read_payload_and_next_header(drc, 0,
+		    SPA_MAXBLOCKSIZE, NULL);
 		return (err);
 
 	}
@@ -3413,7 +3565,8 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 	 * early, and it's the END record, we break the `recv_skip` logic.
 	 */
 	if (drc->drc_drr_begin->drr_payloadlen == 0) {
-		err = receive_read_payload_and_next_header(drc, 0, NULL);
+		err = receive_read_payload_and_next_header(drc, 0,
+		    SPA_MAXBLOCKSIZE, NULL);
 		if (err != 0)
 			goto out;
 	}
