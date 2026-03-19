@@ -233,6 +233,21 @@ zpl_sync_fs(struct super_block *sb, int wait)
 	return (error);
 }
 
+static void
+zpl_statfs_cap_files_32bit(struct kstatfs *statp)
+{
+	uint64_t usedobjs;
+	uint64_t capped_usedobjs;
+	uint64_t headroom;
+
+	usedobjs = statp->f_files - statp->f_ffree;
+	capped_usedobjs = MIN(usedobjs, (uint64_t)UINT32_MAX);
+	headroom = (uint64_t)UINT32_MAX - capped_usedobjs;
+
+	statp->f_ffree = MIN(statp->f_ffree, headroom);
+	statp->f_files = statp->f_ffree + capped_usedobjs;
+}
+
 static int
 zpl_statfs(struct dentry *dentry, struct kstatfs *statp)
 {
@@ -261,9 +276,7 @@ zpl_statfs(struct dentry *dentry, struct kstatfs *statp)
 			statp->f_bavail >>= 1;
 		}
 
-		uint64_t usedobjs = statp->f_files - statp->f_ffree;
-		statp->f_ffree = MIN(statp->f_ffree, UINT32_MAX - usedobjs);
-		statp->f_files = statp->f_ffree + usedobjs;
+		zpl_statfs_cap_files_32bit(statp);
 	}
 
 	return (error);
