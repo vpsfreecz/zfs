@@ -655,6 +655,20 @@ zil_claim_write(zilog_t *zilog, const lr_t *lrc, void *tx, uint64_t first_txg)
 	return (zil_claim_log_block(zilog, &lr->lr_blkptr, tx, first_txg));
 }
 
+
+static boolean_t
+zil_clone_range_record_valid(const lr_t *lrc)
+{
+	const lr_clone_range_t *lr = (const lr_clone_range_t *)lrc;
+	size_t len;
+
+	if (lrc->lrc_reclen < sizeof (*lr))
+		return (B_FALSE);
+
+	len = lrc->lrc_reclen - offsetof(lr_clone_range_t, lr_bps);
+	return (lr->lr_nbps <= len / sizeof (lr->lr_bps[0]));
+}
+
 static int
 zil_claim_clone_range(zilog_t *zilog, const lr_t *lrc, void *tx,
     uint64_t first_txg)
@@ -667,6 +681,9 @@ zil_claim_clone_range(zilog_t *zilog, const lr_t *lrc, void *tx,
 	ASSERT3U(lrc->lrc_reclen, >=, sizeof (*lr));
 	ASSERT3U(lrc->lrc_reclen, >=, offsetof(lr_clone_range_t,
 	    lr_bps[lr->lr_nbps]));
+
+	if (!zil_clone_range_record_valid(lrc))
+		return (SET_ERROR(EINVAL));
 
 	if (tx == NULL) {
 		return (0);
@@ -767,6 +784,9 @@ zil_free_clone_range(zilog_t *zilog, const lr_t *lrc, void *tx)
 	ASSERT3U(lrc->lrc_reclen, >=, sizeof (*lr));
 	ASSERT3U(lrc->lrc_reclen, >=, offsetof(lr_clone_range_t,
 	    lr_bps[lr->lr_nbps]));
+
+	if (!zil_clone_range_record_valid(lrc))
+		return (SET_ERROR(EINVAL));
 
 	if (tx == NULL) {
 		return (0);
