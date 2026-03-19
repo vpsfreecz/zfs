@@ -1320,13 +1320,48 @@ top:
 	return (error);
 }
 
+typedef struct zfs_replay_freesp_plan {
+	flock64_t zrfp_fl;
+	offset_t zrfp_offset;
+} zfs_replay_freesp_plan_t;
+
+static int
+zfs_replay_freesp_range_valid(offset_t off, offset_t len)
+{
+	if (off < 0 || len < 0)
+		return (SET_ERROR(EINVAL));
+
+	if (len != 0 && off > MAXOFFSET_T - len)
+		return (SET_ERROR(EINVAL));
+
+	return (0);
+}
+
+static int
+zfs_replay_truncate_plan(const lr_truncate_t *lr,
+    zfs_replay_freesp_plan_t *plan)
+{
+	if (lr->lr_offset > MAXOFFSET_T || lr->lr_length > MAXOFFSET_T)
+		return (SET_ERROR(EINVAL));
+
+	plan->zrfp_fl = (flock64_t) { 0 };
+	plan->zrfp_fl.l_type = F_WRLCK;
+	plan->zrfp_fl.l_whence = SEEK_SET;
+	plan->zrfp_fl.l_start = (offset_t)lr->lr_offset;
+	plan->zrfp_fl.l_len = (offset_t)lr->lr_length;
+	plan->zrfp_offset = plan->zrfp_fl.l_start;
+
+	return (zfs_replay_freesp_range_valid(plan->zrfp_fl.l_start,
+	    plan->zrfp_fl.l_len));
+}
+
 static int
 zfs_replay_truncate(void *arg1, void *arg2, boolean_t byteswap)
 {
 	zfsvfs_t *zfsvfs = arg1;
 	lr_truncate_t *lr = arg2;
 	znode_t *zp;
-	flock64_t fl = {0};
+	zfs_replay_freesp_plan_t plan;
 	int error;
 
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr));
@@ -1334,16 +1369,15 @@ zfs_replay_truncate(void *arg1, void *arg2, boolean_t byteswap)
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
 
+	error = zfs_replay_truncate_plan(lr, &plan);
+	if (error != 0)
+		return (error);
+
 	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0)
 		return (error);
 
-	fl.l_type = F_WRLCK;
-	fl.l_whence = SEEK_SET;
-	fl.l_start = lr->lr_offset;
-	fl.l_len = lr->lr_length;
-
-	error = zfs_space(zp, F_FREESP, &fl, O_RDWR | O_LARGEFILE,
-	    lr->lr_offset, kcred);
+	error = zfs_space(zp, F_FREESP, &plan.zrfp_fl, O_RDWR | O_LARGEFILE,
+	    plan.zrfp_offset, kcred);
 
 	zrele(zp);
 
