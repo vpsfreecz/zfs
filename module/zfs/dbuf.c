@@ -3104,22 +3104,39 @@ dmu_buf_set_crypt_params(dmu_buf_t *db_fake, boolean_t byteorder,
 }
 
 static void
-dbuf_override_impl(dmu_buf_impl_t *db, const blkptr_t *bp, dmu_tx_t *tx)
+dbuf_install_override_locked(dmu_buf_impl_t *db, dbuf_dirty_record_t *dr,
+    const blkptr_t *bp)
 {
-	struct dirty_leaf *dl;
-	dbuf_dirty_record_t *dr;
+	struct dirty_leaf *dl = &dr->dt.dl;
 
-	ASSERT3U(db->db.db_object, !=, DMU_META_DNODE_OBJECT);
-	ASSERT0(db->db_level);
-
-	dr = list_head(&db->db_dirty_records);
+	ASSERT(MUTEX_HELD(&db->db_mtx));
 	ASSERT3P(dr, !=, NULL);
-	ASSERT3U(dr->dr_txg, ==, tx->tx_txg);
-	dl = &dr->dt.dl;
+
 	ASSERT0(dl->dr_has_raw_params);
 	dl->dr_overridden_by = *bp;
 	dl->dr_override_state = DR_OVERRIDDEN;
 	BP_SET_LOGICAL_BIRTH(&dl->dr_overridden_by, dr->dr_txg);
+}
+
+static void
+dbuf_install_override(dmu_buf_impl_t *db, const blkptr_t *bp, uint64_t txg)
+{
+	dbuf_dirty_record_t *dr;
+
+	mutex_enter(&db->db_mtx);
+	dr = dbuf_find_dirty_eq_locked(db, txg);
+	ASSERT3P(dr, !=, NULL);
+	dbuf_install_override_locked(db, dr, bp);
+	mutex_exit(&db->db_mtx);
+}
+
+static void
+dbuf_override_impl(dmu_buf_impl_t *db, const blkptr_t *bp, dmu_tx_t *tx)
+{
+	ASSERT3U(db->db.db_object, !=, DMU_META_DNODE_OBJECT);
+	ASSERT0(db->db_level);
+
+	dbuf_install_override(db, bp, tx->tx_txg);
 }
 
 boolean_t
@@ -3167,9 +3184,8 @@ dmu_buf_write_embedded(dmu_buf_t *dbuf, void *data,
     dmu_tx_t *tx)
 {
 	dmu_buf_impl_t *db = (dmu_buf_impl_t *)dbuf;
-	struct dirty_leaf *dl;
+	blkptr_t bp = { { { {0} } } };
 	dmu_object_type_t type;
-	dbuf_dirty_record_t *dr;
 
 	if (etype == BP_EMBEDDED_TYPE_DATA) {
 		ASSERT(spa_feature_is_active(dmu_objset_spa(db->db_objset),
@@ -3185,20 +3201,14 @@ dmu_buf_write_embedded(dmu_buf_t *dbuf, void *data,
 
 	dmu_buf_will_not_fill(dbuf, tx);
 
-	dr = list_head(&db->db_dirty_records);
-	ASSERT3P(dr, !=, NULL);
-	ASSERT3U(dr->dr_txg, ==, tx->tx_txg);
-	dl = &dr->dt.dl;
-	ASSERT0(dl->dr_has_raw_params);
-	encode_embedded_bp_compressed(&dl->dr_overridden_by,
+	encode_embedded_bp_compressed(&bp,
 	    data, comp, uncompressed_size, compressed_size);
-	BPE_SET_ETYPE(&dl->dr_overridden_by, etype);
-	BP_SET_TYPE(&dl->dr_overridden_by, type);
-	BP_SET_LEVEL(&dl->dr_overridden_by, 0);
-	BP_SET_BYTEORDER(&dl->dr_overridden_by, byteorder);
+	BPE_SET_ETYPE(&bp, etype);
+	BP_SET_TYPE(&bp, type);
+	BP_SET_LEVEL(&bp, 0);
+	BP_SET_BYTEORDER(&bp, byteorder);
 
-	dl->dr_override_state = DR_OVERRIDDEN;
-	BP_SET_LOGICAL_BIRTH(&dl->dr_overridden_by, dr->dr_txg);
+	dbuf_override_impl(db, &bp, tx);
 }
 
 void
