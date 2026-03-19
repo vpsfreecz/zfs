@@ -2573,13 +2573,55 @@ restart:
 	return (err);
 }
 
+static int
+dmu_read_l0_bp_copy(dmu_buf_impl_t *db, blkptr_t *bp, boolean_t *have_bp)
+{
+	dbuf_dirty_record_t *dr;
+	int error;
+
+	mutex_enter(&db->db_mtx);
+	dr = list_head(&db->db_dirty_records);
+	if (dr != NULL && !dr->dt.dl.dr_brtwrite) {
+		mutex_exit(&db->db_mtx);
+		return (SET_ERROR(EAGAIN));
+	}
+
+	error = dmu_buf_get_bp_copy_from_dbuf_locked(db, bp, have_bp);
+	mutex_exit(&db->db_mtx);
+
+	return (error);
+}
+
+static int
+dmu_read_l0_bp_check_cloneable(spa_t *spa, const blkptr_t *bp)
+{
+	/*
+	 * Make sure we clone only data blocks.
+	 */
+	if (BP_IS_METADATA(bp) && !BP_IS_HOLE(bp))
+		return (SET_ERROR(EINVAL));
+
+	/*
+	 * If the block was allocated in transaction group that is not yet
+	 * synced, we could clone it, but we couldn't write this operation
+	 * into ZIL, or it may be impossible to replay, since the block may
+	 * appear not yet allocated at that point.
+	 */
+	if (BP_GET_BIRTH(bp) > spa_freeze_txg(spa))
+		return (SET_ERROR(EINVAL));
+	if (BP_GET_BIRTH(bp) > spa_last_synced_txg(spa))
+		return (SET_ERROR(EAGAIN));
+
+	return (0);
+}
+
 int
 dmu_read_l0_bps(objset_t *os, uint64_t object, uint64_t offset, uint64_t length,
     blkptr_t *bps, size_t *nbpsp)
 {
 	dmu_buf_t **dbp, *dbuf;
 	dmu_buf_impl_t *db;
-	blkptr_t *bp;
+	blkptr_t bp;
 	int error, numbufs;
 
 	error = dmu_buf_hold_array(os, object, offset, length, FALSE, FTAG,
@@ -2594,38 +2636,16 @@ dmu_read_l0_bps(objset_t *os, uint64_t object, uint64_t offset, uint64_t length,
 	ASSERT3U(numbufs, <=, *nbpsp);
 
 	for (int i = 0; i < numbufs; i++) {
+		boolean_t have_bp;
+
 		dbuf = dbp[i];
 		db = (dmu_buf_impl_t *)dbuf;
 
-		mutex_enter(&db->db_mtx);
+		error = dmu_read_l0_bp_copy(db, &bp, &have_bp);
+		if (error != 0)
+			goto out;
 
-		if (!list_is_empty(&db->db_dirty_records)) {
-			dbuf_dirty_record_t *dr;
-
-			dr = list_head(&db->db_dirty_records);
-			if (dr->dt.dl.dr_brtwrite) {
-				/*
-				 * This is very special case where we clone a
-				 * block and in the same transaction group we
-				 * read its BP (most likely to clone the clone).
-				 */
-				bp = &dr->dt.dl.dr_overridden_by;
-			} else {
-				/*
-				 * The block was modified in the same
-				 * transaction group.
-				 */
-				mutex_exit(&db->db_mtx);
-				error = SET_ERROR(EAGAIN);
-				goto out;
-			}
-		} else {
-			bp = db->db_blkptr;
-		}
-
-		mutex_exit(&db->db_mtx);
-
-		if (bp == NULL) {
+		if (!have_bp) {
 			/*
 			 * The file size was increased, but the block was never
 			 * written, otherwise we would either have the block
@@ -2635,30 +2655,12 @@ dmu_read_l0_bps(objset_t *os, uint64_t object, uint64_t offset, uint64_t length,
 			BP_ZERO(&bps[i]);
 			continue;
 		}
-		/*
-		 * Make sure we clone only data blocks.
-		 */
-		if (BP_IS_METADATA(bp) && !BP_IS_HOLE(bp)) {
-			error = SET_ERROR(EINVAL);
-			goto out;
-		}
 
-		/*
-		 * If the block was allocated in transaction group that is not
-		 * yet synced, we could clone it, but we couldn't write this
-		 * operation into ZIL, or it may be impossible to replay, since
-		 * the block may appear not yet allocated at that point.
-		 */
-		if (BP_GET_BIRTH(bp) > spa_freeze_txg(os->os_spa)) {
-			error = SET_ERROR(EINVAL);
+		error = dmu_read_l0_bp_check_cloneable(os->os_spa, &bp);
+		if (error != 0)
 			goto out;
-		}
-		if (BP_GET_BIRTH(bp) > spa_last_synced_txg(os->os_spa)) {
-			error = SET_ERROR(EAGAIN);
-			goto out;
-		}
 
-		bps[i] = *bp;
+		bps[i] = bp;
 	}
 
 	*nbpsp = numbufs;
