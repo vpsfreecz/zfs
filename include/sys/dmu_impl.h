@@ -278,6 +278,8 @@ int dmu_read_uio_direct(dnode_t *, zfs_uio_t *, uint64_t, dmu_flags_t);
 int dmu_write_uio_direct(dnode_t *, zfs_uio_t *, uint64_t, dmu_flags_t,
     dmu_tx_t *);
 #endif
+int dmu_free_long_range_replay(objset_t *, uint64_t, uint64_t, uint64_t,
+    zilog_t *);
 
 #ifdef	__cplusplus
 }
