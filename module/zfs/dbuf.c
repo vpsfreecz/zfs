@@ -1540,6 +1540,25 @@ dbuf_read_hole(dmu_buf_impl_t *db, dnode_t *dn, blkptr_t *bp)
  * blocks as raw data (without verifying their MACs) to start, and
  * decrypt / authenticate them when we need to read an encrypted bonus buffer.
  */
+static arc_buf_t *
+dbuf_wait_encrypted_dnode_buf_locked(dmu_buf_impl_t *dndb)
+{
+	arc_buf_t *dnbuf;
+	dbuf_dirty_record_t *dr;
+
+	ASSERT(MUTEX_HELD(&dndb->db_mtx));
+
+	while (1) {
+		dnbuf = dndb->db_buf;
+		if (!arc_is_encrypted(dnbuf))
+			return (NULL);
+		dr = dndb->db_data_pending;
+		if (dr == NULL || dr->dt.dl.dr_data != dnbuf)
+			return (dnbuf);
+		cv_wait(&dndb->db_changed, &dndb->db_mtx);
+	}
+}
+
 static int
 dbuf_read_verify_dnode_crypt(dmu_buf_impl_t *db, dnode_t *dn,
     dmu_flags_t flags)
@@ -1555,10 +1574,6 @@ dbuf_read_verify_dnode_crypt(dmu_buf_impl_t *db, dnode_t *dn,
 	    (dndb = dn->dn_dbuf) == NULL)
 		return (0);
 
-	dnbuf = dndb->db_buf;
-	if (!arc_is_encrypted(dnbuf))
-		return (0);
-
 	mutex_enter(&dndb->db_mtx);
 
 	/*
@@ -1568,16 +1583,11 @@ dbuf_read_verify_dnode_crypt(dmu_buf_impl_t *db, dnode_t *dn,
 	 * encrypted dnode writes by receive should be completed before any
 	 * plain-text reads due to txg wait, but better be safe than sorry.
 	 */
-	while (1) {
-		if (!arc_is_encrypted(dnbuf)) {
-			mutex_exit(&dndb->db_mtx);
-			return (0);
-		}
-		dbuf_dirty_record_t *dr = dndb->db_data_pending;
-		if (dr == NULL || dr->dt.dl.dr_data != dnbuf)
-			break;
-		cv_wait(&dndb->db_changed, &dndb->db_mtx);
-	};
+	dnbuf = dbuf_wait_encrypted_dnode_buf_locked(dndb);
+	if (dnbuf == NULL) {
+		mutex_exit(&dndb->db_mtx);
+		return (0);
+	}
 
 	SET_BOOKMARK(&zb, dmu_objset_id(os),
 	    DMU_META_DNODE_OBJECT, 0, dndb->db_blkid);
