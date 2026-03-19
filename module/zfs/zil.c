@@ -315,11 +315,72 @@ zil_read_log_block(zilog_t *zilog, boolean_t decrypt, const blkptr_t *bp,
 	return (error);
 }
 
+typedef struct zil_replay_write_plan {
+	uint64_t zrwp_payload_len;
+	size_t zrwp_scratch_len;
+} zil_replay_write_plan_t;
+
+static int
+zil_fixed_write_payload_size(const lr_write_t *lr, uint64_t *payload_lenp)
+{
+	const blkptr_t *bp = &lr->lr_blkptr;
+	uint64_t blocksize = BP_GET_LSIZE(bp);
+	uint64_t payload_len = MAX(blocksize, lr->lr_length);
+
+	if (!BP_IS_HOLE(bp) && blocksize == 0)
+		return (SET_ERROR(EINVAL));
+
+	if (blocksize != 0 && lr->lr_length > blocksize)
+		return (SET_ERROR(EINVAL));
+
+	if (payload_len > SPA_MAXBLOCKSIZE)
+		return (SET_ERROR(EINVAL));
+
+	if (payload_lenp != NULL)
+		*payload_lenp = payload_len;
+
+	return (0);
+}
+
+static int
+zil_replay_write_plan(const lr_write_t *lr, uint64_t reclen,
+    zil_replay_write_plan_t *plan)
+{
+	int error;
+
+	error = zil_fixed_write_payload_size(lr, &plan->zrwp_payload_len);
+	if (error != 0)
+		return (error);
+
+	if (reclen > 2ULL * SPA_MAXBLOCKSIZE)
+		return (SET_ERROR(EINVAL));
+
+	plan->zrwp_scratch_len = 2ULL * SPA_MAXBLOCKSIZE - reclen;
+	if (plan->zrwp_payload_len > plan->zrwp_scratch_len)
+		return (SET_ERROR(EINVAL));
+
+	return (0);
+}
+
+static int
+zil_replay_write_copy_valid(arc_buf_t *abuf,
+    const zil_replay_write_plan_t *plan)
+{
+	size_t copy_len = arc_buf_size(abuf);
+
+	if (copy_len != plan->zrwp_payload_len ||
+	    copy_len > plan->zrwp_scratch_len)
+		return (SET_ERROR(EINVAL));
+
+	return (0);
+}
+
 /*
  * Read a TX_WRITE log data block.
  */
 static int
-zil_read_log_data(zilog_t *zilog, const lr_write_t *lr, void *wbuf)
+zil_read_log_data(zilog_t *zilog, const lr_write_t *lr, void *wbuf,
+    const zil_replay_write_plan_t *plan)
 {
 	zio_flag_t zio_flags = ZIO_FLAG_CANFAIL;
 	const blkptr_t *bp = &lr->lr_blkptr;
@@ -328,9 +389,12 @@ zil_read_log_data(zilog_t *zilog, const lr_write_t *lr, void *wbuf)
 	zbookmark_phys_t zb;
 	int error;
 
+	if (wbuf != NULL && plan == NULL)
+		return (SET_ERROR(EINVAL));
+
 	if (BP_IS_HOLE(bp)) {
 		if (wbuf != NULL)
-			memset(wbuf, 0, MAX(BP_GET_LSIZE(bp), lr->lr_length));
+			memset(wbuf, 0, plan->zrwp_payload_len);
 		return (0);
 	}
 
@@ -353,8 +417,11 @@ zil_read_log_data(zilog_t *zilog, const lr_write_t *lr, void *wbuf)
 	    ZIO_PRIORITY_SYNC_READ, zio_flags, &aflags, &zb);
 
 	if (error == 0) {
-		if (wbuf != NULL)
-			memcpy(wbuf, abuf->b_data, arc_buf_size(abuf));
+		if (wbuf != NULL) {
+			error = zil_replay_write_copy_valid(abuf, plan);
+			if (error == 0)
+				memcpy(wbuf, abuf->b_data, arc_buf_size(abuf));
+		}
 		arc_buf_destroy(abuf, &abuf);
 	}
 
@@ -647,12 +714,55 @@ zil_claim_write(zilog_t *zilog, const lr_t *lrc, void *tx, uint64_t first_txg)
 	 * correct to declare this the end of the log.
 	 */
 	if (BP_GET_LOGICAL_BIRTH(&lr->lr_blkptr) >= first_txg) {
-		error = zil_read_log_data(zilog, lr, NULL);
+		if (lrc->lrc_reclen == sizeof (*lr)) {
+			error = zil_fixed_write_payload_size(lr, NULL);
+			if (error != 0)
+				return (error);
+		}
+
+		error = zil_read_log_data(zilog, lr, NULL, NULL);
 		if (error != 0)
 			return (error);
 	}
 
 	return (zil_claim_log_block(zilog, &lr->lr_blkptr, tx, first_txg));
+}
+
+
+/*
+ * Claim/free walk encrypted ZIL blocks in raw form, so only the common lr_t,
+ * lr_nbps, and the BP tail are directly readable there.  The clone-range
+ * payload fields between lr_t and lr_nbps (including lr_length and lr_blksz)
+ * are encrypted and must not be consulted from those raw paths.
+ */
+static boolean_t
+zil_clone_range_record_valid(const zilog_t *zilog, const lr_t *lrc)
+{
+	const lr_clone_range_t *lr = (const lr_clone_range_t *)lrc;
+	size_t len;
+	uint64_t expected_nbps;
+
+	if (lrc->lrc_reclen < sizeof (*lr))
+		return (B_FALSE);
+
+	len = lrc->lrc_reclen - offsetof(lr_clone_range_t, lr_bps);
+	if (lr->lr_nbps == 0 ||
+	    lr->lr_nbps > len / sizeof (lr->lr_bps[0]))
+		return (B_FALSE);
+
+	/*
+	 * Encrypted ZIL clone records only authenticate lr_nbps and lr_bps.
+	 * The claim/free paths parse them without decryption, so checks
+	 * involving lr_length/lr_blksz belong only to decrypted replay.
+	 */
+	if (zilog->zl_os->os_encrypted)
+		return (B_TRUE);
+
+	if (lr->lr_length == 0 || lr->lr_blksz == 0)
+		return (B_FALSE);
+
+	expected_nbps = ((lr->lr_length - 1) / lr->lr_blksz) + 1;
+	return (lr->lr_nbps == expected_nbps);
 }
 
 static int
@@ -667,6 +777,9 @@ zil_claim_clone_range(zilog_t *zilog, const lr_t *lrc, void *tx,
 	ASSERT3U(lrc->lrc_reclen, >=, sizeof (*lr));
 	ASSERT3U(lrc->lrc_reclen, >=, offsetof(lr_clone_range_t,
 	    lr_bps[lr->lr_nbps]));
+
+	if (!zil_clone_range_record_valid(zilog, lrc))
+		return (SET_ERROR(EINVAL));
 
 	if (tx == NULL) {
 		return (0);
@@ -767,6 +880,9 @@ zil_free_clone_range(zilog_t *zilog, const lr_t *lrc, void *tx)
 	ASSERT3U(lrc->lrc_reclen, >=, sizeof (*lr));
 	ASSERT3U(lrc->lrc_reclen, >=, offsetof(lr_clone_range_t,
 	    lr_bps[lr->lr_nbps]));
+
+	if (!zil_clone_range_record_valid(zilog, lrc))
+		return (SET_ERROR(EINVAL));
 
 	if (tx == NULL) {
 		return (0);
@@ -4610,6 +4726,7 @@ zil_replay_log_record(zilog_t *zilog, const lr_t *lr, void *zra,
 	const zil_header_t *zh = zilog->zl_header;
 	uint64_t reclen = lr->lrc_reclen;
 	uint64_t txtype = lr->lrc_txtype;
+	zil_replay_write_plan_t write_plan;
 	int error = 0;
 
 	zilog->zl_replaying_seq = lr->lrc_seq;
@@ -4646,8 +4763,13 @@ zil_replay_log_record(zilog_t *zilog, const lr_t *lr, void *zra,
 	 * If this is a TX_WRITE with a blkptr, suck in the data.
 	 */
 	if (txtype == TX_WRITE && reclen == sizeof (lr_write_t)) {
+		error = zil_replay_write_plan((lr_write_t *)lr, reclen,
+		    &write_plan);
+		if (error != 0)
+			return (zil_replay_error(zilog, lr, error));
+
 		error = zil_read_log_data(zilog, (lr_write_t *)lr,
-		    zr->zr_lr + reclen);
+		    zr->zr_lr + reclen, &write_plan);
 		if (error != 0)
 			return (zil_replay_error(zilog, lr, error));
 	}
