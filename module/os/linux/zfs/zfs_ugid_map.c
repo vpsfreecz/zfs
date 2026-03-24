@@ -16,15 +16,23 @@ zfs_create_ugid_map(objset_t *os, zfs_prop_t prop)
 	char source[ZFS_MAX_DATASET_NAME_LEN] =
 	    "Internal error - setpoint not determined";
 	int pos = 0, i = 0, error;
+	boolean_t config_held = dsl_pool_config_held(dmu_objset_pool(os));
 	struct zfs_ugid_map *ugid_map = NULL;
 	struct zfs_ugid_map_entry *entry;
 
-	dsl_pool_config_enter(dmu_objset_pool(os), FTAG);
+	/*
+	 * dsl_sync_task() callbacks run with dp_config_rwlock held as writer.
+	 * Re-entering as reader from this context can block in rrwlock and
+	 * deadlock txg_sync (e.g. userquota property reads).
+	 */
+	if (!config_held)
+		dsl_pool_config_enter(dmu_objset_pool(os), FTAG);
 
 	error = dsl_prop_get_ds(os->os_dsl_dataset, zfs_prop_to_name(prop), 1,
 	    ZAP_MAXVALUELEN, value, source);
 
-	dsl_pool_config_exit(dmu_objset_pool(os), FTAG);
+	if (!config_held)
+		dsl_pool_config_exit(dmu_objset_pool(os), FTAG);
 
 	if (error != 0)
 		goto out;
