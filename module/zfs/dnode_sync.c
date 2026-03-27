@@ -35,6 +35,7 @@
 #include <sys/dmu_objset.h>
 #include <sys/dmu_recv.h>
 #include <sys/dsl_dataset.h>
+#include <sys/brt.h>
 #include <sys/spa.h>
 #include <sys/range_tree.h>
 #include <sys/zfeature.h>
@@ -133,12 +134,19 @@ dnode_increase_indirection(dnode_t *dn, dmu_tx_t *tx)
 	rw_exit(&dn->dn_struct_rwlock);
 }
 
-static void
-free_blocks(dnode_t *dn, blkptr_t *bp, int num, dmu_tx_t *tx)
+/*
+ * Syncing context owns these BPs until it starts their writes. Inspecting
+ * them does not require a dbuf lock, but publishing holes does. Do not hold
+ * dbuf locks here: deadlist updates can look up another dbuf and acquire a
+ * hash mutex, which dbuf_find() holds while waiting for db_mtx.
+ */
+static uint64_t
+free_blocks_account(dnode_t *dn, const blkptr_t *bp, int num, dmu_tx_t *tx)
 {
 	dsl_dataset_t *ds = dn->dn_objset->os_dsl_dataset;
 	uint64_t bytesfreed = 0;
 
+	ASSERT(dmu_tx_is_syncing(tx));
 	dprintf("ds=%p obj=%llx num=%d\n", ds, (u_longlong_t)dn->dn_object,
 	    num);
 
@@ -148,6 +156,16 @@ free_blocks(dnode_t *dn, blkptr_t *bp, int num, dmu_tx_t *tx)
 
 		bytesfreed += dsl_dataset_block_kill(ds, bp, tx, B_FALSE);
 		ASSERT3U(bytesfreed, <=, DN_USED_BYTES(dn->dn_phys));
+	}
+	return (bytesfreed);
+}
+
+static void
+free_blocks_set_holes(dnode_t *dn, blkptr_t *bp, int num, dmu_tx_t *tx)
+{
+	for (int i = 0; i < num; i++, bp++) {
+		if (BP_IS_HOLE(bp))
+			continue;
 
 		/*
 		 * Save some useful information on the holes being
@@ -171,6 +189,14 @@ free_blocks(dnode_t *dn, blkptr_t *bp, int num, dmu_tx_t *tx)
 			BP_SET_BIRTH(bp, dmu_tx_get_txg(tx), 0);
 		}
 	}
+}
+
+static void
+free_blocks(dnode_t *dn, blkptr_t *bp, int num, dmu_tx_t *tx)
+{
+	uint64_t bytesfreed = free_blocks_account(dn, bp, num, tx);
+
+	free_blocks_set_holes(dn, bp, num, tx);
 	dnode_diduse_space(dn, -bytesfreed);
 }
 
@@ -274,15 +300,99 @@ free_verify(dmu_buf_impl_t *db, uint64_t start, uint64_t end, dmu_tx_t *tx)
  * being freed.  Therefore, we free the indirect blocks immediately in that
  * case.
  */
+typedef struct free_children_range {
+	uint64_t fcr_start;
+	uint64_t fcr_end;
+	uint64_t fcr_first;
+	uint64_t fcr_count;
+	uint64_t fcr_nslots;
+} free_children_range_t;
+
+static void
+free_children_range_init(dmu_buf_impl_t *db, unsigned int epbs, uint64_t blkid,
+    uint64_t nblks, free_children_range_t *range)
+{
+	uint64_t dbstart, dbend;
+	unsigned int shift = (db->db_level - 1) * epbs;
+
+	range->fcr_nslots = db->db.db_size >> SPA_BLKPTRSHIFT;
+	dbstart = db->db_blkid << epbs;
+	range->fcr_start = blkid >> shift;
+	if (dbstart < range->fcr_start) {
+		range->fcr_first = range->fcr_start - dbstart;
+	} else {
+		range->fcr_start = dbstart;
+		range->fcr_first = 0;
+	}
+	range->fcr_end = (blkid + nblks - 1) >> shift;
+	dbend = dbstart + range->fcr_nslots - 1;
+	if (dbend <= range->fcr_end)
+		range->fcr_end = dbend;
+
+	ASSERT3U(range->fcr_start, <=, range->fcr_end);
+	range->fcr_count = range->fcr_end - range->fcr_start + 1;
+	ASSERT3U(range->fcr_first + range->fcr_count, <=, range->fcr_nslots);
+}
+
+static void
+free_children_snapshot_child_ids(dmu_buf_impl_t *db,
+    const free_children_range_t *range, uint64_t *ids, uint64_t *nids)
+{
+	blkptr_t *bp;
+	uint64_t n = 0;
+
+	mutex_enter(&db->db_mtx);
+	rw_enter(&db->db_rwlock, RW_READER);
+	VERIFY3P(db->db.db_data, !=, NULL);
+	bp = &((blkptr_t *)db->db.db_data)[range->fcr_first];
+	for (uint64_t id = range->fcr_start; id <= range->fcr_end; id++, bp++) {
+		if (!BP_IS_HOLE(bp))
+			ids[n++] = id;
+	}
+	rw_exit(&db->db_rwlock);
+	mutex_exit(&db->db_mtx);
+
+	*nids = n;
+}
+
+static void
+free_children_assert_holes_and_zero(dmu_buf_impl_t *db)
+{
+	blkptr_t *bp;
+	uint64_t nslots = db->db.db_size >> SPA_BLKPTRSHIFT;
+
+	mutex_enter(&db->db_mtx);
+	rw_enter(&db->db_rwlock, RW_WRITER);
+	VERIFY3P(db->db.db_data, !=, NULL);
+	bp = db->db.db_data;
+	for (uint64_t i = 0; i < nslots; i++)
+		ASSERT(BP_IS_HOLE(&bp[i]));
+	memset(db->db.db_data, 0, db->db.db_size);
+	rw_exit(&db->db_rwlock);
+	mutex_exit(&db->db_mtx);
+}
+
+static void
+free_children_free_indirect(dnode_t *dn, dmu_buf_impl_t *db, dmu_tx_t *tx)
+{
+	uint64_t bytesfreed = free_blocks_account(dn, db->db_blkptr, 1, tx);
+	db_lock_type_t dblt = dmu_buf_lock_parent(db, RW_WRITER, FTAG);
+
+	free_blocks_set_holes(dn, db->db_blkptr, 1, tx);
+	dmu_buf_unlock_parent(db, dblt, FTAG);
+	dnode_diduse_space(dn, -bytesfreed);
+}
+
 static void
 free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
     boolean_t free_indirects, dmu_tx_t *tx)
 {
 	dnode_t *dn;
-	blkptr_t *bp;
 	dmu_buf_impl_t *subdb;
-	uint64_t start, end, dbstart, dbend;
-	unsigned int epbs, shift, i;
+	free_children_range_t range;
+	unsigned int epbs;
+	uint64_t *child_ids = NULL;
+	uint64_t nchild_ids = 0;
 
 	/*
 	 * There is a small possibility that this block will not be cached:
@@ -314,65 +424,53 @@ free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
 	dmu_buf_unlock_parent(db, dblt, FTAG);
 
 	dbuf_release_bp(db);
-	/*
-	 * XXX db_mtx isn't held, but should be.  But locking it here causes a
-	 * recurse-on-non-recursive mutex panic many levels downstack:
-	 * free_verify->dbuf_hold_impl->dbuf_findbp->dbuf_hold_impl->dbuf_find
-	 */
-	/* mutex_enter(&db->db_mtx); */
-	bp = db->db.db_data;
 
 	DB_DNODE_ENTER(db);
 	dn = DB_DNODE(db);
 	epbs = dn->dn_phys->dn_indblkshift - SPA_BLKPTRSHIFT;
 	ASSERT3U(epbs, <, 31);
-	shift = (db->db_level - 1) * epbs;
-	dbstart = db->db_blkid << epbs;
-	start = blkid >> shift;
-	if (dbstart < start) {
-		bp += start - dbstart;
-	} else {
-		start = dbstart;
-	}
-	dbend = ((db->db_blkid + 1) << epbs) - 1;
-	end = (blkid + nblks - 1) >> shift;
-	if (dbend <= end)
-		end = dbend;
-
-	ASSERT3U(start, <=, end);
+	free_children_range_init(db, epbs, blkid, nblks, &range);
 
 	if (db->db_level == 1) {
-		FREE_VERIFY(db, start, end, tx);
+		blkptr_t *bp;
+		uint64_t bytesfreed;
+
+		FREE_VERIFY(db, range.fcr_start, range.fcr_end, tx);
+		/* The hold and syncing ownership keep this indirect cached. */
+		VERIFY3P(db->db.db_data, !=, NULL);
+		bp = &((blkptr_t *)db->db.db_data)[range.fcr_first];
+		bytesfreed = free_blocks_account(dn, bp, range.fcr_count, tx);
+
+		mutex_enter(&db->db_mtx);
 		rw_enter(&db->db_rwlock, RW_WRITER);
-		free_blocks(dn, bp, end - start + 1, tx);
+		free_blocks_set_holes(dn, bp, range.fcr_count, tx);
 		rw_exit(&db->db_rwlock);
+		mutex_exit(&db->db_mtx);
+		dnode_diduse_space(dn, -bytesfreed);
 	} else {
-		for (uint64_t id = start; id <= end; id++, bp++) {
-			/*
-			 * XXX should really have db_rwlock here.  But we can't
-			 * hold it when we recurse into free_children.
-			 */
-			if (BP_IS_HOLE(bp))
-				continue;
+		child_ids = kmem_alloc(range.fcr_count * sizeof (*child_ids),
+		    KM_SLEEP);
+		free_children_snapshot_child_ids(db, &range, child_ids,
+		    &nchild_ids);
+		for (uint64_t i = 0; i < nchild_ids; i++) {
+			uint64_t id = child_ids[i];
+
 			rw_enter(&dn->dn_struct_rwlock, RW_READER);
 			VERIFY0(dbuf_hold_impl(dn, db->db_level - 1,
 			    id, TRUE, FALSE, FTAG, &subdb));
 			rw_exit(&dn->dn_struct_rwlock);
-			ASSERT3P(bp, ==, subdb->db_blkptr);
 
 			free_children(subdb, blkid, nblks, free_indirects, tx);
 			dbuf_rele(subdb, FTAG);
 		}
+		kmem_free(child_ids, range.fcr_count * sizeof (*child_ids));
 	}
 
-	if (free_indirects) {
-		rw_enter(&db->db_rwlock, RW_WRITER);
-		for (i = 0, bp = db->db.db_data; i < 1 << epbs; i++, bp++)
-			ASSERT(BP_IS_HOLE(bp));
-		memset(db->db.db_data, 0, db->db.db_size);
-		free_blocks(dn, db->db_blkptr, 1, tx);
-		rw_exit(&db->db_rwlock);
-	}
+	if (free_indirects)
+		free_children_assert_holes_and_zero(db);
+
+	if (free_indirects)
+		free_children_free_indirect(dn, db, tx);
 
 	DB_DNODE_EXIT(db);
 	arc_buf_freeze(db->db_buf);
@@ -537,35 +635,114 @@ dnode_evict_bonus(dnode_t *dn)
 	rw_exit(&dn->dn_struct_rwlock);
 }
 
+static void dnode_undirty_dbufs(list_t *list, dmu_tx_t *tx);
+
 static void
-dnode_undirty_dbufs(list_t *list)
+dnode_undirty_locked_dirty_records(list_t *shared, kmutex_t *list_mtx,
+    dmu_tx_t *tx)
+{
+	list_t private_records;
+
+	list_create(&private_records, sizeof (dbuf_dirty_record_t),
+	    offsetof(dbuf_dirty_record_t, dr_dirty_node));
+	mutex_enter(list_mtx);
+	list_move_tail(&private_records, shared);
+	mutex_exit(list_mtx);
+
+	dnode_undirty_dbufs(&private_records, tx);
+	ASSERT(list_is_empty(&private_records));
+	list_destroy(&private_records);
+}
+
+static void
+dnode_undirty_lightweight_record(list_t *list, dbuf_dirty_record_t *dr)
+{
+	dnode_t *dn = dr->dr_dnode;
+
+	ASSERT3P(dr->dr_dbuf, ==, NULL);
+	list_remove(list, dr);
+	dsl_pool_undirty_space(dmu_objset_pool(dn->dn_objset),
+	    dr->dr_accounted, dr->dr_txg);
+	if (dr->dt.dll.dr_abd != NULL)
+		abd_free(dr->dt.dll.dr_abd);
+	kmem_free(dr, sizeof (*dr));
+}
+
+static void
+dnode_undirty_dbuf_record(list_t *list, dbuf_dirty_record_t *dr,
+    dmu_tx_t *tx)
+{
+	dmu_buf_impl_t *db = dr->dr_dbuf;
+	uint64_t txg = dr->dr_txg;
+	boolean_t brtwrite;
+
+	ASSERT3P(db, !=, NULL);
+	ASSERT(dmu_tx_is_syncing(tx));
+	if (db->db_level != 0) {
+		dnode_undirty_locked_dirty_records(&dr->dt.di.dr_children,
+		    &dr->dt.di.dr_mtx, tx);
+	}
+
+	mutex_enter(&db->db_mtx);
+	/*
+	 * dnode_sync_free() detaches dirty-record trees to private lists, so it
+	 * can't call dbuf_undirty() directly here. Mirror dbuf_undirty()'s
+	 * level-0 teardown semantics instead: wait out in-flight override-write
+	 * callbacks, cancel pending same-TXG clone references, and only tear
+	 * down override state for records that actually own an override BP.
+	 */
+	while (db->db_level == 0 &&
+	    dr->dt.dl.dr_override_state == DR_IN_DMU_SYNC) {
+		cv_wait(&db->db_changed, &db->db_mtx);
+	}
+
+	brtwrite = db->db_level == 0 && dr->dt.dl.dr_brtwrite;
+	if (brtwrite) {
+		blkptr_t *bp = &dr->dt.dl.dr_overridden_by;
+
+		ASSERT3B(dr->dt.dl.dr_diowrite, ==, B_FALSE);
+		if (!BP_IS_HOLE(bp) && !BP_IS_EMBEDDED(bp)) {
+			brt_pending_remove(dmu_objset_spa(db->db_objset),
+			    bp, tx);
+		}
+	}
+
+	list_remove(list, dr);
+	ASSERT(list_head(&db->db_dirty_records) == dr);
+	list_remove_head(&db->db_dirty_records);
+	ASSERT(list_is_empty(&db->db_dirty_records));
+	db->db_dirtycnt -= 1;
+	if (db->db_level == 0) {
+		if (db->db_blkid == DMU_BONUS_BLKID ||
+		    (db->db_state != DB_NOFILL && !brtwrite)) {
+			ASSERT(db->db_blkid == DMU_BONUS_BLKID ||
+			    dr->dt.dl.dr_data == db->db_buf);
+			dbuf_unoverride(dr);
+			if (db->db_blkid != DMU_BONUS_BLKID &&
+			    dr->dt.dl.dr_data != db->db_buf) {
+				ASSERT3P(db->db_buf, !=, NULL);
+				ASSERT3P(dr->dt.dl.dr_data, !=, NULL);
+				arc_buf_destroy(dr->dt.dl.dr_data, db);
+			}
+		}
+	} else {
+		mutex_destroy(&dr->dt.di.dr_mtx);
+		list_destroy(&dr->dt.di.dr_children);
+	}
+	kmem_cache_free(dbuf_dirty_kmem_cache, dr);
+	dbuf_rele_and_unlock(db, (void *)(uintptr_t)txg, B_FALSE);
+}
+
+static void
+dnode_undirty_dbufs(list_t *list, dmu_tx_t *tx)
 {
 	dbuf_dirty_record_t *dr;
 
 	while ((dr = list_head(list))) {
-		dmu_buf_impl_t *db = dr->dr_dbuf;
-		uint64_t txg = dr->dr_txg;
-
-		if (db->db_level != 0)
-			dnode_undirty_dbufs(&dr->dt.di.dr_children);
-
-		mutex_enter(&db->db_mtx);
-		/* XXX - use dbuf_undirty()? */
-		list_remove(list, dr);
-		ASSERT(list_head(&db->db_dirty_records) == dr);
-		list_remove_head(&db->db_dirty_records);
-		ASSERT(list_is_empty(&db->db_dirty_records));
-		db->db_dirtycnt -= 1;
-		if (db->db_level == 0) {
-			ASSERT(db->db_blkid == DMU_BONUS_BLKID ||
-			    dr->dt.dl.dr_data == db->db_buf);
-			dbuf_unoverride(dr);
-		} else {
-			mutex_destroy(&dr->dt.di.dr_mtx);
-			list_destroy(&dr->dt.di.dr_children);
-		}
-		kmem_cache_free(dbuf_dirty_kmem_cache, dr);
-		dbuf_rele_and_unlock(db, (void *)(uintptr_t)txg, B_FALSE);
+		if (dr->dr_dbuf == NULL)
+			dnode_undirty_lightweight_record(list, dr);
+		else
+			dnode_undirty_dbuf_record(list, dr, tx);
 	}
 }
 
@@ -583,7 +760,8 @@ dnode_sync_free(dnode_t *dn, dmu_tx_t *tx)
 	ASSERT0(DN_USED_BYTES(dn->dn_phys));
 	ASSERT(BP_IS_HOLE(dn->dn_phys->dn_blkptr));
 
-	dnode_undirty_dbufs(&dn->dn_dirty_records[txgoff]);
+	dnode_undirty_locked_dirty_records(&dn->dn_dirty_records[txgoff],
+	    &dn->dn_mtx, tx);
 	dnode_evict_dbufs(dn);
 
 	/*
