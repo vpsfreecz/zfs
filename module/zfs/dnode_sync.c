@@ -274,106 +274,76 @@ free_verify(dmu_buf_impl_t *db, uint64_t start, uint64_t end, dmu_tx_t *tx)
  * being freed.  Therefore, we free the indirect blocks immediately in that
  * case.
  */
-typedef struct free_children_view {
-	uint64_t fcv_dbstart;
-	uint64_t fcv_start;
-	uint64_t fcv_end;
-	uint64_t fcv_first;
-	uint64_t fcv_count;
-	uint64_t fcv_nslots;
-	blkptr_t *fcv_bps;
-} free_children_view_t;
+typedef struct free_children_range {
+	uint64_t fcr_start;
+	uint64_t fcr_end;
+	uint64_t fcr_first;
+	uint64_t fcr_count;
+	uint64_t fcr_nslots;
+} free_children_range_t;
 
 static void
-free_children_view_init(dmu_buf_impl_t *db, unsigned int epbs, uint64_t blkid,
-    uint64_t nblks, free_children_view_t *view)
+free_children_range_init(dmu_buf_impl_t *db, unsigned int epbs, uint64_t blkid,
+    uint64_t nblks, free_children_range_t *range)
 {
-	size_t size;
-	uint64_t dbend;
+	uint64_t dbstart, dbend;
 	unsigned int shift = (db->db_level - 1) * epbs;
 
-	view->fcv_nslots = db->db.db_size >> SPA_BLKPTRSHIFT;
-	view->fcv_dbstart = db->db_blkid << epbs;
-	view->fcv_start = blkid >> shift;
-	if (view->fcv_dbstart < view->fcv_start) {
-		view->fcv_first = view->fcv_start - view->fcv_dbstart;
+	range->fcr_nslots = db->db.db_size >> SPA_BLKPTRSHIFT;
+	dbstart = db->db_blkid << epbs;
+	range->fcr_start = blkid >> shift;
+	if (dbstart < range->fcr_start) {
+		range->fcr_first = range->fcr_start - dbstart;
 	} else {
-		view->fcv_start = view->fcv_dbstart;
-		view->fcv_first = 0;
+		range->fcr_start = dbstart;
+		range->fcr_first = 0;
 	}
-	view->fcv_end = (blkid + nblks - 1) >> shift;
-	dbend = view->fcv_dbstart + view->fcv_nslots - 1;
-	if (dbend <= view->fcv_end)
-		view->fcv_end = dbend;
+	range->fcr_end = (blkid + nblks - 1) >> shift;
+	dbend = dbstart + range->fcr_nslots - 1;
+	if (dbend <= range->fcr_end)
+		range->fcr_end = dbend;
 
-	ASSERT3U(view->fcv_start, <=, view->fcv_end);
-	view->fcv_count = view->fcv_end - view->fcv_start + 1;
-	ASSERT3U(view->fcv_first + view->fcv_count, <=, view->fcv_nslots);
+	ASSERT3U(range->fcr_start, <=, range->fcr_end);
+	range->fcr_count = range->fcr_end - range->fcr_start + 1;
+	ASSERT3U(range->fcr_first + range->fcr_count, <=, range->fcr_nslots);
+}
 
-	size = view->fcv_nslots * sizeof (*view->fcv_bps);
-	view->fcv_bps = kmem_alloc(size, KM_SLEEP);
+static void
+free_children_snapshot_child_ids(dmu_buf_impl_t *db,
+    const free_children_range_t *range, uint64_t *ids, uint64_t *nids)
+{
+	blkptr_t *bp;
+	uint64_t n = 0;
 
 	mutex_enter(&db->db_mtx);
 	rw_enter(&db->db_rwlock, RW_READER);
 	VERIFY3P(db->db.db_data, !=, NULL);
-	memcpy(view->fcv_bps, db->db.db_data, size);
-	rw_exit(&db->db_rwlock);
-	mutex_exit(&db->db_mtx);
-}
-
-static blkptr_t *
-free_children_view_bp(const free_children_view_t *view, uint64_t id)
-{
-	ASSERT3U(id, >=, view->fcv_dbstart);
-	ASSERT3U(id, <, view->fcv_dbstart + view->fcv_nslots);
-
-	return (&view->fcv_bps[id - view->fcv_dbstart]);
-}
-
-static void
-free_children_view_writeback_range(dmu_buf_impl_t *db,
-    const free_children_view_t *view)
-{
-	size_t size = view->fcv_count * sizeof (*view->fcv_bps);
-
-	mutex_enter(&db->db_mtx);
-	rw_enter(&db->db_rwlock, RW_WRITER);
-	VERIFY3P(db->db.db_data, !=, NULL);
-	memcpy(&((blkptr_t *)db->db.db_data)[view->fcv_first],
-	    &view->fcv_bps[view->fcv_first], size);
-	rw_exit(&db->db_rwlock);
-	mutex_exit(&db->db_mtx);
-}
-
-static void
-free_children_view_writeback_all(dmu_buf_impl_t *db,
-    const free_children_view_t *view)
-{
-	size_t size = view->fcv_nslots * sizeof (*view->fcv_bps);
-
-	mutex_enter(&db->db_mtx);
-	rw_enter(&db->db_rwlock, RW_WRITER);
-	VERIFY3P(db->db.db_data, !=, NULL);
-	memcpy(db->db.db_data, view->fcv_bps, size);
-	rw_exit(&db->db_rwlock);
-	mutex_exit(&db->db_mtx);
-}
-
-static boolean_t
-free_children_view_all_holes(const free_children_view_t *view)
-{
-	for (uint64_t i = 0; i < view->fcv_nslots; i++) {
-		if (!BP_IS_HOLE(&view->fcv_bps[i]))
-			return (B_FALSE);
+	bp = &((blkptr_t *)db->db.db_data)[range->fcr_first];
+	for (uint64_t id = range->fcr_start; id <= range->fcr_end; id++, bp++) {
+		if (!BP_IS_HOLE(bp))
+			ids[n++] = id;
 	}
+	rw_exit(&db->db_rwlock);
+	mutex_exit(&db->db_mtx);
 
-	return (B_TRUE);
+	*nids = n;
 }
 
 static void
-free_children_view_fini(free_children_view_t *view)
+free_children_assert_holes_and_zero(dmu_buf_impl_t *db)
 {
-	kmem_free(view->fcv_bps, view->fcv_nslots * sizeof (*view->fcv_bps));
+	blkptr_t *bp;
+	uint64_t nslots = db->db.db_size >> SPA_BLKPTRSHIFT;
+
+	mutex_enter(&db->db_mtx);
+	rw_enter(&db->db_rwlock, RW_WRITER);
+	VERIFY3P(db->db.db_data, !=, NULL);
+	bp = db->db.db_data;
+	for (uint64_t i = 0; i < nslots; i++)
+		ASSERT(BP_IS_HOLE(&bp[i]));
+	memset(db->db.db_data, 0, db->db.db_size);
+	rw_exit(&db->db_rwlock);
+	mutex_exit(&db->db_mtx);
 }
 
 static void
@@ -391,10 +361,10 @@ free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
 {
 	dnode_t *dn;
 	dmu_buf_impl_t *subdb;
-	free_children_view_t view;
-	boolean_t writeback_range = B_FALSE;
-	boolean_t writeback_all = B_FALSE;
+	free_children_range_t range;
 	unsigned int epbs;
+	uint64_t *child_ids = NULL;
+	uint64_t nchild_ids = 0;
 
 	/*
 	 * There is a small possibility that this block will not be cached:
@@ -431,44 +401,40 @@ free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
 	dn = DB_DNODE(db);
 	epbs = dn->dn_phys->dn_indblkshift - SPA_BLKPTRSHIFT;
 	ASSERT3U(epbs, <, 31);
-	free_children_view_init(db, epbs, blkid, nblks, &view);
+	free_children_range_init(db, epbs, blkid, nblks, &range);
 
 	if (db->db_level == 1) {
-		FREE_VERIFY(db, view.fcv_start, view.fcv_end, tx);
-		free_blocks(dn, &view.fcv_bps[view.fcv_first],
-		    view.fcv_count, tx);
-		writeback_range = !free_indirects;
-	} else {
-		for (uint64_t id = view.fcv_start; id <= view.fcv_end; id++) {
-			blkptr_t *bp = free_children_view_bp(&view, id);
+		blkptr_t *bp;
 
-			if (BP_IS_HOLE(bp))
-				continue;
+		FREE_VERIFY(db, range.fcr_start, range.fcr_end, tx);
+		mutex_enter(&db->db_mtx);
+		rw_enter(&db->db_rwlock, RW_WRITER);
+		VERIFY3P(db->db.db_data, !=, NULL);
+		bp = &((blkptr_t *)db->db.db_data)[range.fcr_first];
+		free_blocks(dn, bp, range.fcr_count, tx);
+		rw_exit(&db->db_rwlock);
+		mutex_exit(&db->db_mtx);
+	} else {
+		child_ids = kmem_alloc(range.fcr_count * sizeof (*child_ids),
+		    KM_SLEEP);
+		free_children_snapshot_child_ids(db, &range, child_ids,
+		    &nchild_ids);
+		for (uint64_t i = 0; i < nchild_ids; i++) {
+			uint64_t id = child_ids[i];
+
 			rw_enter(&dn->dn_struct_rwlock, RW_READER);
 			VERIFY0(dbuf_hold_impl(dn, db->db_level - 1,
 			    id, TRUE, FALSE, FTAG, &subdb));
 			rw_exit(&dn->dn_struct_rwlock);
-			ASSERT(BP_EQUAL(bp, subdb->db_blkptr));
 
 			free_children(subdb, blkid, nblks, free_indirects, tx);
-			if (free_indirects)
-				*bp = *subdb->db_blkptr;
 			dbuf_rele(subdb, FTAG);
 		}
+		kmem_free(child_ids, range.fcr_count * sizeof (*child_ids));
 	}
 
-	if (free_indirects) {
-		ASSERT(free_children_view_all_holes(&view));
-		memset(view.fcv_bps, 0,
-		    view.fcv_nslots * sizeof (*view.fcv_bps));
-		writeback_all = B_TRUE;
-	}
-
-	if (writeback_all)
-		free_children_view_writeback_all(db, &view);
-	else if (writeback_range)
-		free_children_view_writeback_range(db, &view);
-	free_children_view_fini(&view);
+	if (free_indirects)
+		free_children_assert_holes_and_zero(db);
 
 	if (free_indirects)
 		free_children_free_indirect(dn, db, tx);
