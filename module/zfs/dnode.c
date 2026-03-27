@@ -2273,6 +2273,45 @@ dnode_set_dirtyctx(dnode_t *dn, dmu_tx_t *tx, const void *tag)
 	}
 }
 
+static boolean_t
+dnode_partial_zero_has_dirty_records_locked(dmu_buf_impl_t *db)
+{
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+
+	return (!list_is_empty(&db->db_dirty_records));
+}
+
+static boolean_t
+dnode_partial_zero_has_backing_locked(dmu_buf_impl_t *db)
+{
+	blkptr_t *bp = NULL;
+	db_lock_type_t dblt;
+	boolean_t has_backing = B_FALSE;
+
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+
+	dblt = dmu_buf_lock_parent(db, RW_READER, FTAG);
+	if (dmu_buf_get_bp_from_dbuf(db, &bp) == 0 &&
+	    bp != NULL && !BP_IS_HOLE(bp))
+		has_backing = B_TRUE;
+	dmu_buf_unlock_parent(db, dblt, FTAG);
+
+	return (has_backing);
+}
+
+static boolean_t
+dnode_partial_zero_should_dirty(dmu_buf_impl_t *db)
+{
+	boolean_t dirty;
+
+	mutex_enter(&db->db_mtx);
+	dirty = dnode_partial_zero_has_dirty_records_locked(db) ||
+	    dnode_partial_zero_has_backing_locked(db);
+	mutex_exit(&db->db_mtx);
+
+	return (dirty);
+}
+
 static void
 dnode_partial_zero(dnode_t *dn, uint64_t off, uint64_t blkoff, uint64_t len,
     dmu_tx_t *tx)
@@ -2285,15 +2324,7 @@ dnode_partial_zero(dnode_t *dn, uint64_t off, uint64_t blkoff, uint64_t len,
 	    FTAG, &db);
 	rw_exit(&dn->dn_struct_rwlock);
 	if (res == 0) {
-		db_lock_type_t dblt;
-		boolean_t dirty;
-
-		dblt = dmu_buf_lock_parent(db, RW_READER, FTAG);
-		/* don't dirty if not on disk and not dirty */
-		dirty = !list_is_empty(&db->db_dirty_records) ||
-		    (db->db_blkptr && !BP_IS_HOLE(db->db_blkptr));
-		dmu_buf_unlock_parent(db, dblt, FTAG);
-		if (dirty) {
+		if (dnode_partial_zero_should_dirty(db)) {
 			caddr_t data;
 
 			dmu_buf_will_dirty(&db->db, tx);
@@ -2495,42 +2526,68 @@ done:
 }
 
 static boolean_t
-dnode_spill_freed(dnode_t *dn)
+dnode_is_freed_locked(dnode_t *dn)
 {
-	int i;
+	ASSERT(MUTEX_HELD(&dn->dn_mtx));
 
-	mutex_enter(&dn->dn_mtx);
-	for (i = 0; i < TXG_SIZE; i++) {
-		if (dn->dn_rm_spillblk[i] == DN_KILL_SPILLBLK)
-			break;
-	}
-	mutex_exit(&dn->dn_mtx);
-	return (i < TXG_SIZE);
+	return (dn->dn_free_txg != 0);
 }
 
-/* return TRUE if this blkid was freed in a recent txg, or FALSE if it wasn't */
-uint64_t
-dnode_block_freed(dnode_t *dn, uint64_t blkid)
+static boolean_t
+dnode_spill_block_freed_locked(dnode_t *dn)
 {
-	int i;
+	ASSERT(MUTEX_HELD(&dn->dn_mtx));
 
-	if (blkid == DMU_BONUS_BLKID)
-		return (FALSE);
+	for (int i = 0; i < TXG_SIZE; i++) {
+		if (dn->dn_rm_spillblk[i] == DN_KILL_SPILLBLK)
+			return (B_TRUE);
+	}
 
-	if (dn->dn_free_txg)
-		return (TRUE);
+	return (B_FALSE);
+}
 
-	if (blkid == DMU_SPILL_BLKID)
-		return (dnode_spill_freed(dn));
+static boolean_t
+dnode_data_block_freed_locked(dnode_t *dn, uint64_t blkid)
+{
+	ASSERT(MUTEX_HELD(&dn->dn_mtx));
 
-	mutex_enter(&dn->dn_mtx);
-	for (i = 0; i < TXG_SIZE; i++) {
+	for (int i = 0; i < TXG_SIZE; i++) {
 		if (dn->dn_free_ranges[i] != NULL &&
 		    zfs_range_tree_contains(dn->dn_free_ranges[i], blkid, 1))
-			break;
+			return (B_TRUE);
 	}
+
+	return (B_FALSE);
+}
+
+static boolean_t
+dnode_block_freed_locked(dnode_t *dn, uint64_t blkid)
+{
+	ASSERT(MUTEX_HELD(&dn->dn_mtx));
+
+	if (blkid == DMU_BONUS_BLKID)
+		return (B_FALSE);
+
+	if (dnode_is_freed_locked(dn))
+		return (B_TRUE);
+
+	if (blkid == DMU_SPILL_BLKID)
+		return (dnode_spill_block_freed_locked(dn));
+
+	return (dnode_data_block_freed_locked(dn, blkid));
+}
+
+/* return B_TRUE if this blkid was freed in a recent txg, or B_FALSE if not */
+boolean_t
+dnode_block_freed(dnode_t *dn, uint64_t blkid)
+{
+	boolean_t freed;
+
+	mutex_enter(&dn->dn_mtx);
+	freed = dnode_block_freed_locked(dn, blkid);
 	mutex_exit(&dn->dn_mtx);
-	return (i < TXG_SIZE);
+
+	return (freed);
 }
 
 /* call from syncing context when we actually write/free space for this dnode */
