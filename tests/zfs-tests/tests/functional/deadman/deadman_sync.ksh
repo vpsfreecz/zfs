@@ -30,11 +30,12 @@
 #	Verify spa deadman detects a hung txg
 #
 # STRATEGY:
-#	1. Reduce the zfs_deadman_synctime_ms to 5s.
-#	2. Reduce the zfs_deadman_checktime_ms to 1s.
-#	3. Inject a 10s zio delay to force long IOs.
-#	4. Write enough data to force a long txg sync time due to the delay.
-#	5. Verify a "deadman" event is posted.
+#	1. Reduce zfs_txg_timeout to 5s to force prompt txg syncing.
+#	2. Reduce the zfs_deadman_synctime_ms to 5s.
+#	3. Reduce the zfs_deadman_checktime_ms to 1s.
+#	4. Inject a 10s zio delay to force long IOs.
+#	5. Write enough data to force a long txg sync time due to the delay.
+#	6. Verify a "deadman" event is posted.
 #
 
 . $STF_SUITE/include/libtest.shlib
@@ -47,6 +48,7 @@ function cleanup
 	log_must zinject -c all
 	default_cleanup_noexit
 
+	log_must restore_tunable TXG_TIMEOUT
 	log_must set_tunable64 DEADMAN_SYNCTIME_MS $SYNCTIME_DEFAULT
 	log_must set_tunable64 DEADMAN_CHECKTIME_MS $CHECKTIME_DEFAULT
 	log_must set_tunable64 DEADMAN_FAILMODE $FAILMODE_DEFAULT
@@ -55,6 +57,8 @@ function cleanup
 log_assert "Verify spa deadman detects a hung txg"
 log_onexit cleanup
 
+log_must save_tunable TXG_TIMEOUT
+log_must set_tunable32 TXG_TIMEOUT 5
 log_must set_tunable64 DEADMAN_SYNCTIME_MS 5000
 log_must set_tunable64 DEADMAN_CHECKTIME_MS 1000
 log_must set_tunable64 DEADMAN_FAILMODE "wait"
