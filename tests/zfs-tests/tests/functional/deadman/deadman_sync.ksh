@@ -34,7 +34,8 @@
 #	2. Reduce the zfs_deadman_checktime_ms to 1s.
 #	3. Inject a 10s zio delay to force long IOs.
 #	4. Write enough data to force a long txg sync time due to the delay.
-#	5. Verify a "deadman" event is posted.
+#	5. Wait long enough for txg sync to begin with the current txg timeout.
+#	6. Verify a "deadman" event is posted.
 #
 
 . $STF_SUITE/include/libtest.shlib
@@ -68,7 +69,12 @@ log_must zinject -d $DISK1 -D10000:10 $TESTPOOL
 
 mntpnt=$(get_prop mountpoint $TESTPOOL/$TESTFS)
 log_must file_write -b 1048576 -c 8 -o create -d 0 -f $mntpnt/file
-sleep 10
+txg_timeout=$(get_tunable TXG_TIMEOUT)
+if [ "$txg_timeout" -lt 1 ]; then
+	log_fail "Expected TXG_TIMEOUT >= 1, got $txg_timeout"
+fi
+# Hold delay long enough for sync start + deadman checks with current timeout.
+sleep $((txg_timeout + 10))
 
 log_must zinject -c all
 sync_all_pools
