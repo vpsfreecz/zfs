@@ -31,7 +31,7 @@ for f in /proc/spl/kstat/zfs/*/multihost; do
 	echo "================================================================="
 
 	sudo tail -n $lines $f
-	sudo bash -c "echo > $f"
+	printf '' | sudo tee "$f" >/dev/null
 done
 
 echo "================================================================="
