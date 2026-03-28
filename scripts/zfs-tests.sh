@@ -340,8 +340,14 @@ constrain_path() {
 
 	# Exceptions
 	if [ "$UNAME" = "Linux" ] ; then
-		ln -fs /sbin/fsck.ext4 "$STF_PATH/fsck"
-		ln -fs /sbin/mkfs.ext4 "$STF_PATH/newfs"
+		FSCK_PROG=$(command -v fsck.ext4 || command -v fsck || true)
+		MKFS_PROG=$(command -v mkfs.ext4 || command -v mkfs.ext2 || command -v mkfs || true)
+
+		[ -n "$FSCK_PROG" ] || fail "Unable to find fsck utility"
+		[ -n "$MKFS_PROG" ] || fail "Unable to find mkfs utility"
+
+		ln -fs "$FSCK_PROG" "$STF_PATH/fsck"
+		ln -fs "$MKFS_PROG" "$STF_PATH/newfs"
 		ln -fs "$STF_PATH/gzip" "$STF_PATH/compress"
 		ln -fs "$STF_PATH/gunzip" "$STF_PATH/uncompress"
 	elif [ "$UNAME" = "FreeBSD" ] ; then
