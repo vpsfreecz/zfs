@@ -97,6 +97,12 @@ function wait_for_autoexpand
 		wait_secs=$((txg_timeout + 10))
 	fi
 
+	# Device-size change notifications can lag significantly on some
+	# virtualized backends (loop/scsi_debug), so keep a higher minimum.
+	if (( wait_secs < 90 )); then
+		wait_secs=90
+	fi
+
 	for i in $(seq 1 $wait_secs) ; do
 		typeset new_size=$(get_pool_prop size $TESTPOOL1)
 		typeset new_free=$(get_prop avail $TESTPOOL1)
