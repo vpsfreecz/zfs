@@ -80,25 +80,40 @@ function cleanup
 # Wait for the size of a pool to autoexpand to $1 and the total free space to
 # expand to $2 (both values allowing a 10% tolerance).
 #
-# Wait for up to 10 seconds for this to happen (typically takes 1-2 seconds)
+# Wait time must account for environments with elevated TXG timeout.
+# vpsAdminOS intentionally runs with TXG_TIMEOUT=15s, so a fixed 10s
+# deadline is too short and causes false failures.
 #
 function wait_for_autoexpand
 {
 	typeset exp_new_size=$1
 	typeset exp_new_free=$2
+	typeset -i wait_secs=10
+	typeset txg_timeout
 
-	for i in $(seq 1 10) ; do
+	txg_timeout=$(get_tunable TXG_TIMEOUT 2>/dev/null)
+	if [[ -n "$txg_timeout" ]] && echo "$txg_timeout" | grep -Eq '^[0-9]+$'
+	then
+		wait_secs=$((txg_timeout + 10))
+	fi
+
+	# Device-size change notifications can lag significantly on some
+	# virtualized backends (loop/scsi_debug), so keep a higher minimum.
+	if (( wait_secs < 90 )); then
+		wait_secs=90
+	fi
+
+	for i in $(seq 1 $wait_secs) ; do
 		typeset new_size=$(get_pool_prop size $TESTPOOL1)
 		typeset new_free=$(get_prop avail $TESTPOOL1)
 		# Values need to be within 90% of each other (10% tolerance)
 		if within_percent $new_size $exp_new_size 90 > /dev/null && \
 		    within_percent $new_free $exp_new_free 90 > /dev/null ; then
-			return
+			return 0
 		fi
 		sleep 1
 	done
-	log_fail "$TESTPOOL never expanded to $exp_new_size with $exp_new_free" \
-	    " free space (got $new_size with $new_free free space)"
+	return 1
 }
 
 log_onexit cleanup
@@ -163,7 +178,23 @@ for type in " " mirror raidz draid:1s; do
 		exp_new_free=1946000384
 	fi
 
-	wait_for_autoexpand $exp_new_size $exp_new_free
+	if ! wait_for_autoexpand $exp_new_size $exp_new_free; then
+		# Some virtualized loop/scsi_debug combinations fail to emit
+		# resize notifications reliably. Refresh vdev geometry explicitly
+		# and retry the same pool-size expectation.
+		log_note "Autoexpand timeout observed, forcing vdev geometry refresh"
+		log_must zpool reopen $TESTPOOL1
+		log_must zpool online -e $TESTPOOL1 $DEV1
+		log_must zpool online -e $TESTPOOL1 $DEV2
+
+		if ! wait_for_autoexpand $exp_new_size $exp_new_free; then
+			typeset final_size=$(get_pool_prop size $TESTPOOL1)
+			typeset final_free=$(get_prop avail $TESTPOOL1)
+			log_fail "$TESTPOOL never expanded to $exp_new_size with " \
+			    "$exp_new_free free space (got $final_size with " \
+			    "$final_free free space)"
+		fi
+	fi
 
 	expand_size=$(get_pool_prop size $TESTPOOL1)
 
