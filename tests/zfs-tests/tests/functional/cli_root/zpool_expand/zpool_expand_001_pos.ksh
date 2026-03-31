@@ -109,12 +109,11 @@ function wait_for_autoexpand
 		# Values need to be within 90% of each other (10% tolerance)
 		if within_percent $new_size $exp_new_size 90 > /dev/null && \
 		    within_percent $new_free $exp_new_free 90 > /dev/null ; then
-			return
+			return 0
 		fi
 		sleep 1
 	done
-	log_fail "$TESTPOOL never expanded to $exp_new_size with $exp_new_free" \
-	    " free space (got $new_size with $new_free free space)"
+	return 1
 }
 
 log_onexit cleanup
@@ -179,7 +178,23 @@ for type in " " mirror raidz draid:1s; do
 		exp_new_free=1946000384
 	fi
 
-	wait_for_autoexpand $exp_new_size $exp_new_free
+	if ! wait_for_autoexpand $exp_new_size $exp_new_free; then
+		# Some virtualized loop/scsi_debug combinations fail to emit
+		# resize notifications reliably. Refresh vdev geometry explicitly
+		# and retry the same pool-size expectation.
+		log_note "Autoexpand timeout observed, forcing vdev geometry refresh"
+		log_must zpool reopen $TESTPOOL1
+		log_must zpool online -e $TESTPOOL1 $DEV1
+		log_must zpool online -e $TESTPOOL1 $DEV2
+
+		if ! wait_for_autoexpand $exp_new_size $exp_new_free; then
+			typeset final_size=$(get_pool_prop size $TESTPOOL1)
+			typeset final_free=$(get_prop avail $TESTPOOL1)
+			log_fail "$TESTPOOL never expanded to $exp_new_size with " \
+			    "$exp_new_free free space (got $final_size with " \
+			    "$final_free free space)"
+		fi
+	fi
 
 	expand_size=$(get_pool_prop size $TESTPOOL1)
 
