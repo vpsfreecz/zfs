@@ -80,14 +80,24 @@ function cleanup
 # Wait for the size of a pool to autoexpand to $1 and the total free space to
 # expand to $2 (both values allowing a 10% tolerance).
 #
-# Wait for up to 10 seconds for this to happen (typically takes 1-2 seconds)
+# Wait time must account for environments with elevated TXG timeout.
+# vpsAdminOS intentionally runs with TXG_TIMEOUT=15s, so a fixed 10s
+# deadline is too short and causes false failures.
 #
 function wait_for_autoexpand
 {
 	typeset exp_new_size=$1
 	typeset exp_new_free=$2
+	typeset -i wait_secs=10
+	typeset txg_timeout
 
-	for i in $(seq 1 10) ; do
+	txg_timeout=$(get_tunable TXG_TIMEOUT 2>/dev/null)
+	if [[ -n "$txg_timeout" ]] && echo "$txg_timeout" | grep -Eq '^[0-9]+$'
+	then
+		wait_secs=$((txg_timeout + 10))
+	fi
+
+	for i in $(seq 1 $wait_secs) ; do
 		typeset new_size=$(get_pool_prop size $TESTPOOL1)
 		typeset new_free=$(get_prop avail $TESTPOOL1)
 		# Values need to be within 90% of each other (10% tolerance)
