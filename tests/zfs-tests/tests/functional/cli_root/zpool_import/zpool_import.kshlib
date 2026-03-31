@@ -195,6 +195,22 @@ function _translate_vdev
 }
 
 #
+# Some zpool status variants omit dRAID distributed-spare pseudo-vdev labels
+# (e.g. "spares draid1-0-0") from the NAME tree while preserving equivalent
+# pool semantics.  Normalize such tokens away before strict config compare.
+#
+function _normalize_pool_config
+{
+	typeset cfg="$*"
+
+	echo "$cfg" | sed -E \
+	    -e 's/[[:space:]]+spares[[:space:]]+draid[0-9]+-[0-9]+-[0-9]+//g' \
+	    -e 's/[[:space:]]+/ /g' \
+	    -e 's/^ //g' \
+	    -e 's/ $//g'
+}
+
+#
 # Check that pool configuration returned by zpool status matches expected
 # configuration. Format for the check string is same as the vdev arguments for
 # creating a pool
@@ -238,6 +254,8 @@ function check_pool_config
 	done <<<"$status"
 
 	expected="$poolname $expected"
+	actual=$(_normalize_pool_config "$actual")
+	expected=$(_normalize_pool_config "$expected")
 
 	if [[ "$actual" != "$expected" ]]; then
 		if $logfailure; then
