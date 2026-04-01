@@ -256,8 +256,8 @@ zfs_setup_direct(struct znode *zp, zfs_uio_t *uio, zfs_uio_rw_t rw,
 
 	if (!zfs_dio_enabled || os->os_direct == ZFS_DIRECT_DISABLED) {
 		/*
-		 * Direct I/O is disabled.  The I/O request will be directed
-		 * through the ARC as uncached I/O.
+		 * Direct I/O is disabled.  Ignore O_DIRECT and perform
+		 * normal buffered I/O through the ARC.
 		 */
 		goto out;
 	}
@@ -410,7 +410,7 @@ zfs_read(struct znode *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 	ssize_t dio_remaining_resid = 0;
 
 	dmu_flags_t dflags = DMU_READ_PREFETCH;
-	if (ioflag & O_DIRECT)
+	if (zfs_dio_enabled && (ioflag & O_DIRECT))
 		dflags |= DMU_UNCACHEDIO;
 	if (uio->uio_extflg & UIO_DIRECT) {
 		/*
@@ -886,7 +886,7 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 		}
 
 		dmu_flags_t dflags = DMU_READ_PREFETCH;
-		if (ioflag & O_DIRECT)
+		if (zfs_dio_enabled && (ioflag & O_DIRECT))
 			dflags |= DMU_UNCACHEDIO;
 		if (uio->uio_extflg & UIO_DIRECT)
 			dflags |= DMU_DIRECTIO;
