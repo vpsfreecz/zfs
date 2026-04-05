@@ -79,6 +79,24 @@ extern "C" {
 #define	zn_rlimit_fsize(size)		(0)
 #define	zn_rlimit_fsize_uio(zp, uio)	(0)
 
+static inline void
+zn_lock_mapping_shared(struct address_space *mapping)
+{
+	filemap_invalidate_lock_shared(mapping);
+}
+
+#define	zn_lock_cached_data_shared(zp) \
+	zn_lock_mapping_shared(ZTOI(zp)->i_mapping)
+
+static inline void
+zn_unlock_mapping_shared(struct address_space *mapping)
+{
+	filemap_invalidate_unlock_shared(mapping);
+}
+
+#define	zn_unlock_cached_data_shared(zp) \
+	zn_unlock_mapping_shared(ZTOI(zp)->i_mapping)
+
 /*
  * zhold() wraps igrab() on Linux, and igrab() may fail when the
  * inode is in the process of being deleted.  As zhold() must only be

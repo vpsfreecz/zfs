@@ -58,6 +58,18 @@ filemap_invalidate_unlock(struct address_space *mapping)
 {
 	(void) mapping;
 }
+
+static inline void
+filemap_invalidate_lock_shared(struct address_space *mapping)
+{
+	(void) mapping;
+}
+
+static inline void
+filemap_invalidate_unlock_shared(struct address_space *mapping)
+{
+	(void) mapping;
+}
 #endif
 
 /*
