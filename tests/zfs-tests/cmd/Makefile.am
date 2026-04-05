@@ -76,8 +76,8 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/mkbusy %D%/mkfile %D%/mkfiles %D%/mktree
 
 
 scripts_zfs_tests_bin_PROGRAMS += \
-	%D%/mmap_exec %D%/mmap_ftruncate %D%/mmap_seek \
-	%D%/mmap_sync %D%/mmapwrite %D%/readmmap
+	%D%/mmap_exec %D%/mmap_ftruncate %D%/mmap_quota_write \
+	%D%/mmap_seek %D%/mmap_sync %D%/mmapwrite %D%/readmmap
 %C%_mmapwrite_LDADD = -lpthread
 
 if WANT_MMAP_LIBAIO
