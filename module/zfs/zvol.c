@@ -84,6 +84,7 @@
 
 #include <sys/dataset_kstats.h>
 #include <sys/dbuf.h>
+#include <sys/dmu_impl.h>
 #include <sys/dmu_traverse.h>
 #include <sys/dsl_dataset.h>
 #include <sys/dsl_prop.h>
@@ -470,19 +471,8 @@ zvol_replay_truncate(void *arg1, void *arg2, boolean_t byteswap)
 	if (error != 0)
 		return (error);
 
-	dmu_tx_t *tx = dmu_tx_create(zv->zv_objset);
-	dmu_tx_mark_netfree(tx);
-	error = dmu_tx_assign(tx, DMU_TX_WAIT);
-	if (error != 0) {
-		dmu_tx_abort(tx);
-	} else {
-		(void) zil_replaying(zv->zv_zilog, tx);
-		dmu_tx_commit(tx);
-		error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ,
-		    lr->lr_offset, lr->lr_length);
-	}
-
-	return (error);
+	return (dmu_free_long_range_replay(zv->zv_objset, ZVOL_OBJ,
+	    lr->lr_offset, lr->lr_length, zv->zv_zilog));
 }
 
 /*
