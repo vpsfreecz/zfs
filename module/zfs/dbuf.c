@@ -5379,7 +5379,8 @@ dbuf_write_override_done(zio_t *zio)
 	if (!BP_EQUAL(zio->io_bp, obp)) {
 		if (!BP_IS_HOLE(obp))
 			dsl_free(spa_get_dsl(zio->io_spa), zio->io_txg, obp);
-		arc_release(dr->dt.dl.dr_data, db);
+		if (dr->dt.dl.dr_data != NULL)
+			arc_release(dr->dt.dl.dr_data, db);
 	}
 	mutex_exit(&db->db_mtx);
 
