@@ -50,6 +50,8 @@
  */
 static unsigned int zfs_fallocate_reserve_percent = 110;
 
+#define	ZPL_ZERO_RANGE_BUFSIZE	(1 << 20)
+
 static int
 zpl_open(struct inode *ip, struct file *filp)
 {
@@ -589,11 +591,102 @@ zpl_writepage(struct page *pp, struct writeback_control *wbc)
 	return (zpl_putpage(pp, wbc, &for_sync));
 }
 #endif
+static int
+zpl_fallocate_check_space(struct inode *ip, loff_t len)
+{
+	unsigned int percent = zfs_fallocate_reserve_percent;
+	struct kstatfs statfs;
+	int error;
+
+	/* Legacy mode, disable fallocate compatibility. */
+	if (percent == 0)
+		return (-EOPNOTSUPP);
+
+	/*
+	 * Use zfs_statvfs() instead of dmu_objset_space() since it also checks
+	 * project quota limits, which are relevant here.
+	 */
+	error = zfs_statvfs(ip, &statfs);
+	if (error)
+		return (error);
+
+	/*
+	 * Shrink available space a bit to account for overhead/races.  We know
+	 * the product previously fit into availbytes from dmu_objset_space(),
+	 * so the smaller product will also fit.
+	 */
+	if (len > statfs.f_bavail * (statfs.f_bsize * 100 / percent))
+		return (-ENOSPC);
+
+	return (0);
+}
+
+static int
+zpl_zero_range(znode_t *zp, uint64_t offset, uint64_t len, uint64_t olen,
+    int mode, cred_t *cr)
+{
+	uint64_t write_len = len;
+	size_t chunk_size = MIN((uint64_t)ZPL_ZERO_RANGE_BUFSIZE,
+	    MAX((uint64_t)PAGE_SIZE, zp->z_blksz));
+	void *zero_buf;
+	int error = 0;
+
+	ASSERT3U(len, >, 0);
+	ASSERT3U(offset, <=, MAXOFFSET_T - len);
+
+	if (mode & FALLOC_FL_KEEP_SIZE) {
+		uint64_t end = offset + len;
+
+		if (end > olen) {
+			error = zpl_fallocate_check_space(ZTOI(zp), end -
+			    MAX(offset, olen));
+			if (error)
+				return (error);
+		}
+
+		if (offset >= olen)
+			write_len = 0;
+		else if (end > olen)
+			write_len = olen - offset;
+	}
+
+	if (write_len == 0)
+		return (0);
+
+	zero_buf = kmem_zalloc(chunk_size, KM_SLEEP);
+	while (write_len != 0) {
+		struct iovec iov = {
+			.iov_base = zero_buf,
+			.iov_len = MIN(write_len, (uint64_t)chunk_size),
+		};
+		zfs_uio_t uio;
+		size_t resid;
+
+		zfs_uio_iovec_init(&uio, &iov, 1, offset, UIO_SYSSPACE,
+		    iov.iov_len, 0);
+		error = zfs_write(zp, &uio, 0, cr);
+		if (error)
+			break;
+
+		resid = zfs_uio_resid(&uio);
+		if (resid == iov.iov_len) {
+			error = SET_ERROR(EIO);
+			break;
+		}
+
+		offset += iov.iov_len - resid;
+		write_len -= iov.iov_len - resid;
+	}
+	kmem_free(zero_buf, chunk_size);
+
+	return (error);
+}
 
 /*
  * The flag combination which matches the behavior of zfs_space() is
  * FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE.  The FALLOC_FL_PUNCH_HOLE
- * flag was introduced in the 2.6.38 kernel.
+ * flag was introduced in the 2.6.38 kernel.  FALLOC_FL_ZERO_RANGE has
+ * distinct Linux semantics, so it is handled separately.
  *
  * The original mode=0 (allocate space) behavior can be reasonably emulated
  * by checking if enough space exists and creating a sparse file, as real
@@ -615,21 +708,17 @@ zpl_fallocate_common(struct inode *ip, int mode, loff_t offset, loff_t len)
 	if (offset < 0 || len <= 0)
 		return (-EINVAL);
 
+	if (offset > MAXOFFSET_T || len > MAXOFFSET_T - offset)
+		return (-EFBIG);
+
 	spl_inode_lock(ip);
 	olen = i_size_read(ip);
 
 	crhold(cr);
 	cookie = spl_fstrans_mark();
-	if (mode & (test_mode)) {
+	if (mode & FALLOC_FL_PUNCH_HOLE) {
 		flock64_t bf;
 
-		if (mode & FALLOC_FL_KEEP_SIZE) {
-			if (offset > olen)
-				goto out_unmark;
-
-			if (offset + len > olen)
-				len = olen - offset;
-		}
 		bf.l_type = F_WRLCK;
 		bf.l_whence = SEEK_SET;
 		bf.l_start = offset;
@@ -637,33 +726,13 @@ zpl_fallocate_common(struct inode *ip, int mode, loff_t offset, loff_t len)
 		bf.l_pid = 0;
 
 		error = -zfs_space(ITOZ(ip), F_FREESP, &bf, O_RDWR, offset, cr);
+	} else if (mode & FALLOC_FL_ZERO_RANGE) {
+		error = zpl_zero_range(ITOZ(ip), offset, len, olen, mode, cr);
 	} else if ((mode & ~FALLOC_FL_KEEP_SIZE) == 0) {
-		unsigned int percent = zfs_fallocate_reserve_percent;
-		struct kstatfs statfs;
-
-		/* Legacy mode, disable fallocate compatibility. */
-		if (percent == 0) {
-			error = -EOPNOTSUPP;
-			goto out_unmark;
-		}
-
-		/*
-		 * Use zfs_statvfs() instead of dmu_objset_space() since it
-		 * also checks project quota limits, which are relevant here.
-		 */
-		error = zfs_statvfs(ip, &statfs);
+		error = zpl_fallocate_check_space(ip, len);
 		if (error)
 			goto out_unmark;
 
-		/*
-		 * Shrink available space a bit to account for overhead/races.
-		 * We know the product previously fit into availbytes from
-		 * dmu_objset_space(), so the smaller product will also fit.
-		 */
-		if (len > statfs.f_bavail * (statfs.f_bsize * 100 / percent)) {
-			error = -ENOSPC;
-			goto out_unmark;
-		}
 		if (!(mode & FALLOC_FL_KEEP_SIZE) && offset + len > olen)
 			error = zfs_freesp(ITOZ(ip), offset + len, 0, 0, FALSE);
 	}
