@@ -112,6 +112,36 @@ zn_pagecache_isize_extended_impl(struct inode *ip, uint64_t from,
 #define	zn_pagecache_isize_extended(zp, from, to) \
 	zn_pagecache_isize_extended_impl(ZTOI(zp), (from), (to))
 
+static inline void
+zn_lock_mapping(struct address_space *mapping)
+{
+	filemap_invalidate_lock(mapping);
+}
+
+#define	zn_lock_cached_data(zp) \
+	zn_lock_mapping(ZTOI(zp)->i_mapping)
+
+static inline void
+zn_unlock_mapping(struct address_space *mapping)
+{
+	filemap_invalidate_unlock(mapping);
+}
+
+#define	zn_unlock_cached_data(zp) \
+	zn_unlock_mapping(ZTOI(zp)->i_mapping)
+
+static inline int
+zn_sync_mapping(struct address_space *mapping, uint64_t start, uint64_t end)
+{
+	if (start > end)
+		return (0);
+
+	return (filemap_write_and_wait_range(mapping, start, end));
+}
+
+#define	zn_sync_cached_data(zp, start, end) \
+	zn_sync_mapping(ZTOI(zp)->i_mapping, (start), (end))
+
 /*
  * zhold() wraps igrab() on Linux, and igrab() may fail when the
  * inode is in the process of being deleted.  As zhold() must only be
