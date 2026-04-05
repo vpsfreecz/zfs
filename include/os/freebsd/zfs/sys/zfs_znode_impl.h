@@ -144,6 +144,27 @@ zn_pagecache_isize_extended(znode_t *zp, uint64_t from, uint64_t to)
 	(void) to;
 }
 
+static inline void
+zn_lock_cached_data(znode_t *zp)
+{
+	(void) zp;
+}
+
+static inline void
+zn_unlock_cached_data(znode_t *zp)
+{
+	(void) zp;
+}
+
+static inline int
+zn_sync_cached_data(znode_t *zp, uint64_t start, uint64_t end)
+{
+	(void) start;
+	(void) end;
+	zn_flush_cached_data(zp, B_TRUE);
+	return (0);
+}
+
 /* Called on entry to each ZFS vnode and vfs operation  */
 static inline int
 zfs_enter(zfsvfs_t *zfsvfs, const char *tag)

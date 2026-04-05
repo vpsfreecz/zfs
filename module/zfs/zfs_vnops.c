@@ -124,11 +124,12 @@ zfs_fsync(znode_t *zp, int syncflag, cred_t *cr)
 static int
 zfs_holey_common(znode_t *zp, ulong_t cmd, loff_t *off)
 {
-	zfs_locked_range_t *lr;
+	zfs_locked_range_t *lr = NULL;
 	uint64_t noff = (uint64_t)*off; /* new offset */
 	uint64_t file_sz;
 	int error;
 	boolean_t hole;
+	boolean_t cached_locked = B_FALSE;
 
 	file_sz = zp->z_size;
 	if (noff >= file_sz)  {
@@ -140,13 +141,27 @@ zfs_holey_common(znode_t *zp, ulong_t cmd, loff_t *off)
 	else
 		hole = B_FALSE;
 
-	/* Flush any mmap()'d data to disk */
-	if (zn_has_cached_data(zp, 0, file_sz - 1))
-		zn_flush_cached_data(zp, B_TRUE);
+	/*
+	 * Flush existing cached pages and freeze later writable-mmap arrivals
+	 * while we query the DMU view.
+	 */
+	if (zn_has_cached_data(zp, 0, file_sz - 1) ||
+	    zn_writably_mapped(zp)) {
+		zn_lock_cached_data(zp);
+		cached_locked = B_TRUE;
+		error = zn_sync_cached_data(zp, 0, file_sz - 1);
+		if (error != 0)
+			goto out;
+	}
 
 	lr = zfs_rangelock_enter(&zp->z_rangelock, 0, UINT64_MAX, RL_READER);
 	error = dmu_offset_next(ZTOZSB(zp)->z_os, zp->z_id, hole, &noff);
-	zfs_rangelock_exit(lr);
+
+out:
+	if (lr != NULL)
+		zfs_rangelock_exit(lr);
+	if (cached_locked)
+		zn_unlock_cached_data(zp);
 
 	if (error == ESRCH)
 		return (SET_ERROR(ENXIO));
@@ -1115,6 +1130,7 @@ zfs_rewrite(znode_t *zp, uint64_t off, uint64_t len, uint64_t flags,
     uint64_t arg)
 {
 	int error;
+	boolean_t cached_locked = B_FALSE;
 
 	if (flags != 0 || arg != 0)
 		return (SET_ERROR(EINVAL));
@@ -1135,9 +1151,21 @@ zfs_rewrite(znode_t *zp, uint64_t off, uint64_t len, uint64_t flags,
 	if (len == 0 || len > zp->z_size - off)
 		len = zp->z_size - off;
 
-	/* Flush any mmap()'d data to disk */
-	if (zn_has_cached_data(zp, off, off + len - 1))
-		zn_flush_cached_data(zp, B_TRUE);
+	/*
+	 * Flush existing cached pages and freeze later writable-mmap arrivals
+	 * while we rewrite the DMU view.
+	 */
+	if (zn_has_cached_data(zp, off, off + len - 1) ||
+	    zn_writably_mapped(zp)) {
+		zn_lock_cached_data(zp);
+		cached_locked = B_TRUE;
+		error = zn_sync_cached_data(zp, off, off + len - 1);
+		if (error != 0) {
+			zn_unlock_cached_data(zp);
+			zfs_exit(zfsvfs, FTAG);
+			return (error);
+		}
+	}
 
 	zfs_locked_range_t *lr;
 	lr = zfs_rangelock_enter(&zp->z_rangelock, off, len, RL_WRITER);
@@ -1231,6 +1259,8 @@ zfs_rewrite(znode_t *zp, uint64_t off, uint64_t len, uint64_t flags,
 	dataset_kstats_update_write_kstats(&zfsvfs->z_kstat, nw);
 
 	zfs_rangelock_exit(lr);
+	if (cached_locked)
+		zn_unlock_cached_data(zp);
 	zfs_exit(zfsvfs, FTAG);
 	return (error);
 }
