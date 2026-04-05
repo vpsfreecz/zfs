@@ -38,6 +38,7 @@
 #include <sys/zfs_vnops.h>
 #include <sys/zfs_project.h>
 #include <linux/pagemap_compat.h>
+#include <linux/mm_compat.h>
 #include <linux/fadvise.h>
 #ifdef HAVE_VFS_FILEMAP_DIRTY_FOLIO
 #include <linux/writeback.h>
@@ -335,6 +336,26 @@ zpl_llseek(struct file *filp, loff_t offset, int whence)
  * helpful to move the ARC buffers to a scatter-gather lists
  * rather than a vmalloc'ed region.
  */
+static vm_fault_t
+zpl_page_mkwrite(struct vm_fault *vmf)
+{
+	struct address_space *mapping = vmf->vma->vm_file->f_mapping;
+	znode_t *zp = ITOZ(mapping->host);
+	vm_fault_t ret;
+
+	zn_lock_cached_data_shared(zp);
+	ret = filemap_page_mkwrite(vmf);
+	zn_unlock_cached_data_shared(zp);
+
+	return (ret);
+}
+
+static const struct vm_operations_struct zpl_file_vm_ops = {
+	.fault		= filemap_fault,
+	.map_pages	= filemap_map_pages,
+	.page_mkwrite	= zpl_page_mkwrite,
+};
+
 static int
 zpl_mmap(struct file *filp, struct vm_area_struct *vma)
 {
@@ -353,6 +374,8 @@ zpl_mmap(struct file *filp, struct vm_area_struct *vma)
 	error = generic_file_mmap(filp, vma);
 	if (error)
 		return (error);
+
+	vma->vm_ops = &zpl_file_vm_ops;
 
 	return (error);
 }
