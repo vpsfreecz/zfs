@@ -711,6 +711,7 @@ spl_kmem_cache_create(const char *name, size_t size, size_t align,
 	skc->skc_emergency_tree = RB_ROOT;
 	spin_lock_init(&skc->skc_lock);
 	init_waitqueue_head(&skc->skc_waitq);
+	init_waitqueue_head(&skc->skc_ref_waitq);
 	skc->skc_slab_fail = 0;
 	skc->skc_slab_create = 0;
 	skc->skc_slab_destroy = 0;
@@ -821,7 +822,6 @@ EXPORT_SYMBOL(spl_kmem_cache_set_move);
 void
 spl_kmem_cache_destroy(spl_kmem_cache_t *skc)
 {
-	DECLARE_WAIT_QUEUE_HEAD(wq);
 	taskqid_t id;
 
 	ASSERT(skc->skc_magic == SKC_MAGIC);
@@ -845,7 +845,7 @@ spl_kmem_cache_destroy(spl_kmem_cache_t *skc)
 	 * to catch the case where a low memory situation triggers a
 	 * cache reaping action which races with this destroy.
 	 */
-	wait_event(wq, atomic_read(&skc->skc_ref) == 0);
+	wait_event(skc->skc_ref_waitq, atomic_read(&skc->skc_ref) == 0);
 
 	if (skc->skc_flags & KMC_KVMEM) {
 		spl_magazine_destroy(skc);
@@ -946,6 +946,13 @@ __spl_cache_grow(spl_kmem_cache_t *skc, int flags)
 }
 
 static void
+spl_kmem_cache_ref_rele(spl_kmem_cache_t *skc)
+{
+	if (atomic_dec_and_test(&skc->skc_ref))
+		wake_up_all(&skc->skc_ref_waitq);
+}
+
+static void
 spl_cache_grow_work(void *data)
 {
 	spl_kmem_alloc_t *ska = (spl_kmem_alloc_t *)data;
@@ -953,13 +960,13 @@ spl_cache_grow_work(void *data)
 
 	int error = __spl_cache_grow(skc, ska->ska_flags);
 
-	atomic_dec(&skc->skc_ref);
 	smp_mb__before_atomic();
 	clear_bit(KMC_BIT_GROWING, &skc->skc_flags);
 	smp_mb__after_atomic();
 	if (error == 0)
 		wake_up_all(&skc->skc_waitq);
 
+	spl_kmem_cache_ref_rele(skc);
 	kfree(ska);
 }
 
@@ -1389,7 +1396,7 @@ spl_kmem_cache_reap_now(spl_kmem_cache_t *skc)
 	smp_mb__after_atomic();
 	wake_up_bit(&skc->skc_flags, KMC_BIT_REAPING);
 out:
-	atomic_dec(&skc->skc_ref);
+	spl_kmem_cache_ref_rele(skc);
 }
 EXPORT_SYMBOL(spl_kmem_cache_reap_now);
 
