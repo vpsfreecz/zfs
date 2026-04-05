@@ -341,13 +341,26 @@ zpl_llseek(struct file *filp, loff_t offset, int whence)
 static vm_fault_t
 zpl_page_mkwrite(struct vm_fault *vmf)
 {
-	struct address_space *mapping = vmf->vma->vm_file->f_mapping;
-	znode_t *zp = ITOZ(mapping->host);
+	struct file *filp = vmf->vma->vm_file;
+	struct address_space *mapping = filp->f_mapping;
+	struct inode *ip = mapping->host;
+	znode_t *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ITOZSB(ip);
 	vm_fault_t ret;
+	int error;
 
+	error = zpl_enter_verify_zp(zfsvfs, zp, FTAG);
+	if (error != 0)
+		return (VM_FAULT_SIGBUS);
+
+	/* Keep shared-mmap writes on the same block-quota gate as write(2). */
 	zn_lock_cached_data_shared(zp);
-	ret = filemap_page_mkwrite(vmf);
+	if (zfs_owner_overblockquota(zp))
+		ret = VM_FAULT_SIGBUS;
+	else
+		ret = filemap_page_mkwrite(vmf);
 	zn_unlock_cached_data_shared(zp);
+	zfs_exit(zfsvfs, FTAG);
 
 	return (ret);
 }
