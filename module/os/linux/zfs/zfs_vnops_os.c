@@ -3743,6 +3743,16 @@ static inline void
 zfs_page_writeback_done(struct page *pp, int err)
 {
 	if (err != 0) {
+		struct address_space *mapping = page_mapping(pp);
+
+		/*
+		 * Linux reports page writeback failures on a later fsync() via
+		 * the mapping's wb_err cursor. Record the failure before we
+		 * re-dirty the page for retry.
+		 */
+		if (mapping != NULL)
+			mapping_set_error(mapping, err < 0 ? err : -err);
+
 		/*
 		 * Writeback failed. Re-dirty the page. It was undirtied before
 		 * the IO was issued (in zfs_putpage() or write_cache_pages()).
