@@ -1561,105 +1561,6 @@ zfs_extend(znode_t *zp, uint64_t end)
 }
 
 /*
- * zfs_zero_partial_page - Modeled after update_pages() but
- * with different arguments and semantics for use by zfs_freesp().
- *
- * Zeroes a piece of a single page cache entry for zp at offset
- * start and length len.
- *
- * Caller must acquire a range lock on the file for the region
- * being zeroed in order that the ARC and page cache stay in sync.
- */
-static void
-zfs_zero_partial_page(znode_t *zp, uint64_t start, uint64_t len)
-{
-	struct address_space *mp = ZTOI(zp)->i_mapping;
-	struct page *pp;
-	int64_t	off;
-	void *pb;
-
-	ASSERT((start & PAGE_MASK) == ((start + len - 1) & PAGE_MASK));
-
-	off = start & (PAGE_SIZE - 1);
-	start &= PAGE_MASK;
-
-	pp = find_lock_page(mp, start >> PAGE_SHIFT);
-	if (pp) {
-		boolean_t was_uptodate = PageUptodate(pp);
-
-		if (mapping_writably_mapped(mp))
-			flush_dcache_page(pp);
-
-		pb = kmap(pp);
-		memset(pb + off, 0, len);
-		kunmap(pp);
-
-		if (mapping_writably_mapped(mp))
-			flush_dcache_page(pp);
-
-		mark_page_accessed(pp);
-		zpl_page_range_write_done(pp, was_uptodate, off, len);
-		unlock_page(pp);
-		put_page(pp);
-	}
-}
-
-static void
-zfs_free_range_invalidate(znode_t *zp, uint64_t off, uint64_t len)
-{
-	struct address_space *mapping = ZTOI(zp)->i_mapping;
-	loff_t first_page, last_page, page_len;
-	loff_t first_page_offset, last_page_offset;
-
-	filemap_invalidate_lock(mapping);
-	if (zn_has_cached_data(zp, off, off + len - 1)) {
-		/* first possible full page in hole */
-		first_page = (off + PAGE_SIZE - 1) >> PAGE_SHIFT;
-		/* last page of hole */
-		last_page = (off + len) >> PAGE_SHIFT;
-
-		/* offset of first_page */
-		first_page_offset = first_page << PAGE_SHIFT;
-		/* offset of last_page */
-		last_page_offset = last_page << PAGE_SHIFT;
-
-		/* truncate whole pages */
-		if (last_page_offset > first_page_offset) {
-			truncate_inode_pages_range(mapping, first_page_offset,
-			    last_page_offset - 1);
-		}
-
-		/* truncate sub-page ranges */
-		if (first_page > last_page) {
-			/* entire punched area within a single page */
-			zfs_zero_partial_page(zp, off, len);
-		} else {
-			/* beginning of punched area at the end of a page */
-			page_len = first_page_offset - off;
-			if (page_len > 0)
-				zfs_zero_partial_page(zp, off, page_len);
-
-			/* end of punched area at the beginning of a page */
-			page_len = off + len - last_page_offset;
-			if (page_len > 0)
-				zfs_zero_partial_page(zp, last_page_offset,
-				    page_len);
-		}
-	}
-	filemap_invalidate_unlock(mapping);
-}
-
-static void
-zfs_truncate_setsize_invalidate(znode_t *zp, uint64_t end)
-{
-	struct inode *ip = ZTOI(zp);
-
-	filemap_invalidate_lock(ip->i_mapping);
-	truncate_setsize(ip, end);
-	filemap_invalidate_unlock(ip->i_mapping);
-}
-
-/*
  * Free space in a file.
  *
  *	IN:	zp	- znode of file to free data in.
@@ -1691,13 +1592,10 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 	if (off + len > zp->z_size)
 		len = zp->z_size - off;
 
+	zn_lock_cached_data(zp);
+	truncate_pagecache_range(ZTOI(zp), off, off + len - 1);
 	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, off, len);
-
-	/*
-	 * Zero partial page cache entries.  Keep the Linux invalidate barrier
-	 * around the page-cache invalidate and repair window.
-	 */
-	zfs_free_range_invalidate(zp, off, len);
+	zn_unlock_cached_data(zp);
 	zfs_rangelock_exit(lr);
 
 	return (error);
@@ -1715,6 +1613,7 @@ static int
 zfs_trunc(znode_t *zp, uint64_t end)
 {
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	struct inode *ip = ZTOI(zp);
 	dmu_tx_t *tx;
 	zfs_locked_range_t *lr;
 	int error;
@@ -1734,9 +1633,13 @@ zfs_trunc(znode_t *zp, uint64_t end)
 		return (0);
 	}
 
+	zn_lock_cached_data(zp);
+	truncate_setsize(ip, end);
+
 	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, end,
 	    DMU_OBJECT_END);
 	if (error) {
+		zn_unlock_cached_data(zp);
 		zfs_rangelock_exit(lr);
 		return (error);
 	}
@@ -1747,6 +1650,7 @@ zfs_trunc(znode_t *zp, uint64_t end)
 	error = dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (error) {
 		dmu_tx_abort(tx);
+		zn_unlock_cached_data(zp);
 		zfs_rangelock_exit(lr);
 		return (error);
 	}
@@ -1763,6 +1667,7 @@ zfs_trunc(znode_t *zp, uint64_t end)
 	VERIFY(sa_bulk_update(zp->z_sa_hdl, bulk, count, tx) == 0);
 
 	dmu_tx_commit(tx);
+	zn_unlock_cached_data(zp);
 	zfs_rangelock_exit(lr);
 
 	return (0);
@@ -1837,16 +1742,6 @@ log:
 	error = 0;
 
 out:
-	/*
-	 * Truncate the page cache - for file truncate operations, use the
-	 * purpose-built API for truncations. For punching operations, the
-	 * truncation is handled under a range lock in zfs_free_range().
-	 *
-	 * Keep the existing zfs_freesp(len == 0) contract and only change the
-	 * serialization window around truncate_setsize().
-	 */
-	if (len == 0)
-		zfs_truncate_setsize_invalidate(zp, off);
 	return (error);
 }
 
