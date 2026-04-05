@@ -1574,7 +1574,7 @@ top:
 			}
 		} else {
 			write_size =
-			    P2PHASE(zfs_uio_offset(uio), dn->dn_datablksz);
+			    P2NPHASE(zfs_uio_offset(uio), dn->dn_datablksz);
 		}
 	}
 	flags &= ~DMU_DIRECTIO;
