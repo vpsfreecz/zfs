@@ -91,6 +91,7 @@ dmu_write_direct_done(zio_t *zio)
 	dmu_sync_arg_t *dsa = zio->io_private;
 	dbuf_dirty_record_t *dr = dsa->dsa_dr;
 	dmu_buf_impl_t *db = dr->dr_dbuf;
+	dmu_tx_t *tx = dsa->dsa_tx;
 
 	abd_free(zio->io_abd);
 
@@ -104,8 +105,19 @@ dmu_write_direct_done(zio_t *zio)
 	dmu_sync_done(zio, NULL, zio->io_private);
 
 	if (zio->io_error != 0) {
+		boolean_t freeing_dnode;
+		dnode_t *dn;
+
 		if (zio->io_flags & ZIO_FLAG_DIO_CHKSUM_ERR)
 			ASSERT3U(zio->io_error, ==, EIO);
+
+		DB_DNODE_ENTER(db);
+		dn = DB_DNODE(db);
+		mutex_enter(&dn->dn_mtx);
+		freeing_dnode = dn->dn_free_txg != 0 &&
+		    dn->dn_free_txg <= zio->io_txg;
+		mutex_exit(&dn->dn_mtx);
+		DB_DNODE_EXIT(db);
 
 		/*
 		 * In the event of an I/O error this block has been freed in
@@ -115,13 +127,21 @@ dmu_write_direct_done(zio_t *zio)
 		 * dbuf_unoverride(), it will skip doing zio_free() to free
 		 * this block as that was already taken care of.
 		 *
+		 * If this dnode is also being freed in this TXG,
+		 * syncing-context teardown will wait for dmu_sync_done()
+		 * to clear DR_IN_DMU_SYNC and then tear the record down
+		 * itself. Racing it here could free the dirty record
+		 * before dnode_sync_free() wakes back up.
+		 *
 		 * Since we are undirtying the record in open-context, we must
 		 * have a hold on the db, so it should never be evicted after
 		 * calling dbuf_undirty().
 		 */
-		mutex_enter(&db->db_mtx);
-		VERIFY3B(dbuf_undirty(db, dsa->dsa_tx), ==, B_FALSE);
-		mutex_exit(&db->db_mtx);
+		if (!freeing_dnode) {
+			mutex_enter(&db->db_mtx);
+			VERIFY3B(dbuf_undirty(db, tx), ==, B_FALSE);
+			mutex_exit(&db->db_mtx);
+		}
 	}
 
 	kmem_free(zio->io_bp, sizeof (blkptr_t));
