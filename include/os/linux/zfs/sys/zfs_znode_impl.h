@@ -43,6 +43,7 @@
 #include <sys/zfs_sa.h>
 #include <sys/zfs_stat.h>
 #include <sys/zfs_rlock.h>
+#include <linux/mm_compat.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -96,6 +97,20 @@ zn_unlock_mapping_shared(struct address_space *mapping)
 
 #define	zn_unlock_cached_data_shared(zp) \
 	zn_unlock_mapping_shared(ZTOI(zp)->i_mapping)
+
+static inline void
+zn_pagecache_isize_extended_impl(struct inode *ip, uint64_t from,
+    uint64_t to)
+{
+	if (!S_ISREG(ip->i_mode) || to <= from)
+		return;
+
+	i_size_write(ip, to);
+	pagecache_isize_extended(ip, from, to);
+}
+
+#define	zn_pagecache_isize_extended(zp, from, to) \
+	zn_pagecache_isize_extended_impl(ZTOI(zp), (from), (to))
 
 /*
  * zhold() wraps igrab() on Linux, and igrab() may fail when the
