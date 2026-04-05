@@ -1268,6 +1268,27 @@ zfs_replay_setattr_size_plan(const lr_setattr_t *lr,
 }
 
 static int
+zfs_replay_zget_ooo(zfsvfs_t *zfsvfs, uint64_t foid, znode_t **zpp)
+{
+	int error;
+
+	*zpp = NULL;
+	error = zfs_zget(zfsvfs, foid, zpp);
+	if (error == ENOENT) {
+		/*
+		 * TX_OOO replay records can legitimately target a file that
+		 * has already been removed.  Treat that as success so replay
+		 * can also tolerate Linux's cached z_unlinked znode case
+		 * after the generic dmu_object_info() precheck has already
+		 * passed.
+		 */
+		return (0);
+	}
+
+	return (error);
+}
+
+static int
 zfs_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 {
 	zfsvfs_t *zfsvfs = arg1;
@@ -1286,16 +1307,9 @@ zfs_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
 		return (SET_ERROR(EINVAL));
 
-	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0) {
-		/*
-		 * As we can log writes out of order, it's possible the
-		 * file has been removed. In this case just drop the write
-		 * and return success.
-		 */
-		if (error == ENOENT)
-			error = 0;
+	error = zfs_replay_zget_ooo(zfsvfs, lr->lr_foid, &zp);
+	if (error != 0 || zp == NULL)
 		return (error);
-	}
 
 	zfsvfs->z_replay_eof = 0; /* 0 means don't change end of file */
 
@@ -1358,7 +1372,8 @@ zfs_replay_write2(void *arg1, void *arg2, boolean_t byteswap)
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
 
-	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0)
+	error = zfs_replay_zget_ooo(zfsvfs, lr->lr_foid, &zp);
+	if (error != 0 || zp == NULL)
 		return (error);
 
 	error = zfs_replay_write_size_plan(lr, &plan);
@@ -1372,19 +1387,19 @@ top:
 	if (end > zp->z_size) {
 		dmu_tx_t *tx = dmu_tx_create(zfsvfs->z_os);
 
-		zp->z_size = end;
 		dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
 		error = dmu_tx_assign(tx, DMU_TX_WAIT);
-		if (error) {
-			zrele(zp);
+		if (error != 0) {
 			if (error == ERESTART) {
 				dmu_tx_wait(tx);
 				dmu_tx_abort(tx);
 				goto top;
 			}
 			dmu_tx_abort(tx);
+			zrele(zp);
 			return (error);
 		}
+		zp->z_size = end;
 		(void) sa_update(zp->z_sa_hdl, SA_ZPL_SIZE(zfsvfs),
 		    (void *)&zp->z_size, sizeof (uint64_t), tx);
 
@@ -1452,7 +1467,8 @@ zfs_replay_truncate(void *arg1, void *arg2, boolean_t byteswap)
 	if (error != 0)
 		return (error);
 
-	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0)
+	error = zfs_replay_zget_ooo(zfsvfs, lr->lr_foid, &zp);
+	if (error != 0 || zp == NULL)
 		return (error);
 
 	error = zfs_space(zp, F_FREESP, &plan.zrfp_fl, O_RDWR | O_LARGEFILE,
@@ -1488,7 +1504,8 @@ zfs_replay_setattr(void *arg1, void *arg2, boolean_t byteswap)
 	    zfsvfs->z_version >= ZPL_VERSION_INITIAL)
 		zfs_replay_swap_attrs((lr_attr_t *)&lr->lr_data[0]);
 
-	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0)
+	error = zfs_replay_zget_ooo(zfsvfs, lr->lr_foid, &zp);
+	if (error != 0 || zp == NULL)
 		return (error);
 
 	error = zfs_replay_setattr_size_plan(lr, &plan);
@@ -1559,7 +1576,8 @@ zfs_replay_setsaxattr(void *arg1, void *arg2, boolean_t byteswap)
 	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
 		return (SET_ERROR(EINVAL));
 
-	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0)
+	error = zfs_replay_zget_ooo(zfsvfs, lr->lr_foid, &zp);
+	if (error != 0 || zp == NULL)
 		return (error);
 
 	rw_enter(&zp->z_xattr_lock, RW_WRITER);
@@ -1644,7 +1662,8 @@ zfs_replay_acl_v0(void *arg1, void *arg2, boolean_t byteswap)
 	if (byteswap)
 		zfs_oldace_byteswap(ace, lr->lr_aclcnt);
 
-	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0)
+	error = zfs_replay_zget_ooo(zfsvfs, lr->lr_foid, &zp);
+	if (error != 0 || zp == NULL)
 		return (error);
 
 	vsa.vsa_mask = VSA_ACE | VSA_ACECNT;
@@ -1702,7 +1721,8 @@ zfs_replay_acl(void *arg1, void *arg2, boolean_t byteswap)
 		}
 	}
 
-	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0)
+	error = zfs_replay_zget_ooo(zfsvfs, lr->lr_foid, &zp);
+	if (error != 0 || zp == NULL)
 		return (error);
 
 	vsa.vsa_mask = VSA_ACE | VSA_ACECNT | VSA_ACE_ACLFLAGS;
@@ -1749,15 +1769,9 @@ zfs_replay_clone_range(void *arg1, void *arg2, boolean_t byteswap)
 	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
 		return (SET_ERROR(EINVAL));
 
-	if ((error = zfs_zget(zfsvfs, lr->lr_foid, &zp)) != 0) {
-		/*
-		 * Clones can be logged out of order, so don't be surprised if
-		 * the file is gone - just return success.
-		 */
-		if (error == ENOENT)
-			error = 0;
+	error = zfs_replay_zget_ooo(zfsvfs, lr->lr_foid, &zp);
+	if (error != 0 || zp == NULL)
 		return (error);
-	}
 
 	error = zfs_clone_range_replay(zp, lr->lr_offset, lr->lr_length,
 	    lr->lr_blksz, lr->lr_bps, lr->lr_nbps);
