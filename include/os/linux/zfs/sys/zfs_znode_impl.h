@@ -112,6 +112,15 @@ zn_pagecache_isize_extended_impl(struct inode *ip, uint64_t from,
 #define	zn_pagecache_isize_extended(zp, from, to) \
 	zn_pagecache_isize_extended_impl(ZTOI(zp), (from), (to))
 
+static inline boolean_t
+zn_mapping_writably_mapped(struct address_space *mapping)
+{
+	return (mapping_writably_mapped(mapping));
+}
+
+#define	zn_writably_mapped(zp) \
+	zn_mapping_writably_mapped(ZTOI(zp)->i_mapping)
+
 static inline void
 zn_lock_mapping(struct address_space *mapping)
 {
