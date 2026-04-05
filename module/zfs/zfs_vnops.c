@@ -2024,10 +2024,23 @@ zfs_clone_range_replay(znode_t *zp, uint64_t off, uint64_t len, uint64_t blksz,
 		return (error);
 	}
 
-	if (zp->z_blksz < blksz)
+	if (zp->z_blksz < blksz) {
 		zfs_grow_blocksize(zp, blksz, tx);
+		if (zp->z_blksz != blksz) {
+			error = SET_ERROR(EINVAL);
+			dmu_tx_commit(tx);
+			zfs_exit(zfsvfs, FTAG);
+			return (error);
+		}
+	}
 
-	dmu_brt_clone(zfsvfs->z_os, zp->z_id, off, len, tx, bps, nbps);
+	error = dmu_brt_clone(zfsvfs->z_os, zp->z_id, off, len, tx, bps,
+	    nbps);
+	if (error != 0) {
+		dmu_tx_commit(tx);
+		zfs_exit(zfsvfs, FTAG);
+		return (error);
+	}
 
 	zfs_tstamp_update_setup(zp, CONTENT_MODIFIED, mtime, ctime);
 
