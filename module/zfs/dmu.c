@@ -2595,6 +2595,18 @@ dmu_read_l0_bp_copy(dmu_buf_impl_t *db, blkptr_t *bp, boolean_t *have_bp)
 		return (SET_ERROR(EAGAIN));
 	}
 
+	/*
+	 * A clone source block can not reuse the current BP once that blkid is
+	 * already pending free in a recent TXG.
+	 */
+	DB_DNODE_ENTER(db);
+	if (dnode_block_freed(DB_DNODE(db), db->db_blkid)) {
+		DB_DNODE_EXIT(db);
+		mutex_exit(&db->db_mtx);
+		return (SET_ERROR(EAGAIN));
+	}
+	DB_DNODE_EXIT(db);
+
 	error = dmu_buf_get_bp_copy_from_dbuf_locked(db, bp, have_bp);
 	mutex_exit(&db->db_mtx);
 
