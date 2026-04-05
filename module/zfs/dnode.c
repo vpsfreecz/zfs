@@ -2284,8 +2284,12 @@ dnode_partial_zero_has_backing_locked(dmu_buf_impl_t *db)
 
 	dblt = dmu_buf_lock_parent(db, RW_READER, FTAG);
 	if (dmu_buf_get_bp_from_dbuf(db, &bp) == 0 &&
-	    bp != NULL && !BP_IS_HOLE(bp))
-		has_backing = B_TRUE;
+	    bp != NULL && !BP_IS_HOLE(bp)) {
+		DB_DNODE_ENTER(db);
+		has_backing = !dnode_block_freed(DB_DNODE(db), db->db_blkid) &&
+		    !BP_IS_HOLE(bp);
+		DB_DNODE_EXIT(db);
+	}
 	dmu_buf_unlock_parent(db, dblt, FTAG);
 
 	return (has_backing);
