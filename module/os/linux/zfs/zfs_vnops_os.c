@@ -3878,6 +3878,21 @@ zfs_putpage_revalidate(struct inode *ip, znode_t *zp, struct page *pp,
 	return (ZFS_PUTPAGE_RELOCK_WRITE);
 }
 
+/* Mirrors the block-quota gate used by the buffered write path. */
+boolean_t
+zfs_owner_overblockquota(znode_t *zp)
+{
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	const uint64_t uid = KUID_TO_SUID(ZTOUID(zp));
+	const uint64_t gid = KGID_TO_SGID(ZTOGID(zp));
+	const uint64_t projid = zp->z_projid;
+
+	return (zfs_id_overblockquota(zfsvfs, DMU_USERUSED_OBJECT, uid) ||
+	    zfs_id_overblockquota(zfsvfs, DMU_GROUPUSED_OBJECT, gid) ||
+	    (projid != ZFS_DEFAULT_PROJID &&
+	    zfs_id_overblockquota(zfsvfs, DMU_PROJECTUSED_OBJECT, projid)));
+}
+
 /*
  * ZIL callback for page writeback. Passes to zfs_log_write() in zfs_putpage()
  * for syncing writes. Called when the ZIL itx has been written to the log or
@@ -3945,23 +3960,6 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 	if (pgoff + pglen > offset)
 		pglen = offset - pgoff;
 
-#if 0
-	/*
-	 * FIXME: Allow mmap writes past its quota.  The correct fix
-	 * is to register a page_mkwrite() handler to count the page
-	 * against its quota when it is about to be dirtied.
-	 */
-	if (zfs_id_overblockquota(zfsvfs, DMU_USERUSED_OBJECT,
-	    KUID_TO_SUID(ip->i_uid)) ||
-	    zfs_id_overblockquota(zfsvfs, DMU_GROUPUSED_OBJECT,
-	    KGID_TO_SGID(ip->i_gid)) ||
-	    (zp->z_projid != ZFS_DEFAULT_PROJID &&
-	    zfs_id_overblockquota(zfsvfs, DMU_PROJECTUSED_OBJECT,
-	    zp->z_projid))) {
-		err = EDQUOT;
-	}
-#endif
-
 	/*
 	 * The ordering here is critical and must adhere to the following
 	 * rules in order to avoid deadlocking in either zfs_read() or
@@ -4018,6 +4016,20 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 
 	default:
 		break;
+	}
+
+	/*
+	 * page_mkwrite() blocks new shared-mmap dirties once the file owner is
+	 * already over block quota. Keep the same gate here as a backstop for
+	 * pages dirtied before that point or before the fault path re-runs.
+	 */
+	if (zfs_owner_overblockquota(zp)) {
+		mapping_set_error(mapping, -EDQUOT);
+		unlock_page(pp);
+		zfs_rangelock_exit(lr);
+		zfs_exit(zfsvfs, FTAG);
+
+		return (for_sync ? EDQUOT : 0);
 	}
 
 	/* Clear the dirty flag the required locks are held */
