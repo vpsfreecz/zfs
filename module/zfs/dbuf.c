@@ -2975,6 +2975,18 @@ dmu_buf_will_not_fill(dmu_buf_t *db_fake, dmu_tx_t *tx)
 	dmu_buf_impl_t *db = (dmu_buf_impl_t *)db_fake;
 
 	mutex_enter(&db->db_mtx);
+	dbuf_dirty_record_t *dr = dbuf_find_dirty_eq(db, tx->tx_txg);
+	if (dr != NULL && db->db_level == 0 && dr->dt.dl.dr_brtwrite) {
+		/*
+		 * Block cloning: if we are switching a cloned
+		 * level-0 block to a nofill write, cancel the
+		 * pending clone first. Plain redirty would go
+		 * through dbuf_unoverride() and miss
+		 * brt_pending_remove().
+		 */
+		VERIFY3B(dbuf_undirty(db, tx), ==, B_FALSE);
+		ASSERT0P(dbuf_find_dirty_eq(db, tx->tx_txg));
+	}
 	db->db_state = DB_NOFILL;
 	DTRACE_SET_STATE(db, "allocating NOFILL buffer");
 	mutex_exit(&db->db_mtx);
