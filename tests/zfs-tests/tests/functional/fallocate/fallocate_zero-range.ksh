@@ -34,12 +34,11 @@
 # Test FALLOC_FL_ZERO_RANGE functionality
 #
 # STRATEGY:
-# 1. Create a dense file
-# 2. Zero various ranges in the file and verify the result.
-#
-# Note: We can't compare exact block numbers as reported by du, because
-# different backing stores may allocate different numbers of blocks for
-# the same amount of data.
+# 1. Create a dense file with non-zero contents.
+# 2. Zero various ranges in the file.
+# 3. Verify the file contents match an expected copy with zero bytes written
+#    into the same visible range.
+# 4. Verify full-block zeroing does not punch holes or deallocate blocks.
 #
 
 verify_runnable "global"
@@ -49,11 +48,12 @@ if is_freebsd; then
 fi
 
 FILE=$TESTDIR/$TESTFILE0
+EXPECT=$TESTDIR/$TESTFILE0.expected
 BLKSZ=$(get_prop recordsize $TESTPOOL)
 
 function cleanup
 {
-	[[ -e $TESTDIR ]] && log_must rm -f $FILE
+	[[ -e $TESTDIR ]] && log_must rm -f $FILE $EXPECT
 }
 
 function get_reported_size
@@ -77,53 +77,94 @@ function check_apparent_size
 	fi
 }
 
-log_assert "Ensure ranges can be zeroed in files"
+function zero_expected # offset length keep_size
+{
+	typeset offset=$1
+	typeset length=$2
+	typeset keep_size=$3
+	typeset size=$(stat_size "$EXPECT")
+
+	if (( keep_size != 0 )); then
+		if (( offset >= size )); then
+			return 0
+		fi
+
+		if (( offset + length > size )); then
+			(( length = size - offset ))
+		fi
+	fi
+
+	if (( length <= 0 )); then
+		return 0
+	fi
+
+	log_must dd if=/dev/zero of="$EXPECT" bs=1 seek="$offset" \
+	    count="$length" conv=notrunc status=none
+}
+
+function verify_expected
+{
+	log_must cmp "$EXPECT" "$FILE"
+}
+
+log_assert "Ensure ranges can be zeroed in files without punching holes"
 
 log_onexit cleanup
 
-# Create a dense file and check it is the correct size.
-log_must file_write -o create -f $FILE -b $BLKSZ -c 8
+# Create a dense file with non-zero contents and a matching expected copy.
+log_must file_write -o create -f $FILE -b $BLKSZ -c 8 -d R
+log_must cp $FILE $EXPECT
 sync_pool $TESTPOOL
 full_size=$(get_reported_size)
 
-# Zero a range covering the first full block. The reported size should decrease.
+# Zero a range covering the first full block.  The contents must be zeroed,
+# but the reported size must not decrease because ZERO_RANGE is not PUNCH_HOLE.
 log_must zero_range 0 $BLKSZ $FILE
+log_must zero_expected 0 $BLKSZ 0
+log_must verify_expected
 one_range=$(get_reported_size)
-[[ $full_size -gt $one_range ]] || log_fail \
+[[ $full_size -eq $one_range ]] || log_fail \
     "One range failure: $full_size -> $one_range"
 
-# Partially zero a range in the second block. The reported size should
-# remain constant.
+# Partially zero a range in the second block.  Contents must match and the
+# file must remain fully allocated.
 log_must zero_range $BLKSZ $((BLKSZ / 2)) $FILE
+log_must zero_expected $BLKSZ $((BLKSZ / 2)) 0
+log_must verify_expected
 partial_range=$(get_reported_size)
 [[ $one_range -eq $partial_range ]] || log_fail \
     "Partial range failure: $one_range -> $partial_range"
 
-# Zero range which overlaps the third and fourth block. The reported size
-# should remain constant.
+# Zero a range which overlaps the third and fourth block.
 log_must zero_range $(((BLKSZ * 2) + (BLKSZ / 2))) $((BLKSZ)) $FILE
+log_must zero_expected $(((BLKSZ * 2) + (BLKSZ / 2))) $((BLKSZ)) 0
+log_must verify_expected
 overlap_range=$(get_reported_size)
 [[ $one_range -eq $overlap_range ]] || log_fail \
     "Overlap range failure: $one_range -> $overlap_range"
 
-# Zero range from the fifth block past the end of file, with --keep-size.
-# The reported size should decrease, and the apparent file size must not
-# change, since we did specify --keep-size.
+# Zero range from the fifth block past the end of file with --keep-size.
+# Only the visible tail of the file should be zeroed and the file size must
+# not change.
 apparent_size=$(stat_size $FILE)
-log_must fallocate --keep-size --zero-range --offset $((BLKSZ * 4)) --length $((BLKSZ * 10)) "$FILE"
+log_must fallocate --keep-size --zero-range --offset $((BLKSZ * 4)) \
+    --length $((BLKSZ * 10)) "$FILE"
+log_must zero_expected $((BLKSZ * 4)) $((BLKSZ * 10)) 1
+log_must verify_expected
 eof_range=$(get_reported_size)
-[[ $overlap_range -gt $eof_range ]] || log_fail \
-    "EOF range failure: $overlap_range -> $eof_range"
+[[ $overlap_range -eq $eof_range ]] || log_fail \
+    "EOF keep-size failure: $overlap_range -> $eof_range"
 log_must check_apparent_size $apparent_size
 
-# Zero range from the fifth block past the end of file.  The apparent
-# file size should change since --keep-size is not implied, unlike
-# with PUNCH_HOLE. The reported size should remain constant.
-apparent_size=$(stat_size $FILE)
+# Zero range from the fifth block past the end of file.  The apparent file
+# size should grow to the end of the requested range, and the new tail should
+# read back as zeros.
 log_must zero_range $((BLKSZ * 4)) $((BLKSZ * 10)) $FILE
+log_must zero_expected $((BLKSZ * 4)) $((BLKSZ * 10)) 0
+log_must verify_expected
 eof_range2=$(get_reported_size)
-[[ $eof_range -eq $eof_range2 ]] || log_fail \
+[[ $eof_range2 -gt $eof_range ]] || log_fail \
     "Second EOF range failure: $eof_range -> $eof_range2"
 log_must check_apparent_size $((BLKSZ * 14))
 
-log_pass "Ensure ranges can be zeroed in files"
+log_pass "Ensure ranges can be zeroed in files without punching holes"
