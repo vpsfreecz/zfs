@@ -43,6 +43,7 @@
 #include <sys/zfs_sa.h>
 #include <sys/zfs_stat.h>
 #include <sys/zfs_rlock.h>
+#include <linux/mm_compat.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -89,6 +90,18 @@ static inline void
 zn_unlock_cached_data_shared(znode_t *zp)
 {
 	filemap_invalidate_unlock_shared(ZTOI(zp)->i_mapping);
+}
+
+static inline void
+zn_pagecache_isize_extended(znode_t *zp, uint64_t from, uint64_t to)
+{
+	struct inode *ip = ZTOI(zp);
+
+	if (!S_ISREG(ip->i_mode) || to <= from)
+		return;
+
+	i_size_write(ip, to);
+	pagecache_isize_extended(ip, from, to);
 }
 
 /*
