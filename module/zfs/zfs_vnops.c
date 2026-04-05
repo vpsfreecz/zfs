@@ -492,14 +492,25 @@ zfs_read(struct znode *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 		boolean_t direct_chunk =
 		    zfs_direct_chunk_begin(zp, uio, nbytes);
 		boolean_t restore_direct = direct_requested && !direct_chunk;
+		boolean_t use_mappedread =
+		    zn_has_cached_data(zp, zfs_uio_offset(uio),
+		    zfs_uio_offset(uio) + nbytes - 1);
+
+		if (!use_mappedread && !(uio->uio_extflg & UIO_DIRECT) &&
+		    zn_writably_mapped(zp)) {
+			use_mappedread = B_TRUE;
+		}
+#else
+		boolean_t use_mappedread =
+		    zn_has_cached_data(zp, zfs_uio_offset(uio),
+		    zfs_uio_offset(uio) + nbytes - 1);
 #endif
 #ifdef UIO_NOCOPY
 		if (zfs_uio_segflg(uio) == UIO_NOCOPY)
 			error = mappedread_sf(zp, nbytes, uio);
 		else
 #endif
-		if (zn_has_cached_data(zp, zfs_uio_offset(uio),
-		    zfs_uio_offset(uio) + nbytes - 1)) {
+		if (use_mappedread) {
 			error = mappedread(zp, nbytes, uio);
 		} else {
 			error = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl),
@@ -558,8 +569,19 @@ zfs_read(struct znode *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 		uio->uio_extflg &= ~UIO_DIRECT;
 		dflags &= ~DMU_DIRECTIO;
 
-		if (zn_has_cached_data(zp, zfs_uio_offset(uio),
-		    zfs_uio_offset(uio) + dio_remaining_resid - 1)) {
+#if defined(__linux__)
+		boolean_t use_mappedread =
+		    zn_has_cached_data(zp, zfs_uio_offset(uio),
+		    zfs_uio_offset(uio) + dio_remaining_resid - 1);
+
+		if (!use_mappedread && zn_writably_mapped(zp))
+			use_mappedread = B_TRUE;
+#else
+		boolean_t use_mappedread =
+		    zn_has_cached_data(zp, zfs_uio_offset(uio),
+		    zfs_uio_offset(uio) + dio_remaining_resid - 1);
+#endif
+		if (use_mappedread) {
 			error = mappedread(zp, dio_remaining_resid, uio);
 		} else {
 			error = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl), uio,

@@ -104,6 +104,12 @@ zn_pagecache_isize_extended(znode_t *zp, uint64_t from, uint64_t to)
 	pagecache_isize_extended(ip, from, to);
 }
 
+static inline boolean_t
+zn_writably_mapped(znode_t *zp)
+{
+	return (mapping_writably_mapped(ZTOI(zp)->i_mapping));
+}
+
 static inline void
 zn_lock_cached_data(znode_t *zp)
 {

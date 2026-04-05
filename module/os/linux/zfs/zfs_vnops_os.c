@@ -278,7 +278,7 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 		if (pp) {
 			boolean_t was_uptodate = PageUptodate(pp);
 
-			if (mapping_writably_mapped(mp))
+			if (zn_writably_mapped(zp))
 				flush_dcache_page(pp);
 
 			void *pb = kmap(pp);
@@ -293,7 +293,7 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 				zpl_page_range_write_done(pp,
 				    was_uptodate, off, nbytes);
 
-				if (mapping_writably_mapped(mp))
+				if (zn_writably_mapped(zp))
 					flush_dcache_page(pp);
 
 				mark_page_accessed(pp);
@@ -306,6 +306,80 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 		len -= nbytes;
 		off = 0;
 	}
+}
+
+/*
+ * Writable shared mappings may instantiate and dirty a page after zfs_read()
+ * has decided this chunk has no cached data.  Snapshot each page-sized slice
+ * under mapping->invalidate_lock into a bounce buffer, then copy that stable
+ * snapshot to the caller after dropping the lock so user-buffer faults cannot
+ * deadlock against page_mkwrite(), truncate, or hole-punch paths.
+ */
+static int
+mappedread_writable(znode_t *zp, struct inode *ip, struct address_space *mp,
+    int nbytes, zfs_uio_t *uio)
+{
+	void *buf = kmem_alloc(PAGE_SIZE, KM_SLEEP);
+	int64_t start = uio->uio_loffset;
+	int64_t off = start & (PAGE_SIZE - 1);
+	int len = nbytes;
+	int error = 0;
+
+	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
+		uint64_t bytes = MIN(PAGE_SIZE - off, len);
+		struct page *pp;
+		zfsvfs_t *zfsvfs = ZTOZSB(zp);
+
+		zn_lock_cached_data(zp);
+		pp = find_lock_page(mp, start >> PAGE_SHIFT);
+		if (pp != NULL) {
+			void *pb;
+
+			/*
+			 * If filemap_fault() retries there exists a window
+			 * where the page will be unlocked and not up to date.
+			 * In this case we must try and fill the page.
+			 */
+			if (unlikely(!PageUptodate(pp))) {
+				error = zfs_fillpage(ip, pp);
+				if (error) {
+					unlock_page(pp);
+					put_page(pp);
+					zn_unlock_cached_data(zp);
+					goto out;
+				}
+			}
+
+			ASSERT(PageUptodate(pp) || PageDirty(pp));
+
+			flush_dcache_page(pp);
+			pb = kmap(pp);
+			memcpy(buf, pb + off, bytes);
+			kunmap(pp);
+			flush_dcache_page(pp);
+
+			unlock_page(pp);
+			mark_page_accessed(pp);
+			put_page(pp);
+		} else {
+			error = dmu_read(zfsvfs->z_os, zp->z_id, start + off,
+			    bytes, buf, DMU_READ_PREFETCH);
+		}
+		zn_unlock_cached_data(zp);
+
+		if (error)
+			goto out;
+
+		error = zfs_uiomove(buf, bytes, UIO_READ, uio);
+		if (error)
+			goto out;
+
+		len -= bytes;
+		off = 0;
+	}
+out:
+	kmem_free(buf, PAGE_SIZE);
+	return (error);
 }
 
 /*
@@ -322,6 +396,9 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 	int64_t off = start & (PAGE_SIZE - 1);
 	int len = nbytes;
 	int error = 0;
+
+	if (zn_writably_mapped(zp))
+		return (mappedread_writable(zp, ip, mp, nbytes, uio));
 
 	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
 		uint64_t bytes = MIN(PAGE_SIZE - off, len);
@@ -350,9 +427,6 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 			void *pb = kmap(pp);
 			error = zfs_uiomove(pb + off, bytes, UIO_READ, uio);
 			kunmap(pp);
-
-			if (mapping_writably_mapped(mp))
-				flush_dcache_page(pp);
 
 			mark_page_accessed(pp);
 			put_page(pp);

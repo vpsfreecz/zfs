@@ -144,6 +144,13 @@ zn_pagecache_isize_extended(znode_t *zp, uint64_t from, uint64_t to)
 	(void) to;
 }
 
+static inline boolean_t
+zn_writably_mapped(znode_t *zp)
+{
+	(void) zp;
+	return (B_FALSE);
+}
+
 static inline void
 zn_lock_cached_data(znode_t *zp)
 {
