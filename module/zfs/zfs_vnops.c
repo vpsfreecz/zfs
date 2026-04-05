@@ -1059,6 +1059,10 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 		o_direct_defer = B_FALSE;
 	}
 
+	uint64_t old_isize = i_size_read(ZTOI(zp));
+	if (zp->z_size > old_isize)
+		zn_pagecache_isize_extended(zp, old_isize, zp->z_size);
+
 	zfs_znode_update_vfs(zp);
 	zfs_rangelock_exit(lr);
 
@@ -1930,6 +1934,9 @@ zfs_clone_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 	}
 
 	vmem_free(bps, sizeof (bps[0]) * maxblocks);
+	uint64_t old_isize = i_size_read(ZTOI(outzp));
+	if (outzp->z_size > old_isize)
+		zn_pagecache_isize_extended(outzp, old_isize, outzp->z_size);
 	zfs_znode_update_vfs(outzp);
 
 unlock:

@@ -1549,6 +1549,10 @@ zfs_extend(znode_t *zp, uint64_t end)
 	VERIFY(0 == sa_update(zp->z_sa_hdl, SA_ZPL_SIZE(ZTOZSB(zp)),
 	    &zp->z_size, sizeof (zp->z_size), tx));
 
+	uint64_t old_isize = i_size_read(ZTOI(zp));
+	if (zp->z_size > old_isize)
+		zn_pagecache_isize_extended(zp, old_isize, zp->z_size);
+
 	zfs_rangelock_exit(lr);
 
 	dmu_tx_commit(tx);

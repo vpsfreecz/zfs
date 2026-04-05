@@ -136,6 +136,14 @@ zn_unlock_cached_data_shared(znode_t *zp)
 	(void) zp;
 }
 
+static inline void
+zn_pagecache_isize_extended(znode_t *zp, uint64_t from, uint64_t to)
+{
+	(void) zp;
+	(void) from;
+	(void) to;
+}
+
 /* Called on entry to each ZFS vnode and vfs operation  */
 static inline int
 zfs_enter(zfsvfs_t *zfsvfs, const char *tag)
