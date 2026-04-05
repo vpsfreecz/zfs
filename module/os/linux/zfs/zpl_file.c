@@ -107,10 +107,6 @@ zpl_iterate(struct file *filp, struct dir_context *ctx)
 	return (error);
 }
 
-static inline int
-zpl_write_cache_pages(struct address_space *mapping,
-    struct writeback_control *wbc, void *data);
-
 static int
 zpl_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
 {
@@ -120,38 +116,9 @@ zpl_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
 	int error;
 	fstrans_cookie_t cookie;
 
-	/*
-	 * Force dirty pages in the range out to the DMU and the log, ready
-	 * for zil_commit() to write down.
-	 *
-	 * We call write_cache_pages() directly to ensure that zpl_putpage() is
-	 * called with the flags we need. We need WB_SYNC_NONE to avoid a call
-	 * to zil_commit() (since we're doing this as a kind of pre-sync); but
-	 * we do need for_sync so that the pages remain in writeback until
-	 * they're on disk, and so that we get an error if the DMU write fails.
-	 */
-	if (filemap_range_has_page(inode->i_mapping, start, end)) {
-		int for_sync = 1;
-		struct writeback_control wbc = {
-			.sync_mode = WB_SYNC_NONE,
-			.nr_to_write = LONG_MAX,
-			.range_start = start,
-			.range_end = end,
-		};
-		error =
-		    zpl_write_cache_pages(inode->i_mapping, &wbc, &for_sync);
-		if (error != 0) {
-			/*
-			 * Unclear what state things are in. zfs_putpage() will
-			 * ensure the pages remain dirty if they haven't been
-			 * written down to the DMU, but because there may be
-			 * nothing logged, we can't assume that zfs_sync() ->
-			 * zil_commit() will give us a useful error. It's
-			 * safest if we just error out here.
-			 */
-			return (error);
-		}
-	}
+	error = file_write_and_wait_range(filp, start, end);
+	if (error != 0)
+		return (error);
 
 	crhold(cr);
 	cookie = spl_fstrans_mark();
