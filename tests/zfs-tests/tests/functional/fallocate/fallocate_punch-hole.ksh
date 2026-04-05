@@ -115,6 +115,11 @@ overlap_hole=$(get_reported_size)
 [[ $one_hole -eq $overlap_hole ]] || log_fail \
     "Overlap hole failure: $one_hole -> $overlap_hole"
 
+# Punching a range wholly past EOF must be a no-op and must not grow the file.
+apparent_size=$(stat_size $FILE)
+log_must punch_hole $((apparent_size + BLKSZ)) $BLKSZ $FILE
+log_must check_apparent_size $apparent_size
+
 # Punch a hole from the fifth block past the end of file.  The reported size
 # should decrease, and the apparent file size should not change since
 # --keep-size is implied.
