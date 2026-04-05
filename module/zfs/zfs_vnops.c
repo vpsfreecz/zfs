@@ -243,14 +243,12 @@ zfs_access(znode_t *zp, int mode, int flag, cred_t *cr)
  * is it allows the property to be safely set on a dataset without forcing
  * all of the applications to be aware of the alignment restrictions. When
  * O_DIRECT is explicitly requested by an application return EINVAL if the
- * request is unaligned.  In all cases, if the range for this request has
- * been mmap'ed then we will perform buffered I/O to keep the mapped region
- * synhronized with the ARC.
+ * request is unaligned.
  *
- * It is possible that a file's pages could be mmap'ed after it is checked
- * here. If so, that is handled coorarding in zfs_write(). See comments in the
- * following area for how this is handled:
- * zfs_write() -> update_pages()
+ * On Linux the actual cached-data decision is made later in zfs_read() and
+ * zfs_write() under mapping->invalidate_lock so late-arriving mmap() pages
+ * cannot slip in after the Direct I/O setup work has completed.  FreeBSD
+ * keeps the earlier cached-data fallback here.
  */
 static boolean_t
 zfs_direct_io_enabled(objset_t *os)
@@ -296,6 +294,7 @@ zfs_setup_direct(struct znode *zp, zfs_uio_t *uio, zfs_uio_rw_t rw,
 		goto out;
 	}
 
+#if !defined(__linux__)
 	if (zn_has_cached_data(zp, zfs_uio_offset(uio),
 	    zfs_uio_offset(uio) + zfs_uio_resid(uio) - 1)) {
 		/*
@@ -304,6 +303,7 @@ zfs_setup_direct(struct znode *zp, zfs_uio_t *uio, zfs_uio_rw_t rw,
 		 */
 		goto out;
 	}
+#endif
 
 	/*
 	 * For short writes the page mapping of Direct I/O makes no sense.
@@ -321,6 +321,35 @@ out:
 	*ioflagp = ioflag;
 	return (error);
 }
+
+#if defined(__linux__)
+static boolean_t
+zfs_direct_chunk_begin(znode_t *zp, zfs_uio_t *uio, uint64_t size)
+{
+	if ((uio->uio_extflg & UIO_DIRECT) == 0 || size == 0)
+		return (B_FALSE);
+
+	zn_lock_cached_data(zp);
+	if (zn_has_cached_data(zp, zfs_uio_offset(uio),
+	    zfs_uio_offset(uio) + size - 1)) {
+		zn_unlock_cached_data(zp);
+		uio->uio_extflg &= ~UIO_DIRECT;
+		return (B_FALSE);
+	}
+
+	return (B_TRUE);
+}
+
+static void
+zfs_direct_chunk_end(znode_t *zp, zfs_uio_t *uio, boolean_t cache_locked,
+    boolean_t restore_direct)
+{
+	if (cache_locked)
+		zn_unlock_cached_data(zp);
+	if (restore_direct)
+		uio->uio_extflg |= UIO_DIRECT;
+}
+#endif
 
 /*
  * Read bytes from specified file into supplied buffer.
@@ -465,6 +494,12 @@ zfs_read(struct znode *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 	while (n > 0) {
 		ssize_t nbytes = MIN(n, chunk_size -
 		    P2PHASE(zfs_uio_offset(uio), blksz));
+#if defined(__linux__)
+		boolean_t direct_requested = !!(uio->uio_extflg & UIO_DIRECT);
+		boolean_t direct_chunk =
+		    zfs_direct_chunk_begin(zp, uio, nbytes);
+		boolean_t restore_direct = direct_requested && !direct_chunk;
+#endif
 #ifdef UIO_NOCOPY
 		if (zfs_uio_segflg(uio) == UIO_NOCOPY)
 			error = mappedread_sf(zp, nbytes, uio);
@@ -477,6 +512,9 @@ zfs_read(struct znode *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 			error = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl),
 			    uio, nbytes, dflags);
 		}
+#if defined(__linux__)
+		zfs_direct_chunk_end(zp, uio, direct_chunk, restore_direct);
+#endif
 
 		if (error) {
 			/* convert checksum errors into IO errors */
@@ -914,13 +952,29 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 			dflags |= DMU_DIRECTIO;
 
 		ssize_t tx_bytes;
+		dmu_flags_t chunk_dflags = dflags;
+#if defined(__linux__)
+		boolean_t direct_chunk = B_FALSE;
+#endif
 		if (abuf == NULL) {
+#if defined(__linux__)
+			boolean_t direct_requested =
+			    !!(uio->uio_extflg & UIO_DIRECT);
+			boolean_t restore_direct;
+
+			direct_chunk = zfs_direct_chunk_begin(zp, uio, nbytes);
+			if (!direct_chunk)
+				chunk_dflags &= ~DMU_DIRECTIO;
+			restore_direct = direct_requested && !direct_chunk;
+#endif
 			tx_bytes = zfs_uio_resid(uio);
 			zfs_uio_fault_disable(uio, B_TRUE);
 			error = dmu_write_uio_dbuf(sa_get_db(zp->z_sa_hdl),
-			    uio, nbytes, tx, dflags);
+			    uio, nbytes, tx, chunk_dflags);
 			zfs_uio_fault_disable(uio, B_FALSE);
-#ifdef __linux__
+#if defined(__linux__)
+			zfs_direct_chunk_end(zp, uio, direct_chunk,
+			    restore_direct);
 			if (error == EFAULT) {
 				zfs_clear_setid_bits_if_necessary(zfsvfs, zp,
 				    cr, &clear_setid_bits_txg, tx);
@@ -974,30 +1028,21 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 			zfs_uioskip(uio, nbytes);
 			tx_bytes = nbytes;
 		}
-		/*
-		 * There is a window where a file's pages can be mmap'ed after
-		 * zfs_setup_direct() is called. This is due to the fact that
-		 * the rangelock in this function is acquired after calling
-		 * zfs_setup_direct(). This is done so that
-		 * zfs_uio_prefaultpages() does not attempt to fault in pages
-		 * on Linux for Direct I/O requests. This is not necessary as
-		 * the pages are pinned in memory and can not be faulted out.
-		 * Ideally, the rangelock would be held before calling
-		 * zfs_setup_direct() and zfs_uio_prefaultpages(); however,
-		 * this can lead to a deadlock as zfs_getpage() also acquires
-		 * the rangelock as a RL_WRITER and prefaulting the pages can
-		 * lead to zfs_getpage() being called.
-		 *
-		 * In the case of the pages being mapped after
-		 * zfs_setup_direct() is called, the call to update_pages()
-		 * will still be made to make sure there is consistency between
-		 * the ARC and the Linux page cache. This is an ufortunate
-		 * situation as the data will be read back into the ARC after
-		 * the Direct I/O write has completed, but this is the penality
-		 * for writing to a mmap'ed region of a file using Direct I/O.
-		 */
+			/*
+			 * Linux decides each Direct I/O write chunk under
+			 * mapping->invalidate_lock.  If cached pages are
+			 * present we route that chunk through the buffered
+			 * path; otherwise no page-cache repair is needed
+			 * because late-arriving mmap() pages were kept out
+			 * while the direct write was in flight.
+			 */
+#if defined(__linux__)
+		if (!direct_chunk && tx_bytes &&
+		    zn_has_cached_data(zp, woff, woff + tx_bytes - 1)) {
+#else
 		if (tx_bytes &&
 		    zn_has_cached_data(zp, woff, woff + tx_bytes - 1)) {
+#endif
 			update_pages(zp, woff, tx_bytes, zfsvfs->z_os);
 		}
 
