@@ -4508,14 +4508,17 @@ zfs_map(struct inode *ip, offset_t off, caddr_t *addrp, size_t len,
  * Timestamps:
  *	zp - ctime|mtime updated
  */
-int
-zfs_space(znode_t *zp, int cmd, flock64_t *bfp, int flag,
-    offset_t offset, cred_t *cr)
+static int
+zfs_space_impl(znode_t *zp, int cmd, flock64_t *bfp, int flag,
+    offset_t offset, cred_t *cr, zidmap_t *mnt_ns)
 {
 	(void) offset;
 	zfsvfs_t	*zfsvfs = ZTOZSB(zp);
 	uint64_t	off, len;
 	int		error;
+
+	if (mnt_ns == NULL)
+		mnt_ns = zfs_init_idmap;
 
 	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
 		return (error);
@@ -4542,11 +4545,13 @@ zfs_space(znode_t *zp, int cmd, flock64_t *bfp, int flag,
 	/*
 	 * Permissions aren't checked on Solaris because on this OS
 	 * zfs_space() can only be called with an opened file handle.
-	 * On Linux we can get here through truncate_range() which
-	 * operates directly on inodes, so we need to check access rights.
+	 * On Linux we can reach this path both from VFS entry points that already
+	 * know the caller's mount idmap and from internal callers like replay.
+	 * Keep the access check on the same mount idmap as the VFS walk when one
+	 * exists, and fall back to init_idmap for internal paths.
 	 */
 	if ((error = zfs_zaccess(zp, ACE_WRITE_DATA, 0, B_FALSE, cr,
-	    zfs_init_idmap))) {
+	    mnt_ns))) {
 		zfs_exit(zfsvfs, FTAG);
 		return (error);
 	}
@@ -4558,6 +4563,21 @@ zfs_space(znode_t *zp, int cmd, flock64_t *bfp, int flag,
 
 	zfs_exit(zfsvfs, FTAG);
 	return (error);
+}
+
+int
+zfs_space_idmap(znode_t *zp, int cmd, flock64_t *bfp, int flag,
+    offset_t offset, cred_t *cr, zidmap_t *mnt_ns)
+{
+	return (zfs_space_impl(zp, cmd, bfp, flag, offset, cr, mnt_ns));
+}
+
+int
+zfs_space(znode_t *zp, int cmd, flock64_t *bfp, int flag,
+    offset_t offset, cred_t *cr)
+{
+	return (zfs_space_impl(zp, cmd, bfp, flag, offset, cr,
+	    zfs_init_idmap));
 }
 
 int
