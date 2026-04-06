@@ -233,7 +233,8 @@ static int
 zfs_uiomove_iter(void *p, size_t n, zfs_uio_rw_t rw, zfs_uio_t *uio,
     boolean_t revert)
 {
-	size_t cnt = MIN(n, uio->uio_resid);
+	size_t requested = MIN(n, uio->uio_resid);
+	size_t cnt = requested;
 
 	if (rw == UIO_READ)
 		cnt = copy_to_iter(p, cnt, uio->uio_iter);
@@ -258,7 +259,7 @@ zfs_uiomove_iter(void *p, size_t n, zfs_uio_rw_t rw, zfs_uio_t *uio,
 	uio->uio_resid -= cnt;
 	uio->uio_loffset += cnt;
 
-	return (0);
+	return ((cnt == requested) ? 0 : EFAULT);
 }
 
 int
