@@ -261,6 +261,78 @@ zfs_page_revalidate(struct inode *ip, struct page *pp,
 	return (B_TRUE);
 }
 /*
+ * Snapshot the current Linux file view into a kernel buffer.  Existing page
+ * cache pages win over the DMU view, and each page-sized slice is serialized
+ * against invalidate/truncate activity under mapping->invalidate_lock.
+ */
+int
+zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
+    int flags)
+{
+	struct inode *ip = ZTOI(zp);
+	struct address_space *mp = ip->i_mapping;
+	uint64_t off = start & (PAGE_SIZE - 1);
+	char *dst = buf;
+	int error = 0;
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+
+	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
+		uint64_t nbytes = MIN(PAGE_SIZE - off, len);
+		struct page *pp;
+
+		zn_lock_cached_data(zp);
+		pp = find_lock_page(mp, start >> PAGE_SHIFT);
+		if (pp != NULL) {
+			void *pb;
+
+			/*
+			 * If filemap_fault() retries there exists a window
+			 * where the page will be unlocked and not up to date.
+			 * In this case we must try and fill the page.
+			 */
+			if (unlikely(!PageUptodate(pp))) {
+				error = zfs_fillpage(ip, pp);
+				if (error) {
+					unlock_page(pp);
+					put_page(pp);
+					zn_unlock_cached_data(zp);
+					return (error);
+				}
+			}
+
+			ASSERT(PageUptodate(pp) || PageDirty(pp));
+
+			if (zn_writably_mapped(zp))
+				flush_dcache_page(pp);
+
+			pb = kmap(pp);
+			memcpy(dst, pb + off, nbytes);
+			kunmap(pp);
+
+			if (zn_writably_mapped(zp))
+				flush_dcache_page(pp);
+
+			unlock_page(pp);
+			mark_page_accessed(pp);
+			put_page(pp);
+		} else {
+			error = dmu_read(zfsvfs->z_os, zp->z_id, start + off,
+			    nbytes, dst, flags);
+		}
+		zn_unlock_cached_data(zp);
+
+		if (error != 0)
+			return (error);
+
+		dst += nbytes;
+		len -= nbytes;
+		off = 0;
+	}
+
+	return (0);
+}
+
+/*
  * When a file is memory mapped, we must keep the IO data synchronized
  * between the DMU cache and the memory mapped pages.  Update all mapped
  * pages with the contents of the coresponding dmu buffer.
@@ -316,8 +388,7 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
  * deadlock against page_mkwrite(), truncate, or hole-punch paths.
  */
 static int
-mappedread_writable(znode_t *zp, struct inode *ip, struct address_space *mp,
-    int nbytes, zfs_uio_t *uio)
+mappedread_writable(znode_t *zp, int nbytes, zfs_uio_t *uio)
 {
 	void *buf = kmem_alloc(PAGE_SIZE, KM_SLEEP);
 	int64_t start = uio->uio_loffset;
@@ -327,51 +398,14 @@ mappedread_writable(znode_t *zp, struct inode *ip, struct address_space *mp,
 
 	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
 		uint64_t bytes = MIN(PAGE_SIZE - off, len);
-		struct page *pp;
-		zfsvfs_t *zfsvfs = ZTOZSB(zp);
 
-		zn_lock_cached_data(zp);
-		pp = find_lock_page(mp, start >> PAGE_SHIFT);
-		if (pp != NULL) {
-			void *pb;
-
-			/*
-			 * If filemap_fault() retries there exists a window
-			 * where the page will be unlocked and not up to date.
-			 * In this case we must try and fill the page.
-			 */
-			if (unlikely(!PageUptodate(pp))) {
-				error = zfs_fillpage(ip, pp);
-				if (error) {
-					unlock_page(pp);
-					put_page(pp);
-					zn_unlock_cached_data(zp);
-					goto out;
-				}
-			}
-
-			ASSERT(PageUptodate(pp) || PageDirty(pp));
-
-			flush_dcache_page(pp);
-			pb = kmap(pp);
-			memcpy(buf, pb + off, bytes);
-			kunmap(pp);
-			flush_dcache_page(pp);
-
-			unlock_page(pp);
-			mark_page_accessed(pp);
-			put_page(pp);
-		} else {
-			error = dmu_read(zfsvfs->z_os, zp->z_id, start + off,
-			    bytes, buf, DMU_READ_PREFETCH);
-		}
-		zn_unlock_cached_data(zp);
-
-		if (error)
+		error = zfs_read_mapped_range(zp, start + off, bytes, buf,
+		    DMU_READ_PREFETCH);
+		if (error != 0)
 			goto out;
 
 		error = zfs_uiomove(buf, bytes, UIO_READ, uio);
-		if (error)
+		if (error != 0)
 			goto out;
 
 		len -= bytes;
@@ -398,7 +432,7 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 	int error = 0;
 
 	if (zn_writably_mapped(zp))
-		return (mappedread_writable(zp, ip, mp, nbytes, uio));
+		return (mappedread_writable(zp, nbytes, uio));
 
 	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
 		uint64_t bytes = MIN(PAGE_SIZE - off, len);
