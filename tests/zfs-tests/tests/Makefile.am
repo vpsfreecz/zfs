@@ -1598,6 +1598,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/history/history_008_pos.ksh \
 	functional/history/history_009_pos.ksh \
 	functional/history/history_010_pos.ksh \
+	functional/history/history_copyinstr.ksh \
 	functional/history/setup.ksh \
 	functional/inheritance/cleanup.ksh \
 	functional/inheritance/inherit_001_pos.ksh \

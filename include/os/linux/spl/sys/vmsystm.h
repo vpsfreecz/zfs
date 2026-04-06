@@ -77,18 +77,22 @@ copyout(const void *from, void *to, size_t len)
 static __inline__ int
 copyinstr(const void *from, void *to, size_t len, size_t *done)
 {
-	size_t rc;
+	long copied;
+
+	if (done != NULL)
+		*done = 0;
 
 	if (len == 0)
 		return (-ENAMETOOLONG);
 
-	/* XXX: Should return ENAMETOOLONG if 'strlen(from) > len' */
+	copied = strncpy_from_user(to, from, len);
+	if (copied < 0)
+		return (copied);
+	if (copied == len)
+		return (-ENAMETOOLONG);
 
-	memset(to, 0, len);
-	rc = copyin(from, to, len - 1);
 	if (done != NULL)
-		*done = rc;
-
+		*done = copied + 1;
 	return (0);
 }
 
