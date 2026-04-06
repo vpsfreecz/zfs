@@ -770,7 +770,8 @@ zpl_ioctl_getversion(struct file *filp, void __user *arg)
 {
 	uint32_t generation = file_inode(filp)->i_generation;
 
-	return (copy_to_user(arg, &generation, sizeof (generation)));
+	return (copy_to_user(arg, &generation, sizeof (generation)) ?
+	    -EFAULT : 0);
 }
 
 static int
@@ -880,7 +881,7 @@ zpl_ioctl_getflags(struct file *filp, void __user *arg)
 	flags = flags & ZFS_FL_USER_VISIBLE;
 	err = copy_to_user(arg, &flags, sizeof (flags));
 
-	return (err);
+	return (err ? -EFAULT : 0);
 }
 
 /*
@@ -1025,7 +1026,7 @@ zpl_ioctl_getxattr(struct file *filp, void __user *arg)
 	fsx.fsx_projid = ITOZ(ip)->z_projid;
 	err = copy_to_user(arg, &fsx, sizeof (fsx));
 
-	return (err);
+	return (err ? -EFAULT : 0);
 }
 
 static int
@@ -1073,7 +1074,7 @@ zpl_ioctl_getdosflags(struct file *filp, void __user *arg)
 	dosflags &= ZFS_DOS_FL_USER_VISIBLE;
 	int err = copy_to_user(arg, &dosflags, sizeof (dosflags));
 
-	return (err);
+	return (err ? -EFAULT : 0);
 }
 
 static int
