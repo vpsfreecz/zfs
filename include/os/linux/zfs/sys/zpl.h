@@ -86,22 +86,30 @@ extern int zpl_set_acl(struct user_namespace *userns, struct dentry *dentry,
 extern int zpl_set_acl(struct inode *ip, struct posix_acl *acl, int type);
 #endif /* HAVE_SET_ACL_USERNS */
 
-#if defined(HAVE_GET_ACL_RCU) || defined(HAVE_GET_INODE_ACL)
+#if defined(HAVE_GET_ACL_IDMAP_DENTRY)
+extern struct posix_acl *zpl_get_acl(struct mnt_idmap *idmap,
+    struct dentry *dentry, int type);
+#elif defined(HAVE_GET_ACL_RCU)
 extern struct posix_acl *zpl_get_acl(struct inode *ip, int type, bool rcu);
 #elif defined(HAVE_GET_ACL)
 extern struct posix_acl *zpl_get_acl(struct inode *ip, int type);
 #endif
-extern int zpl_init_acl(struct inode *ip, struct inode *dir);
-extern int zpl_chmod_acl(struct inode *ip);
+#if defined(HAVE_GET_INODE_ACL)
+extern struct posix_acl *zpl_get_inode_acl(struct inode *ip, int type,
+    bool rcu);
+#endif
+extern int zpl_init_acl(zidmap_t *mnt_ns, struct inode *ip,
+    struct inode *dir);
+extern int zpl_chmod_acl(zidmap_t *mnt_ns, struct inode *ip);
 #else
 static inline int
-zpl_init_acl(struct inode *ip, struct inode *dir)
+zpl_init_acl(zidmap_t *mnt_ns, struct inode *ip, struct inode *dir)
 {
 	return (0);
 }
 
 static inline int
-zpl_chmod_acl(struct inode *ip)
+zpl_chmod_acl(zidmap_t *mnt_ns, struct inode *ip)
 {
 	return (0);
 }

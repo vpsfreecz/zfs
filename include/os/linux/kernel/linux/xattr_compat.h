@@ -28,6 +28,7 @@
 #define	_ZFS_XATTR_H
 
 #include <linux/posix_acl_xattr.h>
+#include <sys/cred.h>
 #include <sys/zfs_ugid_map.h>
 #include <linux/user_namespace.h>
 
@@ -127,15 +128,38 @@ fn(const struct xattr_handler *handler, struct dentry *dentry,		\
  * is available through the init credential (kcred).
  */
 static inline struct posix_acl *
+zpl_acl_from_xattr_userns(struct user_namespace *user_ns,
+    const void *value, int size)
+{
+	return (posix_acl_from_xattr(user_ns, value, size));
+}
+
+static inline int
+zpl_acl_to_xattr_userns(struct user_namespace *user_ns,
+    struct posix_acl *acl, void *value, int size)
+{
+	return (posix_acl_to_xattr(user_ns, acl, value, size));
+}
+
+static inline struct posix_acl *
 zpl_acl_from_xattr(const void *value, int size)
 {
-	return (posix_acl_from_xattr(kcred->user_ns, value, size));
+	return (zpl_acl_from_xattr_userns(kcred->user_ns, value, size));
 }
 
 static inline int
 zpl_acl_to_xattr(struct posix_acl *acl, void *value, int size)
 {
-	return (posix_acl_to_xattr(kcred->user_ns, acl, value, size));
+	return (zpl_acl_to_xattr_userns(kcred->user_ns, acl, value, size));
+}
+
+static inline struct posix_acl *
+zpl_acl_from_xattr_idmap(zidmap_t *mnt_userns, const void *value, int size)
+{
+	struct user_namespace ns;
+
+	return (zpl_acl_from_xattr_userns(
+	    zfs_idmap_userns(mnt_userns, &ns), value, size));
 }
 
 static inline struct posix_acl *
@@ -144,7 +168,7 @@ zpl_acl_from_xattr_map(struct zfs_ugid_map *uid_map,
 		const void *value, int size)
 {
 	return (zfs_ugid_map_acl_from_xattr(uid_map, gid_map,
-	    posix_acl_from_xattr(kcred->user_ns, value, size)));
+	    zpl_acl_from_xattr_userns(kcred->user_ns, value, size)));
 }
 
 static inline int
