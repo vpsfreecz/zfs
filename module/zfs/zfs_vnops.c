@@ -1722,9 +1722,15 @@ zfs_clone_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 		}
 	}
 
-	/* Flush any mmap()'d data to disk */
+
+#if !defined(__linux__)
+	/*
+	 * Linux callers already freeze and sync both mappings before entry.
+	 * FreeBSD still needs the older source-cache flush here.
+	 */
 	if (zn_has_cached_data(inzp, inoff, inoff + len - 1))
 		zn_flush_cached_data(inzp, B_TRUE);
+#endif
 
 	/*
 	 * Maintain predictable lock order.
