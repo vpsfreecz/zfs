@@ -91,6 +91,8 @@
 #define	LOOKUP_DIR		0x01
 #define	LOOKUP_XATTR		0x02
 #define	CREATE_XATTR_DIR	0x04
+#define	LOOKUP_SKIP_SEARCH	0x08
+#define	SKIP_DELETE_PERMISSION	0x10
 #define	ATTR_NOACLCHECK		0x20
 
 typedef struct vattr {
