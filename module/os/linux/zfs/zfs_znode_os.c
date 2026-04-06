@@ -360,7 +360,11 @@ zfs_inode_alloc(struct super_block *sb, struct inode **ip)
 {
 	znode_t *zp;
 
+#ifdef HAVE_ALLOC_INODE_SB
+	zp = alloc_inode_sb(sb, znode_cache->skc_linux_cache, GFP_KERNEL);
+#else
 	zp = kmem_cache_alloc(znode_cache, KM_SLEEP);
+#endif
 	*ip = ZTOI(zp);
 
 	return (0);
