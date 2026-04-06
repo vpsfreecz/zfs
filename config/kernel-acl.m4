@@ -62,6 +62,18 @@ dnl # 6.2 API change,
 dnl # get_acl() was renamed to get_inode_acl()
 dnl #
 AC_DEFUN([ZFS_AC_KERNEL_SRC_INODE_OPERATIONS_GET_ACL], [
+	ZFS_LINUX_TEST_SRC([inode_operations_get_acl_idmap_dentry], [
+		#include <linux/fs.h>
+
+		static struct posix_acl *get_acl_fn(struct mnt_idmap *idmap,
+		    struct dentry *dentry, int type) { return NULL; }
+
+		static const struct inode_operations
+		    iops __attribute__ ((unused)) = {
+			.get_acl = get_acl_fn,
+		};
+	],[])
+
 	ZFS_LINUX_TEST_SRC([inode_operations_get_acl], [
 		#include <linux/fs.h>
 
@@ -100,6 +112,15 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_INODE_OPERATIONS_GET_ACL], [
 ])
 
 AC_DEFUN([ZFS_AC_KERNEL_INODE_OPERATIONS_GET_ACL], [
+	AC_MSG_CHECKING([whether iops->get_acl() takes struct mnt_idmap * and struct dentry *])
+	ZFS_LINUX_TEST_RESULT([inode_operations_get_acl_idmap_dentry], [
+		AC_MSG_RESULT(yes)
+		AC_DEFINE(HAVE_GET_ACL_IDMAP_DENTRY, 1,
+		    [iops->get_acl() takes struct mnt_idmap * and struct dentry *])
+	],[
+		AC_MSG_RESULT(no)
+	])
+
 	AC_MSG_CHECKING([whether iops->get_acl() exists])
 	ZFS_LINUX_TEST_RESULT([inode_operations_get_acl], [
 		AC_MSG_RESULT(yes)
@@ -113,7 +134,10 @@ AC_DEFUN([ZFS_AC_KERNEL_INODE_OPERATIONS_GET_ACL], [
 				AC_MSG_RESULT(yes)
 				AC_DEFINE(HAVE_GET_INODE_ACL, 1, [has iops->get_inode_acl()])
 			],[
-				ZFS_LINUX_TEST_ERROR([iops->get_acl() or iops->get_inode_acl()])
+				ZFS_LINUX_TEST_RESULT([inode_operations_get_acl_idmap_dentry], [
+				],[
+					ZFS_LINUX_TEST_ERROR([iops->get_acl() or iops->get_inode_acl()])
+				])
 			])
 		])
 	])

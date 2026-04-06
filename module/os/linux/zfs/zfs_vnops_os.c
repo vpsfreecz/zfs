@@ -580,7 +580,7 @@ zfs_zrele_async(znode_t *zp)
  */
 int
 zfs_lookup(znode_t *zdp, char *nm, znode_t **zpp, int flags, cred_t *cr,
-    int *direntflags, pathname_t *realpnp)
+    int *direntflags, pathname_t *realpnp, zidmap_t *mnt_ns)
 {
 	zfsvfs_t *zfsvfs = ZTOZSB(zdp);
 	int error = 0;
@@ -603,7 +603,8 @@ zfs_lookup(znode_t *zdp, char *nm, znode_t **zpp, int flags, cred_t *cr,
 		}
 
 		if (nm[0] == 0 || (nm[0] == '.' && nm[1] == '\0')) {
-			error = zfs_fastaccesschk_execute(zdp, cr);
+			if (!(flags & LOOKUP_SKIP_SEARCH))
+				error = zfs_fastaccesschk_execute(zdp, cr);
 			if (!error) {
 				*zpp = zdp;
 				zhold(*zpp);
@@ -628,7 +629,7 @@ zfs_lookup(znode_t *zdp, char *nm, znode_t **zpp, int flags, cred_t *cr,
 			return (SET_ERROR(EINVAL));
 		}
 
-		if ((error = zfs_get_xattrdir(zdp, zpp, cr, flags))) {
+		if ((error = zfs_get_xattrdir(zdp, zpp, cr, flags, mnt_ns))) {
 			zfs_exit(zfsvfs, FTAG);
 			return (error);
 		}
@@ -637,8 +638,9 @@ zfs_lookup(znode_t *zdp, char *nm, znode_t **zpp, int flags, cred_t *cr,
 		 * Do we have permission to get into attribute directory?
 		 */
 
-		if ((error = zfs_zaccess(*zpp, ACE_EXECUTE, 0,
-		    B_TRUE, cr, zfs_init_idmap))) {
+		if (!(flags & LOOKUP_SKIP_SEARCH) &&
+		    (error = zfs_zaccess(*zpp, ACE_EXECUTE, 0,
+		    B_TRUE, cr, mnt_ns)) != 0) {
 			zrele(*zpp);
 			*zpp = NULL;
 		}
@@ -656,8 +658,9 @@ zfs_lookup(znode_t *zdp, char *nm, znode_t **zpp, int flags, cred_t *cr,
 	 * Check accessibility of directory.
 	 */
 
-	if ((error = zfs_zaccess(zdp, ACE_EXECUTE, 0, B_FALSE, cr,
-	    zfs_init_idmap))) {
+	if (!(flags & LOOKUP_SKIP_SEARCH) &&
+	    (error = zfs_zaccess(zdp, ACE_EXECUTE, 0, B_FALSE, cr,
+	    mnt_ns)) != 0) {
 		zfs_exit(zfsvfs, FTAG);
 		return (error);
 	}
@@ -1124,7 +1127,8 @@ out:
 static uint64_t null_xattr = 0;
 
 int
-zfs_remove(znode_t *dzp, char *name, cred_t *cr, int flags)
+zfs_remove(znode_t *dzp, char *name, cred_t *cr, int flags,
+    zidmap_t *mnt_ns)
 {
 	znode_t		*zp;
 	znode_t		*xzp;
@@ -1172,7 +1176,8 @@ top:
 		return (error);
 	}
 
-	if ((error = zfs_zaccess_delete(dzp, zp, cr, zfs_init_idmap))) {
+	if (!(flags & SKIP_DELETE_PERMISSION) &&
+	    (error = zfs_zaccess_delete(dzp, zp, cr, mnt_ns)) != 0) {
 		goto out;
 	}
 
@@ -1558,7 +1563,7 @@ out:
  */
 int
 zfs_rmdir(znode_t *dzp, char *name, znode_t *cwd, cred_t *cr,
-    int flags)
+    int flags, zidmap_t *mnt_ns)
 {
 	znode_t		*zp;
 	zfsvfs_t	*zfsvfs = ZTOZSB(dzp);
@@ -1590,7 +1595,8 @@ top:
 		return (error);
 	}
 
-	if ((error = zfs_zaccess_delete(dzp, zp, cr, zfs_init_idmap))) {
+	if (!(flags & SKIP_DELETE_PERMISSION) &&
+	    (error = zfs_zaccess_delete(dzp, zp, cr, mnt_ns)) != 0) {
 		goto out;
 	}
 
@@ -4520,14 +4526,17 @@ zfs_map(struct inode *ip, offset_t off, caddr_t *addrp, size_t len,
  * Timestamps:
  *	zp - ctime|mtime updated
  */
-int
-zfs_space(znode_t *zp, int cmd, flock64_t *bfp, int flag,
-    offset_t offset, cred_t *cr)
+static int
+zfs_space_impl(znode_t *zp, int cmd, flock64_t *bfp, int flag,
+    offset_t offset, cred_t *cr, zidmap_t *mnt_ns)
 {
 	(void) offset;
 	zfsvfs_t	*zfsvfs = ZTOZSB(zp);
 	uint64_t	off, len;
 	int		error;
+
+	if (mnt_ns == NULL)
+		mnt_ns = zfs_init_idmap;
 
 	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
 		return (error);
@@ -4554,11 +4563,12 @@ zfs_space(znode_t *zp, int cmd, flock64_t *bfp, int flag,
 	/*
 	 * Permissions aren't checked on Solaris because on this OS
 	 * zfs_space() can only be called with an opened file handle.
-	 * On Linux we can get here through truncate_range() which
-	 * operates directly on inodes, so we need to check access rights.
+	 * On Linux, VFS entry points pass a mount idmap. Internal callers such
+	 * as replay do not. Keep the access check on the VFS walk's mount idmap
+	 * when one exists, and fall back to init_idmap for internal paths.
 	 */
 	if ((error = zfs_zaccess(zp, ACE_WRITE_DATA, 0, B_FALSE, cr,
-	    zfs_init_idmap))) {
+	    mnt_ns))) {
 		zfs_exit(zfsvfs, FTAG);
 		return (error);
 	}
@@ -4570,6 +4580,21 @@ zfs_space(znode_t *zp, int cmd, flock64_t *bfp, int flag,
 
 	zfs_exit(zfsvfs, FTAG);
 	return (error);
+}
+
+int
+zfs_space_idmap(znode_t *zp, int cmd, flock64_t *bfp, int flag,
+    offset_t offset, cred_t *cr, zidmap_t *mnt_ns)
+{
+	return (zfs_space_impl(zp, cmd, bfp, flag, offset, cr, mnt_ns));
+}
+
+int
+zfs_space(znode_t *zp, int cmd, flock64_t *bfp, int flag,
+    offset_t offset, cred_t *cr)
+{
+	return (zfs_space_impl(zp, cmd, bfp, flag, offset, cr,
+	    zfs_init_idmap));
 }
 
 int
