@@ -35,6 +35,7 @@
 #include <sys/file.h>
 #include <sys/vfs.h>
 #include <sys/zfs_znode.h>
+#include <sys/zfs_vnops.h>
 #include <sys/zfs_dir.h>
 #include <sys/zil.h>
 #include <sys/zil_impl.h>
@@ -618,6 +619,9 @@ zfs_log_write(zilog_t *zilog, dmu_tx_t *tx, int txtype,
 	uint32_t blocksize = zp->z_blksz;
 	itx_wr_state_t write_state;
 	uint64_t gen = 0, log_size = 0;
+#if defined(__linux__)
+	boolean_t writable_mmap = zn_writably_mapped(zp);
+#endif
 
 	if (zil_replaying(zilog, tx) || zp->z_unlinked ||
 	    zfs_xattr_owner_unlinked(zp)) {
@@ -626,15 +630,24 @@ zfs_log_write(zilog_t *zilog, dmu_tx_t *tx, int txtype,
 		return;
 	}
 
-	if (zilog->zl_logbias == ZFS_LOGBIAS_THROUGHPUT || o_direct)
+	if (zilog->zl_logbias == ZFS_LOGBIAS_THROUGHPUT || o_direct) {
+#if defined(__linux__)
+		write_state = writable_mmap ? WR_NEED_COPY : WR_INDIRECT;
+#else
 		write_state = WR_INDIRECT;
-	else if (!spa_has_slogs(zilog->zl_spa) &&
-	    resid >= zfs_immediate_write_sz)
+#endif
+	} else if (!spa_has_slogs(zilog->zl_spa) &&
+	    resid >= zfs_immediate_write_sz) {
+#if defined(__linux__)
+		write_state = writable_mmap ? WR_NEED_COPY : WR_INDIRECT;
+#else
 		write_state = WR_INDIRECT;
-	else if (commit)
+#endif
+	} else if (commit) {
 		write_state = WR_COPIED;
-	else
+	} else {
 		write_state = WR_NEED_COPY;
+	}
 
 	(void) sa_lookup(zp->z_sa_hdl, SA_ZPL_GEN(ZTOZSB(zp)), &gen,
 	    sizeof (gen));
@@ -666,11 +679,20 @@ zfs_log_write(zilog_t *zilog, dmu_tx_t *tx, int txtype,
 		 */
 		if (wr_state == WR_COPIED) {
 			int err;
-			DB_DNODE_ENTER(db);
-			err = dmu_read_by_dnode(DB_DNODE(db), off, len,
-			    &lr->lr_data[0], DMU_READ_NO_PREFETCH |
-			    DMU_KEEP_CACHING);
-			DB_DNODE_EXIT(db);
+#if defined(__linux__)
+			if (writable_mmap) {
+				err = zfs_read_mapped_range(zp, off, len,
+				    &lr->lr_data[0], DMU_READ_NO_PREFETCH |
+				    DMU_KEEP_CACHING);
+			} else
+#endif
+			{
+				DB_DNODE_ENTER(db);
+				err = dmu_read_by_dnode(DB_DNODE(db), off, len,
+				    &lr->lr_data[0], DMU_READ_NO_PREFETCH |
+				    DMU_KEEP_CACHING);
+				DB_DNODE_EXIT(db);
+			}
 			if (err != 0) {
 				zil_itx_destroy(itx, 0);
 				itx = zil_itx_create(txtype, sizeof (*lr));
