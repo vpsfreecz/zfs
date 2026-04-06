@@ -38,6 +38,12 @@
 #include <linux/writeback.h>
 #include <linux/xattr_compat.h>
 
+#if defined(HAVE_FILE_KATTR)
+struct file_kattr;
+#else
+struct fileattr;
+#endif
+
 /* zpl_inode.c */
 extern void zpl_vap_init(vattr_t *vap, struct inode *dir,
     umode_t mode, cred_t *cr, zidmap_t *mnt_ns);
@@ -51,6 +57,17 @@ extern const struct inode_operations zpl_special_inode_operations;
 extern const struct address_space_operations zpl_address_space_operations;
 extern const struct file_operations zpl_file_operations;
 extern const struct file_operations zpl_dir_file_operations;
+#if defined(HAVE_FILEATTR_OPS)
+#if defined(HAVE_FILE_KATTR)
+extern int zpl_fileattr_get(struct dentry *dentry, struct file_kattr *fa);
+extern int zpl_fileattr_set(zidmap_t *idmap, struct dentry *dentry,
+    struct file_kattr *fa);
+#else
+extern int zpl_fileattr_get(struct dentry *dentry, struct fileattr *fa);
+extern int zpl_fileattr_set(zidmap_t *idmap, struct dentry *dentry,
+    struct fileattr *fa);
+#endif
+#endif
 
 /* zpl_super.c */
 extern void zpl_prune_sb(uint64_t nr_to_scan, void *arg);
@@ -63,7 +80,7 @@ extern struct file_system_type zpl_fs_type;
 /* zpl_xattr.c */
 extern ssize_t zpl_xattr_list(struct dentry *dentry, char *buf, size_t size);
 extern int zpl_xattr_security_init(struct inode *ip, struct inode *dip,
-    const struct qstr *qstr);
+    const struct qstr *qstr, zidmap_t *mnt_ns);
 
 #if defined(CONFIG_FS_POSIX_ACL)
 
@@ -80,22 +97,30 @@ extern int zpl_set_acl(struct user_namespace *userns, struct dentry *dentry,
 extern int zpl_set_acl(struct inode *ip, struct posix_acl *acl, int type);
 #endif /* HAVE_SET_ACL_USERNS */
 
-#if defined(HAVE_GET_ACL_RCU) || defined(HAVE_GET_INODE_ACL)
+#if defined(HAVE_GET_ACL_IDMAP_DENTRY)
+extern struct posix_acl *zpl_get_acl(struct mnt_idmap *idmap,
+    struct dentry *dentry, int type);
+#elif defined(HAVE_GET_ACL_RCU)
 extern struct posix_acl *zpl_get_acl(struct inode *ip, int type, bool rcu);
 #elif defined(HAVE_GET_ACL)
 extern struct posix_acl *zpl_get_acl(struct inode *ip, int type);
 #endif
-extern int zpl_init_acl(struct inode *ip, struct inode *dir);
-extern int zpl_chmod_acl(struct inode *ip);
+#if defined(HAVE_GET_INODE_ACL)
+extern struct posix_acl *zpl_get_inode_acl(struct inode *ip, int type,
+    bool rcu);
+#endif
+extern int zpl_init_acl(zidmap_t *mnt_ns, struct inode *ip,
+    struct inode *dir);
+extern int zpl_chmod_acl(zidmap_t *mnt_ns, struct inode *ip);
 #else
 static inline int
-zpl_init_acl(struct inode *ip, struct inode *dir)
+zpl_init_acl(zidmap_t *mnt_ns, struct inode *ip, struct inode *dir)
 {
 	return (0);
 }
 
 static inline int
-zpl_chmod_acl(struct inode *ip)
+zpl_chmod_acl(zidmap_t *mnt_ns, struct inode *ip)
 {
 	return (0);
 }

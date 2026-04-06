@@ -1439,7 +1439,8 @@ zfsctl_shares_lookup(struct inode *dip, char *name, struct inode **ipp,
 	}
 
 	if ((error = zfs_zget(zfsvfs, zfsvfs->z_shares_dir, &dzp)) == 0) {
-		error = zfs_lookup(dzp, name, &zp, 0, cr, NULL, NULL);
+		error = zfs_lookup(dzp, name, &zp, 0, cr, NULL, NULL,
+		    zfs_init_idmap);
 		zrele(dzp);
 	}
 
