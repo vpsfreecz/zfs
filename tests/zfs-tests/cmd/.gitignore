@@ -5,6 +5,7 @@
 /clone_after_trunc
 /clone_mmap_cached
 /clone_mmap_write
+/copyinstr_history
 /crypto_test
 /devname2devid
 /dir_rd_update
