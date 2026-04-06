@@ -454,7 +454,7 @@ out:
 
 static int
 zpl_xattr_set_dir(struct inode *ip, const char *name, const void *value,
-    size_t size, int flags, cred_t *cr)
+    size_t size, int flags, zidmap_t *mnt_ns, cred_t *cr)
 {
 	znode_t *dxzp = NULL;
 	znode_t *xzp = NULL;
@@ -498,11 +498,13 @@ zpl_xattr_set_dir(struct inode *ip, const char *name, const void *value,
 		vap = kmem_zalloc(sizeof (vattr_t), KM_SLEEP);
 		vap->va_mode = xattr_mode;
 		vap->va_mask = ATTR_MODE;
-		vap->va_uid = crgetuid(cr);
-		vap->va_gid = crgetgid(cr);
+		vap->va_uid = zfs_vfsuid_to_uid(mnt_ns, zfs_i_user_ns(ip),
+		    crgetuid(cr));
+		vap->va_gid = zfs_vfsgid_to_gid(mnt_ns, zfs_i_user_ns(ip),
+		    crgetgid(cr));
 
 		error = -zfs_create(dxzp, (char *)name, vap, 0, 0644, &xzp,
-		    cr, ATTR_NOACLCHECK, NULL, zfs_init_idmap);
+		    cr, ATTR_NOACLCHECK, NULL, mnt_ns);
 		if (error)
 			goto out;
 	}
@@ -539,7 +541,7 @@ out:
 
 static int
 zpl_xattr_set_sa(struct inode *ip, const char *name, const void *value,
-    size_t size, int flags, cred_t *cr)
+    size_t size, int flags, zidmap_t *mnt_ns, cred_t *cr)
 {
 	znode_t *zp = ITOZ(ip);
 	nvlist_t *nvl;
@@ -560,7 +562,8 @@ zpl_xattr_set_sa(struct inode *ip, const char *name, const void *value,
 	if (value == NULL) {
 		error = -nvlist_remove(nvl, name, DATA_TYPE_BYTE_ARRAY);
 		if (error == -ENOENT)
-			error = zpl_xattr_set_dir(ip, name, NULL, 0, flags, cr);
+			error = zpl_xattr_set_dir(ip, name, NULL, 0, flags,
+			    mnt_ns, cr);
 	} else {
 		/* Limited to 32k to keep nvpair memory allocations small */
 		if (size > DXATTR_MAX_ENTRY_SIZE)
@@ -598,7 +601,7 @@ zpl_xattr_set_sa(struct inode *ip, const char *name, const void *value,
 
 static int
 zpl_xattr_set(struct inode *ip, const char *name, const void *value,
-    size_t size, int flags)
+    size_t size, int flags, zidmap_t *mnt_ns)
 {
 	znode_t *zp = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
@@ -643,24 +646,26 @@ zpl_xattr_set(struct inode *ip, const char *name, const void *value,
 	/* Preferentially store the xattr as a SA for better performance */
 	if (zfsvfs->z_use_sa && zp->z_is_sa &&
 	    (zfsvfs->z_xattr_sa || (value == NULL && where & XATTR_IN_SA))) {
-		error = zpl_xattr_set_sa(ip, name, value, size, flags, cr);
+		error = zpl_xattr_set_sa(ip, name, value, size, flags,
+		    mnt_ns, cr);
 		if (error == 0) {
 			/*
 			 * Successfully put into SA, we need to clear the one
 			 * in dir.
 			 */
 			if (where & XATTR_IN_DIR)
-				zpl_xattr_set_dir(ip, name, NULL, 0, 0, cr);
+				zpl_xattr_set_dir(ip, name, NULL, 0, 0,
+				    mnt_ns, cr);
 			goto out;
 		}
 	}
 
-	error = zpl_xattr_set_dir(ip, name, value, size, flags, cr);
+	error = zpl_xattr_set_dir(ip, name, value, size, flags, mnt_ns, cr);
 	/*
 	 * Successfully put into dir, we need to clear the one in SA.
 	 */
 	if (error == 0 && (where & XATTR_IN_SA))
-		zpl_xattr_set_sa(ip, name, NULL, 0, 0, cr);
+		zpl_xattr_set_sa(ip, name, NULL, 0, 0, mnt_ns, cr);
 out:
 	rw_exit(&zp->z_xattr_lock);
 	zpl_exit(zfsvfs, FTAG);
@@ -741,7 +746,6 @@ __zpl_xattr_user_set(zidmap_t *user_ns,
     struct inode *ip, const char *name,
     const void *value, size_t size, int flags)
 {
-	(void) user_ns;
 	int error = 0;
 	/* xattr_resolve_name will do this for us if this is defined */
 	if (ZFS_XA_NS_PREFIX_FORBIDDEN(name))
@@ -770,7 +774,7 @@ __zpl_xattr_user_set(zidmap_t *user_ns,
 	/*
 	 * Clear the old value with the alternative name format, if it exists.
 	 */
-	error = zpl_xattr_set(ip, clear_name, NULL, 0, flags);
+	error = zpl_xattr_set(ip, clear_name, NULL, 0, flags, user_ns);
 	/*
 	 * XATTR_CREATE was specified and we failed to clear the xattr
 	 * because it already exists.  Stop here.
@@ -788,7 +792,7 @@ __zpl_xattr_user_set(zidmap_t *user_ns,
 	/*
 	 * Set the new value with the configured name format.
 	 */
-	error = zpl_xattr_set(ip, set_name, value, size, flags);
+	error = zpl_xattr_set(ip, set_name, value, size, flags, user_ns);
 out:
 	kmem_strfree(prefixed_name);
 	return (error);
@@ -864,7 +868,6 @@ __zpl_xattr_trusted_set(zidmap_t *user_ns,
     struct inode *ip, const char *name,
     const void *value, size_t size, int flags)
 {
-	(void) user_ns;
 	char *xattr_name;
 	int error;
 
@@ -872,7 +875,7 @@ __zpl_xattr_trusted_set(zidmap_t *user_ns,
 		return (-EACCES);
 	/* xattr_resolve_name will do this for us if this is defined */
 	xattr_name = kmem_asprintf("%s%s", XATTR_TRUSTED_PREFIX, name);
-	error = zpl_xattr_set(ip, xattr_name, value, size, flags);
+	error = zpl_xattr_set(ip, xattr_name, value, size, flags, user_ns);
 	kmem_strfree(xattr_name);
 
 	return (error);
@@ -926,12 +929,11 @@ __zpl_xattr_security_set(zidmap_t *user_ns,
     struct inode *ip, const char *name,
     const void *value, size_t size, int flags)
 {
-	(void) user_ns;
 	char *xattr_name;
 	int error;
 	/* xattr_resolve_name will do this for us if this is defined */
 	xattr_name = kmem_asprintf("%s%s", XATTR_SECURITY_PREFIX, name);
-	error = zpl_xattr_set(ip, xattr_name, value, size, flags);
+	error = zpl_xattr_set(ip, xattr_name, value, size, flags, user_ns);
 	kmem_strfree(xattr_name);
 
 	return (error);
@@ -946,7 +948,7 @@ zpl_xattr_security_init_impl(struct inode *ip, const struct xattr *xattrs,
 	int error = 0;
 
 	for (xattr = xattrs; xattr->name != NULL; xattr++) {
-		error = __zpl_xattr_security_set(NULL, ip,
+		error = __zpl_xattr_security_set(zfs_init_idmap, ip,
 		    xattr->name, xattr->value, xattr->value_len, 0);
 
 		if (error < 0)
