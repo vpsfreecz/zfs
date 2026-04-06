@@ -77,7 +77,7 @@ copyout(const void *from, void *to, size_t len)
 static __inline__ int
 copyinstr(const void *from, void *to, size_t len, size_t *done)
 {
-	size_t rc;
+	int error;
 
 	if (len == 0)
 		return (-ENAMETOOLONG);
@@ -85,11 +85,11 @@ copyinstr(const void *from, void *to, size_t len, size_t *done)
 	/* XXX: Should return ENAMETOOLONG if 'strlen(from) > len' */
 
 	memset(to, 0, len);
-	rc = copyin(from, to, len - 1);
+	error = copyin(from, to, len - 1);
 	if (done != NULL)
-		*done = rc;
+		*done = (error == 0) ? (strnlen(to, len) + 1) : 0;
 
-	return (0);
+	return (error);
 }
 
 #endif /* SPL_VMSYSTM_H */
