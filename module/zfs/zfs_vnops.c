@@ -994,21 +994,6 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 #if defined(__linux__)
 			zfs_direct_chunk_end(zp, uio, direct_chunk,
 			    restore_direct);
-			if (error == EFAULT) {
-				zfs_clear_setid_bits_if_necessary(zfsvfs, zp,
-				    cr, &clear_setid_bits_txg, tx);
-				dmu_tx_commit(tx);
-				/*
-				 * Account for partial writes before
-				 * continuing the loop.
-				 * Update needs to occur before the next
-				 * zfs_uio_prefaultpages, or prefaultpages may
-				 * error, and we may break the loop early.
-				 */
-				n -= tx_bytes - zfs_uio_resid(uio);
-				pfbytes -= tx_bytes - zfs_uio_resid(uio);
-				continue;
-			}
 #endif
 			/*
 			 * On FreeBSD, EFAULT should be propagated back to the
@@ -1150,6 +1135,11 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 	 */
 	if (uio->uio_extflg & UIO_DIRECT)
 		zfs_uio_free_dio_pages(uio, UIO_WRITE);
+
+#if defined(__linux__)
+	if (error == EFAULT && zfs_uio_resid(uio) != start_resid)
+		error = 0;
+#endif
 
 	/*
 	 * If we're in replay mode, or we made no progress, or the
