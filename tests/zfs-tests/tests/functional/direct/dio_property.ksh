@@ -47,6 +47,49 @@ function cleanup
 	log_must rm -f $tmp_file
 }
 
+function check_read_bounds # pool file bs count skip flags buf_rd_min buf_rd_max dio_rd_min dio_rd_max
+{
+	typeset pool=$1
+	typeset file=$2
+	typeset bs=$3
+	typeset count=$4
+	typeset skip=$5
+	typeset flags=$6
+	typeset buf_rd_min=$7
+	typeset buf_rd_max=$8
+	typeset dio_rd_min=$9
+	shift 9
+	typeset dio_rd_max=$1
+
+	log_note "Checking $count * $bs read(s) at offset $skip, $flags"
+
+	prev_buf_rd=$(kstat_pool $pool iostats.arc_read_count)
+	prev_dio_rd=$(kstat_pool $pool iostats.direct_read_count)
+
+	log_must stride_dd -i $file -o /dev/null -b $bs -c $count \
+	    -p $skip $flags
+
+	curr_buf_rd=$(kstat_pool $pool iostats.arc_read_count)
+	buf_rd_actual=$((curr_buf_rd - prev_buf_rd))
+
+	curr_dio_rd=$(kstat_pool $pool iostats.direct_read_count)
+	dio_rd_actual=$((curr_dio_rd - prev_dio_rd))
+
+	if [[ $buf_rd_actual -lt $buf_rd_min ||
+	    ($buf_rd_max -ge 0 && $buf_rd_actual -gt $buf_rd_max) ]]; then
+		kstat_pool -g $pool iostats
+		log_fail "Buffered reads $buf_rd_actual outside \
+		    [$buf_rd_min, $buf_rd_max]"
+	fi
+
+	if [[ $dio_rd_actual -lt $dio_rd_min ||
+	    ($dio_rd_max -ge 0 && $dio_rd_actual -gt $dio_rd_max) ]]; then
+		kstat_pool -g $pool iostats
+		log_fail "Direct reads $dio_rd_actual outside \
+		    [$dio_rd_min, $dio_rd_max]"
+	fi
+}
+
 log_assert "Verify the direct=always|disabled|standard property"
 
 log_onexit cleanup
@@ -106,6 +149,17 @@ check_write $TESTPOOL $tmp_file $rs $count 0 "-D" $count 0
 
 log_note "Aligned reads (all ARC hits)"
 check_read $TESTPOOL $tmp_file $rs $count 0 "-d" 0 0
+
+#
+# Re-evict the file using a true O_DIRECT overwrite, then confirm that
+# O_DIRECT reads still repopulate the ARC once direct=disabled is restored.
+#
+log_note "Aligned O_DIRECT reads refill the ARC when direct is disabled"
+log_must zfs set direct=standard $TESTPOOL/$TESTFS
+evict_blocks $TESTPOOL $tmp_file $file_size
+log_must zfs set direct=disabled $TESTPOOL/$TESTFS
+check_read_bounds $TESTPOOL $tmp_file $rs $count 0 "-d" 1 -1 0 0
+check_read_bounds $TESTPOOL $tmp_file $rs $count 0 "-d" 0 0 0 0
 
 log_must rm -f $tmp_file
 
