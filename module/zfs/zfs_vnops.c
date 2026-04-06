@@ -1473,8 +1473,17 @@ zfs_get_data(void *arg, uint64_t gen, lr_write_t *lr, char *buf,
 		if (offset >= zp->z_size) {
 			error = SET_ERROR(ENOENT);
 		} else {
-			error = dmu_read(os, object, offset, size, buf,
-			    DMU_READ_NO_PREFETCH | DMU_KEEP_CACHING);
+#if defined(__linux__)
+			if (zn_writably_mapped(zp)) {
+				error = zfs_read_mapped_range(zp, offset, size,
+				    buf, DMU_READ_NO_PREFETCH |
+				    DMU_KEEP_CACHING);
+			} else
+#endif
+			{
+				error = dmu_read(os, object, offset, size, buf,
+				    DMU_READ_NO_PREFETCH | DMU_KEEP_CACHING);
+			}
 		}
 		ASSERT(error == 0 || error == ENOENT);
 	} else { /* indirect write */
