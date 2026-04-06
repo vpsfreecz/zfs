@@ -393,7 +393,7 @@ page_unhold(vm_page_t pp)
  *		the page and the dmu buffer.
  */
 void
-update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
+update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 {
 	vm_object_t obj;
 	struct sf_buf *sf;
