@@ -1002,10 +1002,9 @@ zvol_ioctl(struct block_device *bdev, fmode_t mode,
 
 	case BLKZNAME:
 		mutex_enter(&zv->zv_state_lock);
-		error = -copy_to_user((void *)arg, zv->zv_name, MAXNAMELEN);
+		error = copy_to_user((void *)arg, zv->zv_name, MAXNAMELEN) ?
+		    SET_ERROR(EFAULT) : 0;
 		mutex_exit(&zv->zv_state_lock);
-		if (error)
-			error = SET_ERROR(error);
 		break;
 
 	default:
