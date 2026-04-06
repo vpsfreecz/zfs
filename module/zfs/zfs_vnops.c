@@ -250,6 +250,12 @@ zfs_access(znode_t *zp, int mode, int flag, cred_t *cr)
  * cannot slip in after the Direct I/O setup work has completed.  FreeBSD
  * keeps the earlier cached-data fallback here.
  */
+static boolean_t
+zfs_direct_io_enabled(objset_t *os)
+{
+	return (zfs_dio_enabled && os->os_direct != ZFS_DIRECT_DISABLED);
+}
+
 static int
 zfs_setup_direct(struct znode *zp, zfs_uio_t *uio, zfs_uio_rw_t rw,
     int *ioflagp)
@@ -267,11 +273,12 @@ zfs_setup_direct(struct znode *zp, zfs_uio_t *uio, zfs_uio_rw_t rw,
 	if ((ioflag & O_DIRECT) == 0)
 		goto out;
 
-	if (!zfs_dio_enabled || os->os_direct == ZFS_DIRECT_DISABLED) {
+	if (!zfs_direct_io_enabled(os)) {
 		/*
 		 * Direct I/O is disabled.  Ignore O_DIRECT and perform
 		 * normal buffered I/O through the ARC.
 		 */
+		ioflag &= ~O_DIRECT;
 		goto out;
 	}
 
@@ -454,7 +461,7 @@ zfs_read(struct znode *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 	ssize_t dio_remaining_resid = 0;
 
 	dmu_flags_t dflags = DMU_READ_PREFETCH;
-	if (zfs_dio_enabled && (ioflag & O_DIRECT))
+	if ((ioflag & O_DIRECT) && zfs_direct_io_enabled(zfsvfs->z_os))
 		dflags |= DMU_UNCACHEDIO;
 	if (uio->uio_extflg & UIO_DIRECT) {
 		/*
@@ -939,7 +946,7 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 		}
 
 		dmu_flags_t dflags = DMU_READ_PREFETCH;
-		if (zfs_dio_enabled && (ioflag & O_DIRECT))
+		if ((ioflag & O_DIRECT) && zfs_direct_io_enabled(zfsvfs->z_os))
 			dflags |= DMU_UNCACHEDIO;
 		if (uio->uio_extflg & UIO_DIRECT)
 			dflags |= DMU_DIRECTIO;
@@ -1345,7 +1352,7 @@ zfs_get_direct_alignment(znode_t *zp, uint64_t *alignp)
 {
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 
-	if (!zfs_dio_enabled || zfsvfs->z_os->os_direct == ZFS_DIRECT_DISABLED)
+	if (!zfs_direct_io_enabled(zfsvfs->z_os))
 		return (SET_ERROR(EOPNOTSUPP));
 
 	/*
