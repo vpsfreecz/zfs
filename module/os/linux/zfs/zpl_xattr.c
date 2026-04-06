@@ -986,7 +986,8 @@ static xattr_handler_t zpl_xattr_security_handler = {
  */
 #ifdef CONFIG_FS_POSIX_ACL
 static int
-zpl_set_acl_impl(struct inode *ip, struct posix_acl *acl, int type)
+zpl_set_acl_impl(zidmap_t *mnt_ns, struct inode *ip, struct posix_acl *acl,
+    int type)
 {
 	char *name, *value = NULL;
 	int error = 0;
@@ -1048,7 +1049,7 @@ zpl_set_acl_impl(struct inode *ip, struct posix_acl *acl, int type)
 		}
 	}
 
-	error = zpl_xattr_set(ip, name, value, size, 0);
+	error = zpl_xattr_set(ip, name, value, size, 0, mnt_ns);
 	if (value)
 		kmem_free(value, size);
 
@@ -1087,13 +1088,15 @@ zpl_set_acl(struct user_namespace *userns, struct dentry *dentry,
 zpl_set_acl(struct inode *ip, struct posix_acl *acl, int type)
 #endif /* HAVE_SET_ACL_USERNS */
 {
-#ifdef HAVE_SET_ACL_USERNS_DENTRY_ARG2
-	return (zpl_set_acl_impl(d_inode(dentry), acl, type));
+#ifdef HAVE_SET_ACL_USERNS
+	return (zpl_set_acl_impl(userns, ip, acl, type));
 #elif defined(HAVE_SET_ACL_IDMAP_DENTRY)
-	return (zpl_set_acl_impl(d_inode(dentry), acl, type));
+	return (zpl_set_acl_impl(userns, d_inode(dentry), acl, type));
+#elif defined(HAVE_SET_ACL_USERNS_DENTRY_ARG2)
+	return (zpl_set_acl_impl(userns, d_inode(dentry), acl, type));
 #else
-	return (zpl_set_acl_impl(ip, acl, type));
-#endif /* HAVE_SET_ACL_USERNS_DENTRY_ARG2 */
+	return (zpl_set_acl_impl(zfs_init_idmap, ip, acl, type));
+#endif /* HAVE_SET_ACL_USERNS */
 }
 
 static struct posix_acl *
@@ -1137,7 +1140,21 @@ zpl_get_acl_impl(struct inode *ip, int type)
 	return (acl);
 }
 
-#if defined(HAVE_GET_ACL_RCU) || defined(HAVE_GET_INODE_ACL)
+#if defined(HAVE_GET_ACL_IDMAP_DENTRY)
+struct posix_acl *
+zpl_get_acl(struct mnt_idmap *idmap, struct dentry *dentry, int type)
+{
+	/*
+	 * Linux passes the mount idmap at the callback boundary on modern
+	 * kernels, but the ACL itself is still stored in the filesystem view.
+	 */
+	(void) idmap;
+
+	return (zpl_get_acl_impl(d_inode(dentry), type));
+}
+#endif
+
+#if defined(HAVE_GET_ACL_RCU)
 struct posix_acl *
 zpl_get_acl(struct inode *ip, int type, bool rcu)
 {
@@ -1152,12 +1169,26 @@ zpl_get_acl(struct inode *ip, int type)
 {
 	return (zpl_get_acl_impl(ip, type));
 }
-#else
+#endif
+
+#if defined(HAVE_GET_INODE_ACL)
+struct posix_acl *
+zpl_get_inode_acl(struct inode *ip, int type, bool rcu)
+{
+	if (rcu)
+		return (ERR_PTR(-ECHILD));
+
+	return (zpl_get_acl_impl(ip, type));
+}
+#endif
+
+#if !(defined(HAVE_GET_ACL_IDMAP_DENTRY) || defined(HAVE_GET_ACL_RCU) || \
+    defined(HAVE_GET_ACL) || defined(HAVE_GET_INODE_ACL))
 #error "Unsupported iops->get_acl() implementation"
-#endif /* HAVE_GET_ACL_RCU */
+#endif
 
 int
-zpl_init_acl(struct inode *ip, struct inode *dir)
+zpl_init_acl(zidmap_t *mnt_ns, struct inode *ip, struct inode *dir)
 {
 	struct posix_acl *acl = NULL;
 	int error = 0;
@@ -1181,7 +1212,8 @@ zpl_init_acl(struct inode *ip, struct inode *dir)
 		umode_t mode;
 
 		if (S_ISDIR(ip->i_mode)) {
-			error = zpl_set_acl_impl(ip, acl, ACL_TYPE_DEFAULT);
+			error = zpl_set_acl_impl(mnt_ns, ip, acl,
+			    ACL_TYPE_DEFAULT);
 			if (error)
 				goto out;
 		}
@@ -1192,7 +1224,7 @@ zpl_init_acl(struct inode *ip, struct inode *dir)
 			ip->i_mode = ITOZ(ip)->z_mode = mode;
 			zfs_mark_inode_dirty(ip);
 			if (error > 0) {
-				error = zpl_set_acl_impl(ip, acl,
+				error = zpl_set_acl_impl(mnt_ns, ip, acl,
 				    ACL_TYPE_ACCESS);
 			}
 		}
@@ -1204,7 +1236,7 @@ out:
 }
 
 int
-zpl_chmod_acl(struct inode *ip)
+zpl_chmod_acl(zidmap_t *mnt_ns, struct inode *ip)
 {
 	struct posix_acl *acl;
 	int error;
@@ -1221,7 +1253,7 @@ zpl_chmod_acl(struct inode *ip)
 
 	error = __posix_acl_chmod(&acl, GFP_KERNEL, ip->i_mode);
 	if (!error)
-		error = zpl_set_acl_impl(ip, acl, ACL_TYPE_ACCESS);
+		error = zpl_set_acl_impl(mnt_ns, ip, acl, ACL_TYPE_ACCESS);
 
 	zpl_posix_acl_release(acl);
 
@@ -1267,6 +1299,7 @@ __zpl_xattr_acl_get_access(struct inode *ip, const char *name,
     void *buffer, size_t size)
 {
 	struct posix_acl *acl;
+	zfsvfs_t *zfsvfs;
 	int type = ACL_TYPE_ACCESS;
 	int error;
 	/* xattr_resolve_name will do this for us if this is defined */
@@ -1279,7 +1312,9 @@ __zpl_xattr_acl_get_access(struct inode *ip, const char *name,
 	if (acl == NULL)
 		return (-ENODATA);
 
-	error = zpl_acl_to_xattr(acl, buffer, size);
+	zfsvfs = ITOZSB(ip);
+	error = zpl_acl_to_xattr_map(zfsvfs->z_uid_map,
+	    zfsvfs->z_gid_map, acl, buffer, size);
 	zpl_posix_acl_release(acl);
 
 	return (error);
@@ -1291,6 +1326,7 @@ __zpl_xattr_acl_get_default(struct inode *ip, const char *name,
     void *buffer, size_t size)
 {
 	struct posix_acl *acl;
+	zfsvfs_t *zfsvfs;
 	int type = ACL_TYPE_DEFAULT;
 	int error;
 	/* xattr_resolve_name will do this for us if this is defined */
@@ -1303,7 +1339,9 @@ __zpl_xattr_acl_get_default(struct inode *ip, const char *name,
 	if (acl == NULL)
 		return (-ENODATA);
 
-	error = zpl_acl_to_xattr(acl, buffer, size);
+	zfsvfs = ITOZSB(ip);
+	error = zpl_acl_to_xattr_map(zfsvfs->z_uid_map,
+	    zfsvfs->z_gid_map, acl, buffer, size);
 	zpl_posix_acl_release(acl);
 
 	return (error);
@@ -1332,11 +1370,14 @@ __zpl_xattr_acl_set_access(zidmap_t *mnt_ns,
 #endif
 
 	if (value) {
-		acl = zpl_acl_from_xattr(value, size);
+		struct user_namespace userns;
+
+		acl = zpl_acl_from_xattr_idmap(mnt_ns, value, size);
 		if (IS_ERR(acl))
 			return (PTR_ERR(acl));
 		else if (acl) {
-			error = posix_acl_valid(ip->i_sb->s_user_ns, acl);
+			error = posix_acl_valid(
+			    zfs_idmap_userns(mnt_ns, &userns), acl);
 			if (error) {
 				zpl_posix_acl_release(acl);
 				return (error);
@@ -1345,7 +1386,7 @@ __zpl_xattr_acl_set_access(zidmap_t *mnt_ns,
 	} else {
 		acl = NULL;
 	}
-	error = zpl_set_acl_impl(ip, acl, type);
+	error = zpl_set_acl_impl(mnt_ns, ip, acl, type);
 	zpl_posix_acl_release(acl);
 
 	return (error);
@@ -1374,11 +1415,14 @@ __zpl_xattr_acl_set_default(zidmap_t *mnt_ns,
 #endif
 
 	if (value) {
-		acl = zpl_acl_from_xattr(value, size);
+		struct user_namespace userns;
+
+		acl = zpl_acl_from_xattr_idmap(mnt_ns, value, size);
 		if (IS_ERR(acl))
 			return (PTR_ERR(acl));
 		else if (acl) {
-			error = posix_acl_valid(ip->i_sb->s_user_ns, acl);
+			error = posix_acl_valid(
+			    zfs_idmap_userns(mnt_ns, &userns), acl);
 			if (error) {
 				zpl_posix_acl_release(acl);
 				return (error);
@@ -1388,7 +1432,7 @@ __zpl_xattr_acl_set_default(zidmap_t *mnt_ns,
 		acl = NULL;
 	}
 
-	error = zpl_set_acl_impl(ip, acl, type);
+	error = zpl_set_acl_impl(mnt_ns, ip, acl, type);
 	zpl_posix_acl_release(acl);
 
 	return (error);
