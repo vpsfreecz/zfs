@@ -116,6 +116,40 @@ zn_unlock_cached_data(znode_t *zp)
 	filemap_invalidate_unlock(ZTOI(zp)->i_mapping);
 }
 
+static inline void
+zn_lock_cached_data_pair(znode_t *za, znode_t *zb)
+{
+	struct address_space *ma = ZTOI(za)->i_mapping;
+	struct address_space *mb = ZTOI(zb)->i_mapping;
+
+	if (ma == mb) {
+		zn_lock_cached_data(za);
+	} else if (ma < mb) {
+		zn_lock_cached_data(za);
+		zn_lock_cached_data(zb);
+	} else {
+		zn_lock_cached_data(zb);
+		zn_lock_cached_data(za);
+	}
+}
+
+static inline void
+zn_unlock_cached_data_pair(znode_t *za, znode_t *zb)
+{
+	struct address_space *ma = ZTOI(za)->i_mapping;
+	struct address_space *mb = ZTOI(zb)->i_mapping;
+
+	if (ma == mb) {
+		zn_unlock_cached_data(za);
+	} else if (ma < mb) {
+		zn_unlock_cached_data(zb);
+		zn_unlock_cached_data(za);
+	} else {
+		zn_unlock_cached_data(za);
+		zn_unlock_cached_data(zb);
+	}
+}
+
 static inline int
 zn_sync_cached_data(znode_t *zp, uint64_t start, uint64_t end)
 {

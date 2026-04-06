@@ -27,6 +27,7 @@
 #include <linux/compat.h>
 #endif
 #include <linux/fs.h>
+#include <linux/mm_compat.h>
 #ifdef HAVE_VFS_SPLICE_COPY_FILE_RANGE
 #include <linux/splice.h>
 #endif
@@ -41,12 +42,42 @@
  * Note that we are not required to update file offsets; the kernel will take
  * care of that depending on how it was called.
  */
+static void
+zpl_clone_lock_inodes(struct inode *src_i, struct inode *dst_i)
+{
+	if (src_i == dst_i) {
+		spl_inode_lock(dst_i);
+	} else if (src_i < dst_i) {
+		spl_inode_lock_shared(src_i);
+		spl_inode_lock(dst_i);
+	} else {
+		spl_inode_lock(dst_i);
+		spl_inode_lock_shared(src_i);
+	}
+}
+
+static void
+zpl_clone_unlock_inodes(struct inode *src_i, struct inode *dst_i)
+{
+	if (src_i == dst_i) {
+		spl_inode_unlock(dst_i);
+	} else if (src_i < dst_i) {
+		spl_inode_unlock(dst_i);
+		spl_inode_unlock_shared(src_i);
+	} else {
+		spl_inode_unlock_shared(src_i);
+		spl_inode_unlock(dst_i);
+	}
+}
+
 static ssize_t
 zpl_clone_file_range_impl(struct file *src_file, loff_t src_off,
     struct file *dst_file, loff_t dst_off, size_t len)
 {
 	struct inode *src_i = file_inode(src_file);
 	struct inode *dst_i = file_inode(dst_file);
+	znode_t *src_zp = ITOZ(src_i);
+	znode_t *dst_zp = ITOZ(dst_i);
 	uint64_t src_off_o = (uint64_t)src_off;
 	uint64_t dst_off_o = (uint64_t)dst_off;
 	uint64_t len_o = (uint64_t)len;
@@ -61,22 +92,33 @@ zpl_clone_file_range_impl(struct file *src_file, loff_t src_off,
 	    dmu_objset_spa(ITOZSB(dst_i)->z_os), SPA_FEATURE_BLOCK_CLONING))
 		return (-EOPNOTSUPP);
 
-	if (src_i != dst_i)
-		spl_inode_lock_shared(src_i);
-	spl_inode_lock(dst_i);
+	zpl_clone_lock_inodes(src_i, dst_i);
+	zn_lock_cached_data_pair(src_zp, dst_zp);
+
+	if (len != 0) {
+		err = zn_sync_cached_data(src_zp, (uint64_t)src_off,
+		    (uint64_t)src_off + len - 1);
+		if (err == 0)
+			err = zn_sync_cached_data(dst_zp,
+			    (uint64_t)dst_off, (uint64_t)dst_off + len - 1);
+	} else {
+		err = 0;
+	}
+	if (err != 0)
+		goto unlock;
 
 	crhold(cr);
 	cookie = spl_fstrans_mark();
 
-	err = -zfs_clone_range(ITOZ(src_i), &src_off_o, ITOZ(dst_i),
+	err = -zfs_clone_range(src_zp, &src_off_o, dst_zp,
 	    &dst_off_o, &len_o, cr);
 
 	spl_fstrans_unmark(cookie);
 	crfree(cr);
 
-	spl_inode_unlock(dst_i);
-	if (src_i != dst_i)
-		spl_inode_unlock_shared(src_i);
+unlock:
+	zn_unlock_cached_data_pair(src_zp, dst_zp);
+	zpl_clone_unlock_inodes(src_i, dst_i);
 
 	if (err < 0)
 		return (err);
