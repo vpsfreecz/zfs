@@ -965,9 +965,15 @@ taskq_thread_spawn(taskq_t *tq)
 	tq->lastspawnstop = jiffies;
 	if ((tq->tq_nthreads + tq->tq_nspawn < tq->tq_maxthreads) &&
 	    (tq->tq_flags & TASKQ_ACTIVE)) {
+		taskqid_t id;
+
 		spawning = (++tq->tq_nspawn);
-		taskq_dispatch(dynamic_taskq, taskq_thread_spawn_task,
+		id = taskq_dispatch(dynamic_taskq, taskq_thread_spawn_task,
 		    tq, TQ_NOSLEEP);
+		if (id == TASKQID_INVALID) {
+			tq->tq_nspawn--;
+			spawning = 0;
+		}
 	}
 
 	return (spawning);
