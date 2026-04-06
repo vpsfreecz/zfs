@@ -457,7 +457,7 @@ zfs_read(struct znode *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 	uint_t blksz = zp->z_blksz;
 	ssize_t chunk_size;
 	ssize_t n = MIN(zfs_uio_resid(uio), zp->z_size - zfs_uio_offset(uio));
-	ssize_t start_resid = n;
+	ssize_t start_resid = zfs_uio_resid(uio);
 	ssize_t dio_remaining_resid = 0;
 
 	dmu_flags_t dflags = DMU_READ_PREFETCH;
@@ -602,7 +602,7 @@ zfs_read(struct znode *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 	} else if (error && (uio->uio_extflg & UIO_DIRECT)) {
 		n += dio_remaining_resid;
 	}
-	int64_t nread = start_resid - n;
+	int64_t nread = start_resid - zfs_uio_resid(uio);
 
 	dataset_kstats_update_read_kstats(&zfsvfs->z_kstat, nread);
 out:
