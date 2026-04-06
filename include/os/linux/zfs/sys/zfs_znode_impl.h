@@ -130,6 +130,40 @@ zn_unlock_mapping(struct address_space *mapping)
 #define	zn_unlock_cached_data(zp) \
 	zn_unlock_mapping(ZTOI(zp)->i_mapping)
 
+static inline void
+zn_lock_mapping_pair(struct address_space *ma, struct address_space *mb)
+{
+	if (ma == mb) {
+		zn_lock_mapping(ma);
+	} else if (ma < mb) {
+		zn_lock_mapping(ma);
+		zn_lock_mapping(mb);
+	} else {
+		zn_lock_mapping(mb);
+		zn_lock_mapping(ma);
+	}
+}
+
+#define	zn_lock_cached_data_pair(za, zb) \
+	zn_lock_mapping_pair(ZTOI(za)->i_mapping, ZTOI(zb)->i_mapping)
+
+static inline void
+zn_unlock_mapping_pair(struct address_space *ma, struct address_space *mb)
+{
+	if (ma == mb) {
+		zn_unlock_mapping(ma);
+	} else if (ma < mb) {
+		zn_unlock_mapping(mb);
+		zn_unlock_mapping(ma);
+	} else {
+		zn_unlock_mapping(ma);
+		zn_unlock_mapping(mb);
+	}
+}
+
+#define	zn_unlock_cached_data_pair(za, zb) \
+	zn_unlock_mapping_pair(ZTOI(za)->i_mapping, ZTOI(zb)->i_mapping)
+
 static inline int
 zn_sync_mapping(struct address_space *mapping, uint64_t start, uint64_t end)
 {
