@@ -30,6 +30,9 @@
 #include <linux/compat.h>
 #endif
 #include <linux/fs.h>
+#ifdef HAVE_FILE_OPERATIONS_SETLEASE
+#include <linux/filelock.h>
+#endif
 #if defined(HAVE_FILEATTR_OPS)
 #include <linux/fileattr.h>
 #endif
@@ -1375,6 +1378,9 @@ const struct file_operations zpl_file_operations = {
 	.dedupe_file_range	= zpl_dedupe_file_range,
 #endif
 	.fadvise	= zpl_fadvise,
+#ifdef HAVE_FILE_OPERATIONS_SETLEASE
+	.setlease	= generic_setlease,
+#endif
 	.unlocked_ioctl	= zpl_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= zpl_compat_ioctl,
