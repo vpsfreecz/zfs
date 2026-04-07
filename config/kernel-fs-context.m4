@@ -20,6 +20,33 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_FS_CONTEXT], [
 		static struct fs_context *fsp __attribute__ ((unused));
 		fsp = vfs_dup_fs_context(&fs);
 	])
+
+	ZFS_LINUX_TEST_SRC([fs_context_submount], [
+		#include <linux/fs.h>
+		#include <linux/fs_context.h>
+		#include <linux/mount.h>
+
+		static struct file_system_type *fs_type __attribute__ ((unused));
+		static struct dentry *dentry __attribute__ ((unused));
+		static struct fs_context *fc __attribute__ ((unused));
+		static struct vfsmount *mnt __attribute__ ((unused));
+		static char source_name[] __attribute__ ((unused)) = "zfs";
+		static struct fs_parameter source_param __attribute__ ((unused)) = {
+			.key = "source",
+			.type = fs_value_is_string,
+			.string = source_name,
+			.size = 3,
+		};
+		static struct fs_parameter flag_param __attribute__ ((unused)) = {
+			.key = "nosuid",
+			.type = fs_value_is_flag,
+		};
+	],[
+		fc = fs_context_for_submount(fs_type, dentry);
+		(void) vfs_parse_fs_param_source(fc, &source_param);
+		(void) vfs_parse_fs_param(fc, &flag_param);
+		mnt = fc_mount(fc);
+	])
 ])
 
 AC_DEFUN([ZFS_AC_KERNEL_FS_CONTEXT], [
@@ -33,4 +60,14 @@ AC_DEFUN([ZFS_AC_KERNEL_FS_CONTEXT], [
 	*** This kernel does not have `struct fs_context`. OpenZFS cannot be compiled.
 		])
         ])
+
+	AC_MSG_CHECKING([whether fs_context submount helpers are available])
+	ZFS_LINUX_TEST_RESULT([fs_context_submount], [
+		AC_MSG_RESULT(yes)
+		AC_DEFINE(HAVE_FS_CONTEXT_FOR_SUBMOUNT, 1,
+		    [fs_context_for_submount() is available])
+		AC_DEFINE(HAVE_FC_MOUNT, 1, [fc_mount() is available])
+	],[
+		AC_MSG_RESULT(no)
+	])
 ])

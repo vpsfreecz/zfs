@@ -58,9 +58,11 @@
  * perform an automount of the underlying filesystem and return the
  * corresponding inode.
  *
- * All mounts are handled automatically by an user mode helper which invokes
- * the mount procedure.  Unmounts are handled by allowing the mount
- * point to expire so the kernel may automatically unmount it.
+ * Snapshot mounts are created automatically when a snapshot dentry is walked.
+ * Modern kernels use the fs_context submount API so d_automount() can return
+ * the new mount directly.  Older kernels fall back to the user mode helper
+ * mount path.  Unmounts are handled by allowing the mount point to expire so
+ * the kernel may automatically unmount it.
  *
  * The '.zfs', '.zfs/snapshot', and all directories created under
  * '.zfs/snapshot' (ie: '.zfs/snapshot/<snapname>') all share the same
@@ -89,6 +91,9 @@
 #include <sys/dsl_deleg.h>
 #include <sys/zpl.h>
 #include <sys/mntent.h>
+#ifdef HAVE_FS_CONTEXT_FOR_SUBMOUNT
+#include <linux/fs_context.h>
+#endif
 #include "zfs_namecheck.h"
 
 /*
@@ -1172,27 +1177,117 @@ zfsctl_snapshot_unmount(const char *snapname, int flags)
 	return (error);
 }
 
-int
+static void
+zfsctl_snapshot_complete_mount(zfs_snapentry_t *se, int error)
+{
+	mutex_enter(&se->se_mtx);
+	se->se_mount_error = error;
+	se->se_mounting = B_FALSE;
+	cv_broadcast(&se->se_cv);
+	mutex_exit(&se->se_mtx);
+	zfsctl_snapshot_rele(se);
+}
+
+static struct vfsmount *
+zfsctl_snapshot_wait_mount(zfs_snapentry_t *se)
+{
+	int error;
+
+	mutex_enter(&se->se_mtx);
+	while (se->se_mounting)
+		cv_wait(&se->se_cv, &se->se_mtx);
+	error = se->se_mount_error;
+	mutex_exit(&se->se_mtx);
+	zfsctl_snapshot_rele(se);
+
+	if (error != 0)
+		return (ERR_PTR(error));
+
+	return (NULL);
+}
+
+#if defined(HAVE_FS_CONTEXT_FOR_SUBMOUNT) && defined(HAVE_FC_MOUNT)
+static int
+zfsctl_snapshot_parse_flag(struct fs_context *fc, const char *key)
+{
+	struct fs_parameter param = {
+		.key = key,
+		.type = fs_value_is_flag,
+	};
+
+	return (vfs_parse_fs_param(fc, &param));
+}
+
+static struct vfsmount *
+zfsctl_snapshot_mount_fscontext(struct path *path, char **full_namep,
+    const char *options, zfsvfs_t *zfsvfs, zfs_snapentry_t *se)
+{
+	struct fs_context *fc;
+	struct vfsmount *mnt;
+	struct fs_parameter source_param = {
+		.key = "source",
+		.type = fs_value_is_string,
+		.string = *full_namep,
+		.size = strlen(*full_namep),
+	};
+	zfsvfs_t *snap_zfsvfs;
+	int error;
+
+	fc = fs_context_for_submount(&zpl_fs_type, path->dentry);
+	if (IS_ERR(fc))
+		return (ERR_CAST(fc));
+
+	error = vfs_parse_fs_param_source(fc, &source_param);
+	if (error)
+		goto out;
+	*full_namep = NULL;
+
+	error = zfsctl_snapshot_parse_flag(fc, options);
+	if (error)
+		goto out;
+
+	mnt = fc_mount(fc);
+	put_fs_context(fc);
+	if (IS_ERR(mnt))
+		return (mnt);
+
+	snap_zfsvfs = ITOZSB(mnt->mnt_root->d_inode);
+	snap_zfsvfs->z_parent = zfsvfs;
+	mnt->mnt_flags |= MNT_SHRINKABLE;
+
+	rw_enter(&zfs_snapshot_lock, RW_WRITER);
+	zfsctl_snapshot_fill(se, snap_zfsvfs->z_os->os_spa,
+	    dmu_objset_id(snap_zfsvfs->z_os), mnt->mnt_root);
+	zfsctl_snapshot_unmount_delay_impl(se, zfs_expire_snapshot);
+	rw_exit(&zfs_snapshot_lock);
+
+	return (mnt);
+out:
+	put_fs_context(fc);
+	return (ERR_PTR(error));
+}
+#endif /* defined(HAVE_FS_CONTEXT_FOR_SUBMOUNT) && defined(HAVE_FC_MOUNT) */
+
+struct vfsmount *
 zfsctl_snapshot_mount(struct path *path, int flags)
 {
 	struct dentry *dentry = path->dentry;
 	struct inode *ip = dentry->d_inode;
 	zfsvfs_t *zfsvfs;
-	zfsvfs_t *snap_zfsvfs;
 	zfs_snapentry_t *se;
 	char *full_name, *full_path, *options;
-	char *argv[] = { "/usr/bin/env", "mount", "-i", "-t", "zfs", "-n",
-	    "-o", NULL, NULL, NULL, NULL };
-	char *envp[] = { NULL };
+	struct vfsmount *mnt = NULL;
 	int error;
-	struct path spath;
+
+	(void) flags;
 
 	if (ip == NULL)
-		return (SET_ERROR(EISDIR));
+		return (ERR_PTR(-EISDIR));
 
 	zfsvfs = ITOZSB(ip);
-	if ((error = zfs_enter(zfsvfs, FTAG)) != 0)
-		return (error);
+	error = -zfs_enter(zfsvfs, FTAG);
+	if (error != 0)
+		return (ERR_PTR(error));
 
 	full_name = kmem_zalloc(ZFS_MAX_DATASET_NAME_LEN, KM_SLEEP);
 	full_path = kmem_zalloc(MAXPATHLEN, KM_SLEEP);
@@ -1200,39 +1295,33 @@ zfsctl_snapshot_mount(struct path *path, int flags)
 
 	error = zfsctl_snapshot_name(zfsvfs, dname(dentry),
 	    ZFS_MAX_DATASET_NAME_LEN, full_name);
-	if (error)
-		goto error;
+	if (error != 0) {
+		error = -error;
+		goto out;
+	}
 
 	if (is_current_chrooted() == 0) {
-		/*
-		 * Current process is not in chroot context
-		 */
-
 		char *m = kmem_zalloc(MAXPATHLEN, KM_SLEEP);
-		struct path mnt_path;
-		mnt_path.mnt = path->mnt;
-		mnt_path.dentry = path->mnt->mnt_root;
+		struct path mnt_path = {
+			.mnt = path->mnt,
+			.dentry = path->mnt->mnt_root,
+		};
 
-		/*
-		 * Get path to current mountpoint
-		 */
 		error = get_root_path(&mnt_path, m, MAXPATHLEN);
 		if (error != 0) {
 			kmem_free(m, MAXPATHLEN);
-			goto error;
+			error = -error;
+			goto out;
 		}
 		mutex_enter(&zfsvfs->z_vfs->vfs_mntpt_lock);
 		if (zfsvfs->z_vfs->vfs_mntpoint != NULL) {
-			/*
-			 * If current mnountpoint and vfs_mntpoint are not same,
-			 * store current mountpoint in vfs_mntpoint.
-			 */
 			if (strcmp(zfsvfs->z_vfs->vfs_mntpoint, m) != 0) {
 				kmem_strfree(zfsvfs->z_vfs->vfs_mntpoint);
 				zfsvfs->z_vfs->vfs_mntpoint = kmem_strdup(m);
 			}
-		} else
+		} else {
 			zfsvfs->z_vfs->vfs_mntpoint = kmem_strdup(m);
+		}
 		mutex_exit(&zfsvfs->z_vfs->vfs_mntpt_lock);
 		kmem_free(m, MAXPATHLEN);
 	}
@@ -1251,124 +1340,97 @@ zfsctl_snapshot_mount(struct path *path, int flags)
 	snprintf(options, 7, "%s",
 	    zfs_snapshot_no_setuid ? "nosuid" : "suid");
 
-	/*
-	 * Check if snapshot is already being mounted. If found, wait for
-	 * pending mount to complete before returning success.
-	 */
 	rw_enter(&zfs_snapshot_lock, RW_WRITER);
-	if ((se = zfsctl_snapshot_find_by_name(full_name)) != NULL) {
+	se = zfsctl_snapshot_find_by_name(full_name);
+	if (se != NULL) {
 		rw_exit(&zfs_snapshot_lock);
-		mutex_enter(&se->se_mtx);
-		while (se->se_mounting)
-			cv_wait(&se->se_cv, &se->se_mtx);
-
-		/*
-		 * Return the same error as the first mount attempt (0 if
-		 * succeeded, error code if failed).
-		 */
-		error = se->se_mount_error;
-		mutex_exit(&se->se_mtx);
-		zfsctl_snapshot_rele(se);
-		goto error;
+		mnt = zfsctl_snapshot_wait_mount(se);
+		goto out;
 	}
 
-	/*
-	 * Create pending entry and mark mount in progress.
-	 */
 	se = zfsctl_snapshot_alloc(full_name, full_path, NULL, 0, NULL);
 	se->se_mounting = B_TRUE;
 	zfsctl_snapshot_add(se);
 	zfsctl_snapshot_hold(se);
 	rw_exit(&zfs_snapshot_lock);
 
-	/*
-	 * Attempt to mount the snapshot from user space.  Normally this
-	 * would be done using the vfs_kern_mount() function, however that
-	 * function is marked GPL-only and cannot be used.  On error we
-	 * careful to log the real error to the console and return EISDIR
-	 * to safely abort the automount.  This should be very rare.
-	 *
-	 * If the user mode helper happens to return EBUSY, a concurrent
-	 * mount is already in progress in which case the error is ignored.
-	 * Take note that if the program was executed successfully the return
-	 * value from call_usermodehelper() will be (exitcode << 8 + signal).
-	 */
-	dprintf("mount; name=%s path=%s\n", full_name, full_path);
-	argv[7] = options;
-	argv[8] = full_name;
-	argv[9] = full_path;
-	error = call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
-	if (error) {
-		/*
-		 * Mount failed - cleanup pending entry and signal waiters.
-		 */
-		if (!(error & MOUNT_BUSY << 8)) {
-			zfs_dbgmsg("Unable to automount %s error=%d",
-			    full_path, error);
-			error = SET_ERROR(EISDIR);
-		} else {
-			/*
-			 * EBUSY, this could mean a concurrent mount, or the
-			 * snapshot has already been mounted at completely
-			 * different place. We return 0 so VFS will retry. For
-			 * the latter case the VFS will retry several times
-			 * and return ELOOP, which is probably not a very good
-			 * behavior.
-			 */
-			error = 0;
+#if defined(HAVE_FS_CONTEXT_FOR_SUBMOUNT) && defined(HAVE_FC_MOUNT)
+	mnt = zfsctl_snapshot_mount_fscontext(path, &full_name, options,
+	    zfsvfs, se);
+	if (IS_ERR(mnt)) {
+		rw_enter(&zfs_snapshot_lock, RW_WRITER);
+		zfsctl_snapshot_remove(se);
+		rw_exit(&zfs_snapshot_lock);
+		zfsctl_snapshot_complete_mount(se, PTR_ERR(mnt));
+		goto out;
+	}
+#else
+	{
+		zfsvfs_t *snap_zfsvfs;
+		struct path spath;
+		char *argv[] = { "/usr/bin/env", "mount", "-i", "-t", "zfs",
+		    "-n", "-o", NULL, NULL, NULL, NULL };
+		char *envp[] = { NULL };
+
+		dprintf("mount; name=%s path=%s\n", full_name, full_path);
+		argv[7] = options;
+		argv[8] = full_name;
+		argv[9] = full_path;
+		error = call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
+		if (error != 0) {
+			if (!(error & MOUNT_BUSY << 8)) {
+				zfs_dbgmsg("Unable to automount %s error=%d",
+				    full_path, error);
+				error = -SET_ERROR(EISDIR);
+			} else {
+				error = 0;
+			}
+
+			rw_enter(&zfs_snapshot_lock, RW_WRITER);
+			zfsctl_snapshot_remove(se);
+			rw_exit(&zfs_snapshot_lock);
+			zfsctl_snapshot_complete_mount(se, error);
+			mnt = error ? ERR_PTR(error) : NULL;
+			goto out;
 		}
 
-		rw_enter(&zfs_snapshot_lock, RW_WRITER);
-		zfsctl_snapshot_remove(se);
-		rw_exit(&zfs_snapshot_lock);
-		mutex_enter(&se->se_mtx);
-		se->se_mount_error = error;
-		se->se_mounting = B_FALSE;
-		cv_broadcast(&se->se_cv);
-		mutex_exit(&se->se_mtx);
-		zfsctl_snapshot_rele(se);
-		goto error;
+		spath = *path;
+		path_get(&spath);
+		if (follow_down_one(&spath)) {
+			snap_zfsvfs = ITOZSB(spath.dentry->d_inode);
+			snap_zfsvfs->z_parent = zfsvfs;
+			spath.mnt->mnt_flags |= MNT_SHRINKABLE;
+
+			rw_enter(&zfs_snapshot_lock, RW_WRITER);
+			zfsctl_snapshot_fill(se, snap_zfsvfs->z_os->os_spa,
+			    dmu_objset_id(snap_zfsvfs->z_os), spath.dentry);
+			zfsctl_snapshot_unmount_delay_impl(se,
+			    zfs_expire_snapshot);
+			rw_exit(&zfs_snapshot_lock);
+		} else {
+			error = -SET_ERROR(EISDIR);
+			rw_enter(&zfs_snapshot_lock, RW_WRITER);
+			zfsctl_snapshot_remove(se);
+			rw_exit(&zfs_snapshot_lock);
+		}
+		path_put(&spath);
+		if (error != 0) {
+			zfsctl_snapshot_complete_mount(se, error);
+			mnt = ERR_PTR(error);
+			goto out;
+		}
 	}
+#endif /* defined(HAVE_FS_CONTEXT_FOR_SUBMOUNT) && defined(HAVE_FC_MOUNT) */
 
-	/*
-	 * Follow down in to the mounted snapshot and set MNT_SHRINKABLE
-	 * to identify this as an automounted filesystem.
-	 */
-	spath = *path;
-	path_get(&spath);
-	if (follow_down_one(&spath)) {
-		snap_zfsvfs = ITOZSB(spath.dentry->d_inode);
-		snap_zfsvfs->z_parent = zfsvfs;
-		dentry = spath.dentry;
-		spath.mnt->mnt_flags |= MNT_SHRINKABLE;
-
-		rw_enter(&zfs_snapshot_lock, RW_WRITER);
-		zfsctl_snapshot_fill(se, snap_zfsvfs->z_os->os_spa,
-		    dmu_objset_id(snap_zfsvfs->z_os), dentry);
-		zfsctl_snapshot_unmount_delay_impl(se, zfs_expire_snapshot);
-		rw_exit(&zfs_snapshot_lock);
-	} else {
-		rw_enter(&zfs_snapshot_lock, RW_WRITER);
-		zfsctl_snapshot_remove(se);
-		rw_exit(&zfs_snapshot_lock);
-	}
-	path_put(&spath);
-
-	/*
-	 * Signal mount completion and cleanup.
-	 */
-	mutex_enter(&se->se_mtx);
-	se->se_mounting = B_FALSE;
-	cv_broadcast(&se->se_cv);
-	mutex_exit(&se->se_mtx);
-	zfsctl_snapshot_rele(se);
-error:
-	kmem_free(full_name, ZFS_MAX_DATASET_NAME_LEN);
+	zfsctl_snapshot_complete_mount(se, 0);
+out:
+	if (full_name != NULL)
+		kmem_free(full_name, ZFS_MAX_DATASET_NAME_LEN);
 	kmem_free(full_path, MAXPATHLEN);
-
+	kmem_free(options, 7);
 	zfs_exit(zfsvfs, FTAG);
 
-	return (error);
+	return (mnt);
 }
 
 /*
