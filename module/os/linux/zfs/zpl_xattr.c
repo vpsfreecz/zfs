@@ -948,11 +948,12 @@ static int
 zpl_xattr_security_init_impl(struct inode *ip, const struct xattr *xattrs,
     void *fs_info)
 {
+	zidmap_t *mnt_ns = fs_info != NULL ? fs_info : zfs_init_idmap;
 	const struct xattr *xattr;
 	int error = 0;
 
 	for (xattr = xattrs; xattr->name != NULL; xattr++) {
-		error = __zpl_xattr_security_set(zfs_init_idmap, ip,
+		error = __zpl_xattr_security_set(mnt_ns, ip,
 		    xattr->name, xattr->value, xattr->value_len, 0);
 
 		if (error < 0)
@@ -964,10 +965,10 @@ zpl_xattr_security_init_impl(struct inode *ip, const struct xattr *xattrs,
 
 int
 zpl_xattr_security_init(struct inode *ip, struct inode *dip,
-    const struct qstr *qstr)
+    const struct qstr *qstr, zidmap_t *mnt_ns)
 {
 	return security_inode_init_security(ip, dip, qstr,
-	    &zpl_xattr_security_init_impl, NULL);
+	    &zpl_xattr_security_init_impl, mnt_ns);
 }
 
 /*

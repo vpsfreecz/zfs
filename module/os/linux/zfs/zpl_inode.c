@@ -211,6 +211,31 @@ zpl_permission(struct inode *ip, int mask)
 }
 
 static int
+zpl_create_cleanup(struct inode *dir, struct dentry *dentry, struct inode *ip,
+    cred_t *cr, zidmap_t *user_ns, int error)
+{
+	int cleanup_error;
+
+	if (S_ISDIR(ip->i_mode)) {
+		cleanup_error = -zfs_rmdir(ITOZ(dir), dname(dentry), NULL, cr,
+		    SKIP_DELETE_PERMISSION, user_ns);
+	} else {
+		cleanup_error = -zfs_remove(ITOZ(dir), dname(dentry), cr,
+		    SKIP_DELETE_PERMISSION, user_ns);
+	}
+	if (cleanup_error == 0) {
+		discard_new_inode(ip);
+		return (error);
+	}
+
+	d_drop(dentry);
+	unlock_new_inode(ip);
+	iput(ip);
+
+	return (cleanup_error);
+}
+
+static int
 #ifdef HAVE_IOPS_CREATE_USERNS
 zpl_create(struct user_namespace *user_ns, struct inode *dir,
     struct dentry *dentry, umode_t mode, bool flag)
@@ -244,13 +269,14 @@ zpl_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool flag)
 	if (error == 0) {
 		VERIFY0(insert_inode_locked(ZTOI(zp)));
 
-		error = zpl_xattr_security_init(ZTOI(zp), dir, &dentry->d_name);
+		error = zpl_xattr_security_init(ZTOI(zp), dir, &dentry->d_name,
+		    user_ns);
 		if (error == 0)
 			error = zpl_init_acl(user_ns, ZTOI(zp), dir);
 
 		if (error) {
-			(void) zfs_remove(ITOZ(dir), dname(dentry), cr, 0, user_ns);
-			discard_new_inode(ZTOI(zp));
+			error = zpl_create_cleanup(dir, dentry, ZTOI(zp), cr,
+			    user_ns, error);
 		} else {
 			mark_inode_dirty(ZTOI(zp));
 			d_instantiate_new(dentry, ZTOI(zp));
@@ -308,13 +334,14 @@ zpl_mknod(struct inode *dir, struct dentry *dentry, umode_t mode,
 	if (error == 0) {
 		VERIFY0(insert_inode_locked(ZTOI(zp)));
 
-		error = zpl_xattr_security_init(ZTOI(zp), dir, &dentry->d_name);
+		error = zpl_xattr_security_init(ZTOI(zp), dir, &dentry->d_name,
+		    user_ns);
 		if (error == 0)
 			error = zpl_init_acl(user_ns, ZTOI(zp), dir);
 
 		if (error) {
-			(void) zfs_remove(ITOZ(dir), dname(dentry), cr, 0, user_ns);
-			discard_new_inode(ZTOI(zp));
+			error = zpl_create_cleanup(dir, dentry, ZTOI(zp), cr,
+			    user_ns, error);
 		} else {
 			mark_inode_dirty(ZTOI(zp));
 			d_instantiate_new(dentry, ZTOI(zp));
@@ -379,7 +406,7 @@ zpl_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (error == 0) {
 		VERIFY0(insert_inode_locked(ip));
 
-		error = zpl_xattr_security_init(ip, dir, fname);
+		error = zpl_xattr_security_init(ip, dir, fname, userns);
 		if (error == 0)
 			error = zpl_init_acl(userns, ip, dir);
 		if (error == 0) {
@@ -474,13 +501,14 @@ zpl_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (error == 0) {
 		VERIFY0(insert_inode_locked(ZTOI(zp)));
 
-		error = zpl_xattr_security_init(ZTOI(zp), dir, &dentry->d_name);
+		error = zpl_xattr_security_init(ZTOI(zp), dir, &dentry->d_name,
+		    user_ns);
 		if (error == 0)
 			error = zpl_init_acl(user_ns, ZTOI(zp), dir);
 
 		if (error) {
-			(void) zfs_rmdir(ITOZ(dir), dname(dentry), NULL, cr, 0, user_ns);
-			discard_new_inode(ZTOI(zp));
+			error = zpl_create_cleanup(dir, dentry, ZTOI(zp), cr,
+			    user_ns, error);
 		} else {
 			mark_inode_dirty(ZTOI(zp));
 			d_instantiate_new(dentry, ZTOI(zp));
@@ -795,10 +823,11 @@ zpl_symlink(struct inode *dir, struct dentry *dentry, const char *name)
 	if (error == 0) {
 		VERIFY0(insert_inode_locked(ZTOI(zp)));
 
-		error = zpl_xattr_security_init(ZTOI(zp), dir, &dentry->d_name);
+		error = zpl_xattr_security_init(ZTOI(zp), dir, &dentry->d_name,
+		    user_ns);
 		if (error) {
-			(void) zfs_remove(ITOZ(dir), dname(dentry), cr, 0, user_ns);
-			discard_new_inode(ZTOI(zp));
+			error = zpl_create_cleanup(dir, dentry, ZTOI(zp), cr,
+			    user_ns, error);
 		} else {
 			mark_inode_dirty(ZTOI(zp));
 			d_instantiate_new(dentry, ZTOI(zp));
