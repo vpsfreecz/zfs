@@ -1125,7 +1125,8 @@ zfs_dirempty(znode_t *dzp)
 }
 
 int
-zfs_make_xattrdir(znode_t *zp, vattr_t *vap, znode_t **xzpp, cred_t *cr)
+zfs_make_xattrdir(znode_t *zp, vattr_t *vap, znode_t **xzpp, cred_t *cr,
+    zidmap_t *mnt_ns)
 {
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	znode_t *xzp;
@@ -1140,7 +1141,7 @@ zfs_make_xattrdir(znode_t *zp, vattr_t *vap, znode_t **xzpp, cred_t *cr)
 	*xzpp = NULL;
 
 	if ((error = zfs_acl_ids_create(zp, IS_XATTR, vap, cr, NULL,
-	    &acl_ids, zfs_init_idmap)) != 0)
+	    &acl_ids, mnt_ns)) != 0)
 		return (error);
 	if (zfs_acl_ids_overquota(zfsvfs, &acl_ids, zp->z_projid)) {
 		zfs_acl_ids_free(&acl_ids);
@@ -1201,7 +1202,8 @@ zfs_make_xattrdir(znode_t *zp, vattr_t *vap, znode_t **xzpp, cred_t *cr)
  *		error number on failure
  */
 int
-zfs_get_xattrdir(znode_t *zp, znode_t **xzpp, cred_t *cr, int flags)
+zfs_get_xattrdir(znode_t *zp, znode_t **xzpp, cred_t *cr, int flags,
+    zidmap_t *mnt_ns)
 {
 	zfsvfs_t	*zfsvfs = ZTOZSB(zp);
 	znode_t		*xzp;
@@ -1244,7 +1246,7 @@ top:
 	zfs_fuid_map_ids(zp, cr, &va.va_uid, &va.va_gid);
 
 	va.va_dentry = NULL;
-	error = zfs_make_xattrdir(zp, &va, xzpp, cr);
+	error = zfs_make_xattrdir(zp, &va, xzpp, cr, mnt_ns);
 	zfs_dirent_unlock(dl);
 
 	if (error == ERESTART) {
