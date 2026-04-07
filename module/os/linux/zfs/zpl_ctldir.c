@@ -168,20 +168,7 @@ const struct inode_operations zpl_ops_root = {
 static struct vfsmount *
 zpl_snapdir_automount(struct path *path)
 {
-	int error;
-
-	error = -zfsctl_snapshot_mount(path, 0);
-	if (error)
-		return (ERR_PTR(error));
-
-	/*
-	 * Rather than returning the new vfsmount for the snapshot we must
-	 * return NULL to indicate a mount collision.  This is done because
-	 * the user space mount calls do_add_mount() which adds the vfsmount
-	 * to the name space.  If we returned the new mount here it would be
-	 * added again to the vfsmount list resulting in list corruption.
-	 */
-	return (NULL);
+	return (zfsctl_snapshot_mount(path, 0));
 }
 
 /*
@@ -221,7 +208,8 @@ static const struct dentry_operations zpl_dops_snapdirs = {
  * .d_revalidate callbacks.
  */
 static void
-set_snapdir_dentry_ops(struct dentry *dentry, unsigned int extraflags) {
+set_snapdir_dentry_ops(struct dentry *dentry, unsigned int extraflags)
+{
 	static const unsigned int op_flags =
 	    DCACHE_OP_HASH | DCACHE_OP_COMPARE |
 	    DCACHE_OP_REVALIDATE | DCACHE_OP_DELETE |
@@ -233,8 +221,8 @@ set_snapdir_dentry_ops(struct dentry *dentry, unsigned int extraflags) {
 	 * finds in the passed dentry_operations, so we don't have to.
 	 *
 	 * We clear the flags and the old op table before calling d_set_d_op()
-	 * because issues a warning when the dentry operations table is already
-	 * set.
+	 * because it issues a warning when the dentry operations table is
+	 * already set.
 	 */
 	dentry->d_op = NULL;
 	dentry->d_flags &= ~op_flags;
@@ -261,6 +249,20 @@ set_snapdir_dentry_ops(struct dentry *dentry, unsigned int extraflags) {
 }
 
 static struct dentry *
+zpl_snapdir_splice_alias(struct inode *ip, struct dentry *dentry,
+    unsigned int extraflags)
+{
+	struct dentry *new_dentry;
+
+	set_snapdir_dentry_ops(dentry, extraflags);
+	new_dentry = d_splice_alias(ip, dentry);
+	if (new_dentry != NULL && !IS_ERR(new_dentry))
+		set_snapdir_dentry_ops(new_dentry, extraflags);
+
+	return (new_dentry);
+}
+
+static struct dentry *
 zpl_snapdir_lookup(struct inode *dip, struct dentry *dentry,
     unsigned int flags)
 {
@@ -281,8 +283,7 @@ zpl_snapdir_lookup(struct inode *dip, struct dentry *dentry,
 		return (ERR_PTR(error));
 
 	ASSERT(error == 0 || ip == NULL);
-	set_snapdir_dentry_ops(dentry, DCACHE_NEED_AUTOMOUNT);
-	return (d_splice_alias(ip, dentry));
+	return (zpl_snapdir_splice_alias(ip, dentry, DCACHE_NEED_AUTOMOUNT));
 }
 
 static int
@@ -401,6 +402,7 @@ zpl_snapdir_mkdir(struct inode *dip, struct dentry *dentry, umode_t mode)
 #endif
 {
 	cred_t *cr = CRED();
+	struct dentry *new_dentry = NULL;
 	vattr_t *vap;
 	struct inode *ip;
 	int error;
@@ -415,8 +417,10 @@ zpl_snapdir_mkdir(struct inode *dip, struct dentry *dentry, umode_t mode)
 
 	error = -zfsctl_snapdir_mkdir(dip, dname(dentry), vap, &ip, cr, 0);
 	if (error == 0) {
-		set_snapdir_dentry_ops(dentry, 0);
-		d_instantiate(dentry, ip);
+		d_drop(dentry);
+		new_dentry = zpl_snapdir_splice_alias(ip, dentry, 0);
+		if (IS_ERR(new_dentry))
+			error = PTR_ERR(new_dentry);
 	}
 
 	kmem_free(vap, sizeof (vattr_t));
@@ -424,8 +428,12 @@ zpl_snapdir_mkdir(struct inode *dip, struct dentry *dentry, umode_t mode)
 	crfree(cr);
 
 #if defined(HAVE_IOPS_MKDIR_DENTRY)
-	return (ERR_PTR(error));
+	if (error)
+		return (ERR_PTR(error));
+	return (new_dentry);
 #else
+	if (new_dentry != NULL)
+		dput(new_dentry);
 	return (error);
 #endif
 }
