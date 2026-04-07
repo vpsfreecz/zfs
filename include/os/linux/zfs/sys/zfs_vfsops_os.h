@@ -79,6 +79,28 @@ typedef struct zfs_mnt {
 	char		*mnt_data;	/* Raw mount options */
 } zfs_mnt_t;
 
+typedef enum zfsvfs_mntopt {
+	ZFS_MNTOPT_RO = 0,
+	ZFS_MNTOPT_RW,
+	ZFS_MNTOPT_SETUID,
+	ZFS_MNTOPT_NOSETUID,
+	ZFS_MNTOPT_EXEC,
+	ZFS_MNTOPT_NOEXEC,
+	ZFS_MNTOPT_DEVICES,
+	ZFS_MNTOPT_NODEVICES,
+	ZFS_MNTOPT_DIRXATTR,
+	ZFS_MNTOPT_SAXATTR,
+	ZFS_MNTOPT_XATTR,
+	ZFS_MNTOPT_NOXATTR,
+	ZFS_MNTOPT_ATIME,
+	ZFS_MNTOPT_NOATIME,
+	ZFS_MNTOPT_RELATIME,
+	ZFS_MNTOPT_NORELATIME,
+	ZFS_MNTOPT_NBMAND,
+	ZFS_MNTOPT_NONBMAND,
+	ZFS_MNTOPT_MNTPOINT,
+} zfsvfs_mntopt_t;
+
 struct zfsvfs {
 	vfs_t		*z_vfs;		/* generic fs struct */
 	struct super_block *z_sb;	/* generic super_block */
@@ -243,9 +265,18 @@ extern void zfsvfs_free(zfsvfs_t *zfsvfs);
 extern int zfs_check_global_label(const char *dsname, const char *hexsl);
 
 extern boolean_t zfs_is_readonly(zfsvfs_t *zfsvfs);
+extern vfs_t *zfsvfs_vfs_alloc(void);
+extern void zfsvfs_vfs_free(vfs_t *vfsp);
+extern int zfsvfs_apply_option(vfs_t *vfsp, zfsvfs_mntopt_t opt,
+    const char *value);
+extern int zfsvfs_parse_options(char *mntopts, vfs_t **vfsp);
+extern int zfs_domount_vfs(struct super_block *sb, const char *osname,
+    vfs_t *vfs, int silent);
 extern int zfs_domount(struct super_block *sb, zfs_mnt_t *zm, int silent);
 extern void zfs_preumount(struct super_block *sb);
 extern int zfs_umount(struct super_block *sb);
+extern int zfs_remount_vfs(struct super_block *sb, int *flags,
+    vfs_t *vfsp);
 extern int zfs_remount(struct super_block *sb, int *flags, zfs_mnt_t *zm);
 extern int zfs_statvfs(struct inode *ip, struct kstatfs *statp);
 extern int zfs_vget(struct super_block *sb, struct inode **ipp, fid_t *fidp);
