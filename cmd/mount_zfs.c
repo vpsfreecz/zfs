@@ -270,6 +270,11 @@ main(int argc, char **argv)
 		return (MOUNT_USAGE);
 	}
 
+	/* The strict kernel parser needs the explicit sloppy marker. */
+	if (sloppy)
+		(void) strlcat(mntopts, mntopts[0] == '\0' ?
+		    "sloppy" : ",sloppy", sizeof (mntopts));
+
 	if (sloppy || libzfs_envvar_is_set("ZFS_MOUNT_HELPER")) {
 		zfs_adjust_mount_options(zhp, mntpoint, mntopts, mtabopt);
 	}
