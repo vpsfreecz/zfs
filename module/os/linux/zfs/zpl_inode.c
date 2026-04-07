@@ -719,8 +719,7 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 	vap->va_ctime = ia->ia_ctime;
 
 	if (vap->va_mask & ATTR_ATIME)
-		zpl_inode_set_atime_to_ts(ip,
-		    zpl_inode_timestamp_truncate(ia->ia_atime, ip));
+		vap->va_atime = zpl_inode_timestamp_truncate(ia->ia_atime, ip);
 
 	cookie = spl_fstrans_mark();
 #ifdef HAVE_USERNS_IOPS_SETATTR
@@ -730,6 +729,8 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 #else
 	error = -zfs_setattr(ITOZ(ip), vap, 0, cr, zfs_init_idmap);
 #endif
+	if (!error && (ia->ia_valid & ATTR_ATIME))
+		zpl_inode_set_atime_to_ts(ip, vap->va_atime);
 	if (!error && (ia->ia_valid & ATTR_MODE))
 		error = zpl_chmod_acl(user_ns, ip);
 
