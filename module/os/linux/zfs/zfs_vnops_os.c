@@ -577,7 +577,7 @@ zfs_zrele_async(znode_t *zp)
  */
 int
 zfs_lookup(znode_t *zdp, char *nm, znode_t **zpp, int flags, cred_t *cr,
-    int *direntflags, pathname_t *realpnp)
+    int *direntflags, pathname_t *realpnp, zidmap_t *mnt_ns)
 {
 	zfsvfs_t *zfsvfs = ZTOZSB(zdp);
 	int error = 0;
@@ -600,7 +600,8 @@ zfs_lookup(znode_t *zdp, char *nm, znode_t **zpp, int flags, cred_t *cr,
 		}
 
 		if (nm[0] == 0 || (nm[0] == '.' && nm[1] == '\0')) {
-			error = zfs_fastaccesschk_execute(zdp, cr);
+			if (!(flags & LOOKUP_SKIP_SEARCH))
+				error = zfs_fastaccesschk_execute(zdp, cr);
 			if (!error) {
 				*zpp = zdp;
 				zhold(*zpp);
@@ -625,7 +626,7 @@ zfs_lookup(znode_t *zdp, char *nm, znode_t **zpp, int flags, cred_t *cr,
 			return (SET_ERROR(EINVAL));
 		}
 
-		if ((error = zfs_get_xattrdir(zdp, zpp, cr, flags))) {
+		if ((error = zfs_get_xattrdir(zdp, zpp, cr, flags, mnt_ns))) {
 			zfs_exit(zfsvfs, FTAG);
 			return (error);
 		}
@@ -634,8 +635,9 @@ zfs_lookup(znode_t *zdp, char *nm, znode_t **zpp, int flags, cred_t *cr,
 		 * Do we have permission to get into attribute directory?
 		 */
 
-		if ((error = zfs_zaccess(*zpp, ACE_EXECUTE, 0,
-		    B_TRUE, cr, zfs_init_idmap))) {
+		if (!(flags & LOOKUP_SKIP_SEARCH) &&
+		    (error = zfs_zaccess(*zpp, ACE_EXECUTE, 0,
+		    B_TRUE, cr, mnt_ns)) != 0) {
 			zrele(*zpp);
 			*zpp = NULL;
 		}
@@ -653,8 +655,9 @@ zfs_lookup(znode_t *zdp, char *nm, znode_t **zpp, int flags, cred_t *cr,
 	 * Check accessibility of directory.
 	 */
 
-	if ((error = zfs_zaccess(zdp, ACE_EXECUTE, 0, B_FALSE, cr,
-	    zfs_init_idmap))) {
+	if (!(flags & LOOKUP_SKIP_SEARCH) &&
+	    (error = zfs_zaccess(zdp, ACE_EXECUTE, 0, B_FALSE, cr,
+	    mnt_ns)) != 0) {
 		zfs_exit(zfsvfs, FTAG);
 		return (error);
 	}

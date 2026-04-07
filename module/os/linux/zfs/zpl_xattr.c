@@ -192,8 +192,9 @@ zpl_xattr_list_dir(xattr_filldir_t *xf, cred_t *cr)
 	int error;
 
 	/* Lookup the xattr directory */
-	error = -zfs_lookup(ITOZ(ip), NULL, &dxzp, LOOKUP_XATTR,
-	    cr, NULL, NULL);
+	error = -zfs_lookup(ITOZ(ip), NULL, &dxzp,
+	    LOOKUP_XATTR | LOOKUP_SKIP_SEARCH, cr, NULL, NULL,
+	    zfs_init_idmap);
 	if (error) {
 		if (error == -ENOENT)
 			error = 0;
@@ -286,13 +287,15 @@ zpl_xattr_get_dir(struct inode *ip, const char *name, void *value,
 	int error;
 
 	/* Lookup the xattr directory */
-	error = -zfs_lookup(ITOZ(ip), NULL, &dxzp, LOOKUP_XATTR,
-	    cr, NULL, NULL);
+	error = -zfs_lookup(ITOZ(ip), NULL, &dxzp,
+	    LOOKUP_XATTR | LOOKUP_SKIP_SEARCH, cr, NULL, NULL,
+	    zfs_init_idmap);
 	if (error)
 		goto out;
 
 	/* Lookup a specific xattr name in the directory */
-	error = -zfs_lookup(dxzp, (char *)name, &xzp, 0, cr, NULL, NULL);
+	error = -zfs_lookup(dxzp, (char *)name, &xzp, LOOKUP_SKIP_SEARCH,
+	    cr, NULL, NULL, zfs_init_idmap);
 	if (error)
 		goto out;
 
@@ -473,13 +476,14 @@ zpl_xattr_set_dir(struct inode *ip, const char *name, const void *value,
 	if (value != NULL)
 		lookup_flags |= CREATE_XATTR_DIR;
 
-	error = -zfs_lookup(ITOZ(ip), NULL, &dxzp, lookup_flags,
-	    cr, NULL, NULL);
+	error = -zfs_lookup(ITOZ(ip), NULL, &dxzp,
+	    lookup_flags | LOOKUP_SKIP_SEARCH, cr, NULL, NULL, mnt_ns);
 	if (error)
 		goto out;
 
 	/* Lookup a specific xattr name in the directory */
-	error = -zfs_lookup(dxzp, (char *)name, &xzp, 0, cr, NULL, NULL);
+	error = -zfs_lookup(dxzp, (char *)name, &xzp, LOOKUP_SKIP_SEARCH,
+	    cr, NULL, NULL, zfs_init_idmap);
 	if (error && (error != -ENOENT))
 		goto out;
 
