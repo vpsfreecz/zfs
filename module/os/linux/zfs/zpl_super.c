@@ -555,10 +555,11 @@ zpl_prune_sb(uint64_t nr_to_scan, void *arg)
  * described, it's very easy for that option to not appear, or appear too late.
  *
  * OpenZFS has a test for this in the test suite, and it's documented in
- * mount.zfs(8), so to support it we accept 'sloppy' and ignore it, and all
- * other unknown options produce a notice in the kernel log, and are also
- * ignored. This allows the "feature" to continue to work, while avoiding
- * the additional housekeeping for the 'sloppy' option.
+ * mount.zfs(8), so to support it we accept 'sloppy' and record it. Unknown
+ * options produce a notice in the kernel log and are also recorded. Once all
+ * options have been parsed, unknown options are rejected unless 'sloppy' was
+ * explicitly provided. Deferring the decision makes the option order
+ * irrelevant.
  *
  *	sloppy
  *
@@ -587,7 +588,7 @@ enum {
 	Opt_saxattr, Opt_dirxattr, Opt_noxattr,
 	Opt_mntpoint,
 
-	Opt_ignore, Opt_warn,
+	Opt_ignore, Opt_sloppy, Opt_warn,
 };
 
 static const struct fs_parameter_spec zpl_param_spec[] = {
@@ -623,7 +624,7 @@ static const struct fs_parameter_spec zpl_param_spec[] = {
 	fsparam_flag("caseinsensitive",	Opt_ignore),
 	fsparam_flag("casemixed",	Opt_ignore),
 
-	fsparam_flag("sloppy",		Opt_ignore),
+	fsparam_flag("sloppy",		Opt_sloppy),
 
 	{}
 };
@@ -726,10 +727,14 @@ zpl_parse_param(struct fs_context *fc, struct fs_parameter *param)
 
 	case Opt_ignore:
 		break;
+	case Opt_sloppy:
+		vfs->vfs_sloppy = B_TRUE;
+		break;
 
 	case Opt_warn:
 		cmn_err(CE_NOTE,
-		    "ZFS: ignoring unknown mount option: %s", param->key);
+		    "ZFS: unknown mount option: %s", param->key);
+		vfs->vfs_unknown = B_TRUE;
 		break;
 
 	default:
@@ -868,6 +873,10 @@ zpl_get_tree(struct fs_context *fc)
 	objset_t *os;
 	boolean_t issnap = B_FALSE;
 	int err;
+	vfs_t *vfs = fc->fs_private;
+
+	if (vfs->vfs_unknown && !vfs->vfs_sloppy)
+		return (-SET_ERROR(EINVAL));
 
 	err = dmu_objset_hold(fc->source, FTAG, &os);
 	if (err)
@@ -917,8 +926,6 @@ zpl_get_tree(struct fs_context *fc)
 	}
 
 	if (sb->s_root == NULL) {
-		vfs_t *vfs = fc->fs_private;
-
 		/*
 		 * If SB_RDONLY was set/cleared from mount options, update
 		 * them in the options struct so we set up the filesystem
@@ -969,6 +976,10 @@ zpl_reconfigure(struct fs_context *fc)
 {
 	fstrans_cookie_t cookie;
 	int error;
+	vfs_t *vfs = fc->fs_private;
+
+	if (vfs->vfs_unknown && !vfs->vfs_sloppy)
+		return (-SET_ERROR(EINVAL));
 
 	cookie = spl_fstrans_mark();
 	error = -zfs_remount(fc->root->d_sb, fc->fs_private, fc->sb_flags);
@@ -1017,6 +1028,8 @@ zpl_dup_fc(struct fs_context *fc, struct fs_context *src_fc)
 	vfs->vfs_do_relatime = src_vfs->vfs_do_relatime;
 	vfs->vfs_nbmand = src_vfs->vfs_nbmand;
 	vfs->vfs_do_nbmand = src_vfs->vfs_do_nbmand;
+	vfs->vfs_sloppy = src_vfs->vfs_sloppy;
+	vfs->vfs_unknown = src_vfs->vfs_unknown;
 
 	mutex_enter(&src_vfs->vfs_mntpt_lock);
 	if (src_vfs->vfs_mntpoint != NULL)
