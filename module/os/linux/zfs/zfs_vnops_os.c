@@ -1124,7 +1124,8 @@ out:
 static uint64_t null_xattr = 0;
 
 int
-zfs_remove(znode_t *dzp, char *name, cred_t *cr, int flags)
+zfs_remove(znode_t *dzp, char *name, cred_t *cr, int flags,
+    zidmap_t *mnt_ns)
 {
 	znode_t		*zp;
 	znode_t		*xzp;
@@ -1172,7 +1173,8 @@ top:
 		return (error);
 	}
 
-	if ((error = zfs_zaccess_delete(dzp, zp, cr, zfs_init_idmap))) {
+	if (!(flags & SKIP_DELETE_PERMISSION) &&
+	    (error = zfs_zaccess_delete(dzp, zp, cr, mnt_ns)) != 0) {
 		goto out;
 	}
 
@@ -1558,7 +1560,7 @@ out:
  */
 int
 zfs_rmdir(znode_t *dzp, char *name, znode_t *cwd, cred_t *cr,
-    int flags)
+    int flags, zidmap_t *mnt_ns)
 {
 	znode_t		*zp;
 	zfsvfs_t	*zfsvfs = ZTOZSB(dzp);
@@ -1590,7 +1592,8 @@ top:
 		return (error);
 	}
 
-	if ((error = zfs_zaccess_delete(dzp, zp, cr, zfs_init_idmap))) {
+	if (!(flags & SKIP_DELETE_PERMISSION) &&
+	    (error = zfs_zaccess_delete(dzp, zp, cr, mnt_ns)) != 0) {
 		goto out;
 	}
 

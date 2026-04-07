@@ -3065,7 +3065,7 @@ zfs_zaccess_delete(znode_t *dzp, znode_t *zp, cred_t *cr, zidmap_t *mnt_ns)
 	 * 2. We pass the sticky bit restrictions.
 	 * 3. We have privileges that always allow file removal.
 	 */
-	return (zfs_sticky_remove_access(dzp, zp, cr));
+	return (zfs_sticky_remove_access(dzp, zp, cr, mnt_ns));
 }
 
 int
