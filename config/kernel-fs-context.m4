@@ -49,7 +49,6 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_FS_CONTEXT], [
 	],[
 		fc = fs_context_for_submount(fs_type, dentry);
 		sb = sget_fc(fc, test_super_fn, set_super_fn);
-		(void) vfs_parse_fs_string(fc, "source", "zfs", 3);
 		(void) vfs_parse_fs_param_source(fc, &source_param);
 		(void) vfs_parse_monolithic_sep(fc, NULL, strsep);
 		(void) vfs_get_tree(fc);

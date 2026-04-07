@@ -168,20 +168,7 @@ const struct inode_operations zpl_ops_root = {
 static struct vfsmount *
 zpl_snapdir_automount(struct path *path)
 {
-	int error;
-
-	error = -zfsctl_snapshot_mount(path, 0);
-	if (error)
-		return (ERR_PTR(error));
-
-	/*
-	 * Rather than returning the new vfsmount for the snapshot we must
-	 * return NULL to indicate a mount collision.  This is done because
-	 * the user space mount calls do_add_mount() which adds the vfsmount
-	 * to the name space.  If we returned the new mount here it would be
-	 * added again to the vfsmount list resulting in list corruption.
-	 */
-	return (NULL);
+	return (zfsctl_snapshot_mount(path, 0));
 }
 
 /*
