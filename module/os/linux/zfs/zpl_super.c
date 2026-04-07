@@ -30,8 +30,14 @@
 #include <sys/zfs_vnops.h>
 #include <sys/zfs_ctldir.h>
 #include <sys/zpl.h>
+#include <sys/mntent.h>
 #include <linux/iversion.h>
 #include <linux/version.h>
+#ifdef HAVE_FILE_SYSTEM_TYPE_INIT_FS_CONTEXT
+#include <linux/fs_context.h>
+#include <linux/fs_parser.h>
+#include <linux/string.h>
+#endif
 
 
 static struct inode *
@@ -325,19 +331,36 @@ zpl_show_options(struct seq_file *seq, struct dentry *root)
 }
 
 static int
-zpl_fill_super(struct super_block *sb, void *data, int silent)
+zpl_fill_super_common(struct super_block *sb, const char *osname, vfs_t *vfsp,
+    int silent)
 {
-	zfs_mnt_t *zm = (zfs_mnt_t *)data;
 	fstrans_cookie_t cookie;
 	int error;
 
 	cookie = spl_fstrans_mark();
-	error = -zfs_domount(sb, zm, silent);
+	error = -zfs_domount_vfs(sb, osname, vfsp, silent);
 	spl_fstrans_unmark(cookie);
 	ASSERT3S(error, <=, 0);
 
 	return (error);
 }
+
+#ifndef HAVE_FILE_SYSTEM_TYPE_INIT_FS_CONTEXT
+static int
+zpl_fill_super(struct super_block *sb, void *data, int silent)
+{
+	zfs_mnt_t *zm = (zfs_mnt_t *)data;
+	vfs_t *vfsp;
+	int error;
+
+	error = zfsvfs_parse_options(zm->mnt_data, &vfsp);
+	if (error)
+		return (-error);
+
+	return (zpl_fill_super_common(sb, zm->mnt_osname, vfsp, silent));
+}
+
+#endif /* !HAVE_FILE_SYSTEM_TYPE_INIT_FS_CONTEXT */
 
 static int
 zpl_test_super(struct super_block *s, void *data)
@@ -354,6 +377,32 @@ zpl_test_super(struct super_block *s, void *data)
 	return (zfsvfs != NULL && os == zfsvfs->z_os);
 }
 
+static int
+zpl_validate_super_match(struct super_block *s, objset_t *os,
+    boolean_t *issnap)
+{
+	int err = 0;
+
+	if (IS_ERR(s))
+		return (0);
+
+	if (s->s_fs_info != NULL) {
+		zfsvfs_t *zfsvfs = s->s_fs_info;
+
+		if (zpl_enter(zfsvfs, FTAG) == 0) {
+			if (os != zfsvfs->z_os)
+				err = -SET_ERROR(EBUSY);
+			*issnap = zfsvfs->z_issnap;
+			zpl_exit(zfsvfs, FTAG);
+		} else {
+			err = -SET_ERROR(EBUSY);
+		}
+	}
+
+	return (err);
+}
+
+#ifndef HAVE_FILE_SYSTEM_TYPE_INIT_FS_CONTEXT
 static struct super_block *
 zpl_mount_impl(struct file_system_type *fs_type, int flags, zfs_mnt_t *zm)
 {
@@ -377,26 +426,7 @@ zpl_mount_impl(struct file_system_type *fs_type, int flags, zfs_mnt_t *zm)
 	dsl_pool_rele(dmu_objset_pool(os), FTAG);
 
 	s = sget(fs_type, zpl_test_super, set_anon_super, flags, os);
-
-	/*
-	 * Recheck with the lock held to prevent mounting the wrong dataset
-	 * since z_os can be stale when the teardown lock is held.
-	 *
-	 * We can't do this in zpl_test_super in since it's under spinlock and
-	 * also s_umount lock is not held there so it would race with
-	 * zfs_umount and zfsvfs can be freed.
-	 */
-	if (!IS_ERR(s) && s->s_fs_info != NULL) {
-		zfsvfs_t *zfsvfs = s->s_fs_info;
-		if (zpl_enter(zfsvfs, FTAG) == 0) {
-			if (os != zfsvfs->z_os)
-				err = -SET_ERROR(EBUSY);
-			issnap = zfsvfs->z_issnap;
-			zpl_exit(zfsvfs, FTAG);
-		} else {
-			err = -SET_ERROR(EBUSY);
-		}
-	}
+	err = zpl_validate_super_match(s, os, &issnap);
 	dsl_dataset_long_rele(dmu_objset_ds(os), FTAG);
 	dsl_dataset_rele(dmu_objset_ds(os), FTAG);
 
@@ -432,13 +462,320 @@ zpl_mount(struct file_system_type *fs_type, int flags,
     const char *osname, void *data)
 {
 	zfs_mnt_t zm = { .mnt_osname = osname, .mnt_data = data };
-
 	struct super_block *sb = zpl_mount_impl(fs_type, flags, &zm);
+
 	if (IS_ERR(sb))
 		return (ERR_CAST(sb));
 
 	return (dget(sb->s_root));
 }
+
+#endif /* !HAVE_FILE_SYSTEM_TYPE_INIT_FS_CONTEXT */
+
+#ifdef HAVE_FILE_SYSTEM_TYPE_INIT_FS_CONTEXT
+enum zpl_fs_param {
+	ZPL_FSPARAM_RO = 0,
+	ZPL_FSPARAM_RW,
+	ZPL_FSPARAM_SETUID,
+	ZPL_FSPARAM_NOSETUID,
+	ZPL_FSPARAM_EXEC,
+	ZPL_FSPARAM_NOEXEC,
+	ZPL_FSPARAM_DEVICES,
+	ZPL_FSPARAM_NODEVICES,
+	ZPL_FSPARAM_DIRXATTR,
+	ZPL_FSPARAM_SAXATTR,
+	ZPL_FSPARAM_XATTR,
+	ZPL_FSPARAM_NOXATTR,
+	ZPL_FSPARAM_ATIME,
+	ZPL_FSPARAM_NOATIME,
+	ZPL_FSPARAM_RELATIME,
+	ZPL_FSPARAM_NORELATIME,
+	ZPL_FSPARAM_NBMAND,
+	ZPL_FSPARAM_NONBMAND,
+	ZPL_FSPARAM_MNTPOINT,
+};
+
+static const struct fs_parameter_spec zpl_fs_parameters[] = {
+	fsparam_flag(MNTOPT_RO, ZPL_FSPARAM_RO),
+	fsparam_flag(MNTOPT_RW, ZPL_FSPARAM_RW),
+	fsparam_flag(MNTOPT_SETUID, ZPL_FSPARAM_SETUID),
+	fsparam_flag(MNTOPT_NOSETUID, ZPL_FSPARAM_NOSETUID),
+	fsparam_flag(MNTOPT_EXEC, ZPL_FSPARAM_EXEC),
+	fsparam_flag(MNTOPT_NOEXEC, ZPL_FSPARAM_NOEXEC),
+	fsparam_flag(MNTOPT_DEVICES, ZPL_FSPARAM_DEVICES),
+	fsparam_flag(MNTOPT_NODEVICES, ZPL_FSPARAM_NODEVICES),
+	fsparam_flag(MNTOPT_DIRXATTR, ZPL_FSPARAM_DIRXATTR),
+	fsparam_flag(MNTOPT_SAXATTR, ZPL_FSPARAM_SAXATTR),
+	fsparam_flag(MNTOPT_XATTR, ZPL_FSPARAM_XATTR),
+	fsparam_flag(MNTOPT_NOXATTR, ZPL_FSPARAM_NOXATTR),
+	fsparam_flag(MNTOPT_ATIME, ZPL_FSPARAM_ATIME),
+	fsparam_flag(MNTOPT_NOATIME, ZPL_FSPARAM_NOATIME),
+	fsparam_flag(MNTOPT_RELATIME, ZPL_FSPARAM_RELATIME),
+	fsparam_flag(MNTOPT_NORELATIME, ZPL_FSPARAM_NORELATIME),
+	fsparam_flag(MNTOPT_NBMAND, ZPL_FSPARAM_NBMAND),
+	fsparam_flag(MNTOPT_NONBMAND, ZPL_FSPARAM_NONBMAND),
+	fsparam_string_empty(MNTOPT_MNTPOINT, ZPL_FSPARAM_MNTPOINT),
+	{}
+};
+
+static void
+zpl_fs_context_set_sb_flag(struct fs_context *fc, unsigned int flag,
+    boolean_t enabled)
+{
+	fc->sb_flags_mask |= flag;
+	if (enabled)
+		fc->sb_flags |= flag;
+	else
+		fc->sb_flags &= ~flag;
+}
+
+static void
+zpl_fs_context_sync_sb_flags(vfs_t *vfsp, unsigned int sb_flags,
+    unsigned int sb_flags_mask)
+{
+	if (sb_flags_mask & SB_RDONLY)
+		(void) zfsvfs_apply_option(vfsp,
+		    (sb_flags & SB_RDONLY) ?
+		    ZFS_MNTOPT_RO : ZFS_MNTOPT_RW, NULL);
+	if (sb_flags_mask & SB_NOSUID)
+		(void) zfsvfs_apply_option(vfsp,
+		    (sb_flags & SB_NOSUID) ?
+		    ZFS_MNTOPT_NOSETUID : ZFS_MNTOPT_SETUID, NULL);
+	if (sb_flags_mask & SB_NODEV)
+		(void) zfsvfs_apply_option(vfsp,
+		    (sb_flags & SB_NODEV) ?
+		    ZFS_MNTOPT_NODEVICES : ZFS_MNTOPT_DEVICES, NULL);
+	if (sb_flags_mask & SB_NOEXEC)
+		(void) zfsvfs_apply_option(vfsp,
+		    (sb_flags & SB_NOEXEC) ?
+		    ZFS_MNTOPT_NOEXEC : ZFS_MNTOPT_EXEC, NULL);
+	if (sb_flags_mask & SB_NOATIME)
+		(void) zfsvfs_apply_option(vfsp,
+		    (sb_flags & SB_NOATIME) ?
+		    ZFS_MNTOPT_NOATIME : ZFS_MNTOPT_ATIME, NULL);
+}
+
+static int
+zpl_fs_context_parse_param(struct fs_context *fc, struct fs_parameter *param)
+{
+	struct fs_parse_result result;
+	vfs_t *vfsp = fc->fs_private;
+	int error;
+	int opt;
+
+	if (strcmp(param->key, "source") == 0)
+		return (vfs_parse_fs_param_source(fc, param));
+
+	opt = fs_parse(fc, zpl_fs_parameters, param, &result);
+	if (opt < 0)
+		return (opt);
+
+	switch (opt) {
+	case ZPL_FSPARAM_RO:
+		zpl_fs_context_set_sb_flag(fc, SB_RDONLY, B_TRUE);
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_RO, NULL);
+		break;
+	case ZPL_FSPARAM_RW:
+		zpl_fs_context_set_sb_flag(fc, SB_RDONLY, B_FALSE);
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_RW, NULL);
+		break;
+	case ZPL_FSPARAM_SETUID:
+		zpl_fs_context_set_sb_flag(fc, SB_NOSUID, B_FALSE);
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_SETUID, NULL);
+		break;
+	case ZPL_FSPARAM_NOSETUID:
+		zpl_fs_context_set_sb_flag(fc, SB_NOSUID, B_TRUE);
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NOSETUID, NULL);
+		break;
+	case ZPL_FSPARAM_EXEC:
+		zpl_fs_context_set_sb_flag(fc, SB_NOEXEC, B_FALSE);
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_EXEC, NULL);
+		break;
+	case ZPL_FSPARAM_NOEXEC:
+		zpl_fs_context_set_sb_flag(fc, SB_NOEXEC, B_TRUE);
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NOEXEC, NULL);
+		break;
+	case ZPL_FSPARAM_DEVICES:
+		zpl_fs_context_set_sb_flag(fc, SB_NODEV, B_FALSE);
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_DEVICES, NULL);
+		break;
+	case ZPL_FSPARAM_NODEVICES:
+		zpl_fs_context_set_sb_flag(fc, SB_NODEV, B_TRUE);
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NODEVICES, NULL);
+		break;
+	case ZPL_FSPARAM_DIRXATTR:
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_DIRXATTR, NULL);
+		break;
+	case ZPL_FSPARAM_SAXATTR:
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_SAXATTR, NULL);
+		break;
+	case ZPL_FSPARAM_XATTR:
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_XATTR, NULL);
+		break;
+	case ZPL_FSPARAM_NOXATTR:
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NOXATTR, NULL);
+		break;
+	case ZPL_FSPARAM_ATIME:
+		zpl_fs_context_set_sb_flag(fc, SB_NOATIME, B_FALSE);
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_ATIME, NULL);
+		break;
+	case ZPL_FSPARAM_NOATIME:
+		zpl_fs_context_set_sb_flag(fc, SB_NOATIME, B_TRUE);
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NOATIME, NULL);
+		break;
+	case ZPL_FSPARAM_RELATIME:
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_RELATIME, NULL);
+		break;
+	case ZPL_FSPARAM_NORELATIME:
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NORELATIME, NULL);
+		break;
+	case ZPL_FSPARAM_NBMAND:
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NBMAND, NULL);
+		break;
+	case ZPL_FSPARAM_NONBMAND:
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NONBMAND, NULL);
+		break;
+	case ZPL_FSPARAM_MNTPOINT:
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_MNTPOINT,
+		    param->string);
+		break;
+	default:
+		return (-EINVAL);
+	}
+
+	return (error ? -error : 0);
+}
+
+static int
+zpl_fs_context_parse_monolithic(struct fs_context *fc, void *data)
+{
+	if (data == NULL)
+		return (0);
+
+	return (vfs_parse_monolithic_sep(fc, data, strsep));
+}
+
+static void
+zpl_fs_context_free(struct fs_context *fc)
+{
+	zfsvfs_vfs_free(fc->fs_private);
+	fc->fs_private = NULL;
+}
+
+static int
+zpl_test_super_fc(struct super_block *s, struct fs_context *fc)
+{
+	return (zpl_test_super(s, fc->sget_key));
+}
+
+static int
+zpl_get_tree(struct fs_context *fc)
+{
+	struct super_block *s;
+	objset_t *os;
+	vfs_t *vfsp = fc->fs_private;
+	boolean_t issnap = B_FALSE;
+	int err;
+
+	if (fc->source == NULL)
+		return (-EINVAL);
+
+	zpl_fs_context_sync_sb_flags(vfsp, fc->sb_flags, fc->sb_flags_mask);
+	if ((fc->sb_flags & SB_RDONLY) && !vfsp->vfs_do_readonly)
+		(void) zfsvfs_apply_option(vfsp, ZFS_MNTOPT_RO, NULL);
+
+	err = dmu_objset_hold(fc->source, FTAG, &os);
+	if (err)
+		return (-err);
+
+	/*
+	 * The dsl pool lock must be released prior to calling sget_fc().
+	 * It is possible sget_fc() may block on the lock in grab_super()
+	 * while deactivate_super() holds that same lock and waits for a txg
+	 * sync. If the dsl_pool lock is held over sget_fc() this can prevent
+	 * the pool sync and cause a deadlock.
+	 */
+	dsl_dataset_long_hold(dmu_objset_ds(os), FTAG);
+	dsl_pool_rele(dmu_objset_pool(os), FTAG);
+
+	fc->sget_key = os;
+	s = sget_fc(fc, zpl_test_super_fc, set_anon_super_fc);
+	err = zpl_validate_super_match(s, os, &issnap);
+	dsl_dataset_long_rele(dmu_objset_ds(os), FTAG);
+	dsl_dataset_rele(dmu_objset_ds(os), FTAG);
+
+	if (IS_ERR(s))
+		return (PTR_ERR(s));
+
+	if (err) {
+		deactivate_locked_super(s);
+		return (err);
+	}
+
+	if (s->s_root == NULL) {
+		err = zpl_fill_super_common(s, fc->source, vfsp,
+		    !!(fc->sb_flags & SB_SILENT));
+		fc->fs_private = NULL;
+		if (err) {
+			deactivate_locked_super(s);
+			return (err);
+		}
+		s->s_flags |= SB_ACTIVE;
+	} else if (!issnap && ((fc->sb_flags ^ s->s_flags) & SB_RDONLY)) {
+		/*
+		 * Skip ro check for snap since snap is always ro regardless
+		 * ro flag is passed by mount or not.
+		 */
+		deactivate_locked_super(s);
+		return (-EBUSY);
+	}
+
+	fc->root = dget(s->s_root);
+	return (0);
+}
+
+static int
+zpl_reconfigure(struct fs_context *fc)
+{
+	struct super_block *sb = fc->root->d_sb;
+	vfs_t *vfsp = fc->fs_private;
+	fstrans_cookie_t cookie;
+	int flags;
+	int error;
+
+	flags = (sb->s_flags & ~fc->sb_flags_mask) |
+	    (fc->sb_flags & fc->sb_flags_mask);
+	zpl_fs_context_sync_sb_flags(vfsp, fc->sb_flags, fc->sb_flags_mask);
+
+	cookie = spl_fstrans_mark();
+	error = -zfs_remount_vfs(sb, &flags, vfsp);
+	fc->fs_private = NULL;
+	spl_fstrans_unmark(cookie);
+	ASSERT3S(error, <=, 0);
+	if (error)
+		return (error);
+
+	sb->s_flags &= ~fc->sb_flags_mask;
+	sb->s_flags |= (flags & fc->sb_flags_mask);
+	return (0);
+}
+
+static const struct fs_context_operations zpl_fs_context_ops = {
+	.free			= zpl_fs_context_free,
+	.parse_param		= zpl_fs_context_parse_param,
+	.parse_monolithic	= zpl_fs_context_parse_monolithic,
+	.get_tree		= zpl_get_tree,
+	.reconfigure		= zpl_reconfigure,
+};
+
+static int
+zpl_init_fs_context(struct fs_context *fc)
+{
+	fc->fs_private = zfsvfs_vfs_alloc();
+	fc->ops = &zpl_fs_context_ops;
+	return (0);
+}
+#endif /* HAVE_FILE_SYSTEM_TYPE_INIT_FS_CONTEXT */
 
 static void
 zpl_kill_sb(struct super_block *sb)
@@ -502,6 +839,11 @@ struct file_system_type zpl_fs_type = {
 #else
 	.fs_flags		= FS_USERNS_MOUNT,
 #endif
+#ifdef HAVE_FILE_SYSTEM_TYPE_INIT_FS_CONTEXT
+	.init_fs_context	= zpl_init_fs_context,
+	.parameters		= zpl_fs_parameters,
+#else
 	.mount			= zpl_mount,
+#endif
 	.kill_sb		= zpl_kill_sb,
 };

@@ -115,7 +115,18 @@ static uint_t zfs_statfs_shack_enabled = 0;
 ZFS_MODULE_PARAM(zfs, zfs_, statfs_shack_enabled, UINT, ZMOD_RW,
 	"Enable per-process statfs f_type spoofing for container runtimes");
 
-static void
+vfs_t *
+zfsvfs_vfs_alloc(void)
+{
+	vfs_t *vfsp;
+
+	vfsp = kmem_zalloc(sizeof (vfs_t), KM_SLEEP);
+	mutex_init(&vfsp->vfs_mntpt_lock, NULL, MUTEX_DEFAULT, NULL);
+
+	return (vfsp);
+}
+
+void
 zfsvfs_vfs_free(vfs_t *vfsp)
 {
 	if (vfsp != NULL) {
@@ -126,107 +137,164 @@ zfsvfs_vfs_free(vfs_t *vfsp)
 	}
 }
 
-static int
-zfsvfs_parse_option(char *option, int token, substring_t *args, vfs_t *vfsp)
+int
+zfsvfs_apply_option(vfs_t *vfsp, zfsvfs_mntopt_t opt, const char *value)
 {
-	switch (token) {
-	case TOKEN_RO:
+	switch (opt) {
+	case ZFS_MNTOPT_RO:
 		vfsp->vfs_readonly = B_TRUE;
 		vfsp->vfs_do_readonly = B_TRUE;
 		break;
-	case TOKEN_RW:
+	case ZFS_MNTOPT_RW:
 		vfsp->vfs_readonly = B_FALSE;
 		vfsp->vfs_do_readonly = B_TRUE;
 		break;
-	case TOKEN_SETUID:
+	case ZFS_MNTOPT_SETUID:
 		vfsp->vfs_setuid = B_TRUE;
 		vfsp->vfs_do_setuid = B_TRUE;
 		break;
-	case TOKEN_NOSETUID:
+	case ZFS_MNTOPT_NOSETUID:
 		vfsp->vfs_setuid = B_FALSE;
 		vfsp->vfs_do_setuid = B_TRUE;
 		break;
-	case TOKEN_EXEC:
+	case ZFS_MNTOPT_EXEC:
 		vfsp->vfs_exec = B_TRUE;
 		vfsp->vfs_do_exec = B_TRUE;
 		break;
-	case TOKEN_NOEXEC:
+	case ZFS_MNTOPT_NOEXEC:
 		vfsp->vfs_exec = B_FALSE;
 		vfsp->vfs_do_exec = B_TRUE;
 		break;
-	case TOKEN_DEVICES:
+	case ZFS_MNTOPT_DEVICES:
 		vfsp->vfs_devices = B_TRUE;
 		vfsp->vfs_do_devices = B_TRUE;
 		break;
-	case TOKEN_NODEVICES:
+	case ZFS_MNTOPT_NODEVICES:
 		vfsp->vfs_devices = B_FALSE;
 		vfsp->vfs_do_devices = B_TRUE;
 		break;
-	case TOKEN_DIRXATTR:
+	case ZFS_MNTOPT_DIRXATTR:
 		vfsp->vfs_xattr = ZFS_XATTR_DIR;
 		vfsp->vfs_do_xattr = B_TRUE;
 		break;
-	case TOKEN_SAXATTR:
+	case ZFS_MNTOPT_SAXATTR:
+	case ZFS_MNTOPT_XATTR:
 		vfsp->vfs_xattr = ZFS_XATTR_SA;
 		vfsp->vfs_do_xattr = B_TRUE;
 		break;
-	case TOKEN_XATTR:
-		vfsp->vfs_xattr = ZFS_XATTR_SA;
-		vfsp->vfs_do_xattr = B_TRUE;
-		break;
-	case TOKEN_NOXATTR:
+	case ZFS_MNTOPT_NOXATTR:
 		vfsp->vfs_xattr = ZFS_XATTR_OFF;
 		vfsp->vfs_do_xattr = B_TRUE;
 		break;
-	case TOKEN_ATIME:
+	case ZFS_MNTOPT_ATIME:
 		vfsp->vfs_atime = B_TRUE;
 		vfsp->vfs_do_atime = B_TRUE;
 		break;
-	case TOKEN_NOATIME:
+	case ZFS_MNTOPT_NOATIME:
 		vfsp->vfs_atime = B_FALSE;
 		vfsp->vfs_do_atime = B_TRUE;
 		break;
-	case TOKEN_RELATIME:
+	case ZFS_MNTOPT_RELATIME:
 		vfsp->vfs_relatime = B_TRUE;
 		vfsp->vfs_do_relatime = B_TRUE;
 		break;
-	case TOKEN_NORELATIME:
+	case ZFS_MNTOPT_NORELATIME:
 		vfsp->vfs_relatime = B_FALSE;
 		vfsp->vfs_do_relatime = B_TRUE;
 		break;
-	case TOKEN_NBMAND:
+	case ZFS_MNTOPT_NBMAND:
 		vfsp->vfs_nbmand = B_TRUE;
 		vfsp->vfs_do_nbmand = B_TRUE;
 		break;
-	case TOKEN_NONBMAND:
+	case ZFS_MNTOPT_NONBMAND:
 		vfsp->vfs_nbmand = B_FALSE;
 		vfsp->vfs_do_nbmand = B_TRUE;
 		break;
-	case TOKEN_MNTPOINT:
+	case ZFS_MNTOPT_MNTPOINT:
+		if (value == NULL)
+			return (SET_ERROR(EINVAL));
 		if (vfsp->vfs_mntpoint != NULL)
 			kmem_strfree(vfsp->vfs_mntpoint);
-		vfsp->vfs_mntpoint = match_strdup(&args[0]);
+		vfsp->vfs_mntpoint = kmem_strdup(value);
 		if (vfsp->vfs_mntpoint == NULL)
 			return (SET_ERROR(ENOMEM));
 		break;
 	default:
-		break;
+		return (SET_ERROR(EINVAL));
 	}
 
 	return (0);
 }
 
+static int
+zfsvfs_parse_option(char *option, int token, substring_t *args, vfs_t *vfsp)
+{
+	int error;
+	char term;
+
+	(void) option;
+
+	switch (token) {
+	case TOKEN_RO:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_RO, NULL));
+	case TOKEN_RW:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_RW, NULL));
+	case TOKEN_SETUID:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_SETUID, NULL));
+	case TOKEN_NOSETUID:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NOSETUID, NULL));
+	case TOKEN_EXEC:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_EXEC, NULL));
+	case TOKEN_NOEXEC:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NOEXEC, NULL));
+	case TOKEN_DEVICES:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_DEVICES, NULL));
+	case TOKEN_NODEVICES:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NODEVICES, NULL));
+	case TOKEN_DIRXATTR:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_DIRXATTR, NULL));
+	case TOKEN_SAXATTR:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_SAXATTR, NULL));
+	case TOKEN_XATTR:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_XATTR, NULL));
+	case TOKEN_NOXATTR:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NOXATTR, NULL));
+	case TOKEN_ATIME:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_ATIME, NULL));
+	case TOKEN_NOATIME:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NOATIME, NULL));
+	case TOKEN_RELATIME:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_RELATIME, NULL));
+	case TOKEN_NORELATIME:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NORELATIME, NULL));
+	case TOKEN_NBMAND:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NBMAND, NULL));
+	case TOKEN_NONBMAND:
+		return (zfsvfs_apply_option(vfsp, ZFS_MNTOPT_NONBMAND, NULL));
+	case TOKEN_MNTPOINT:
+		if (args[0].from == NULL || args[0].to == NULL)
+			return (SET_ERROR(EINVAL));
+		term = *args[0].to;
+		*args[0].to = '\0';
+		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_MNTPOINT,
+		    args[0].from);
+		*args[0].to = term;
+		return (error);
+	default:
+		return (SET_ERROR(EINVAL));
+	}
+}
+
 /*
  * Parse the raw mntopts and return a vfs_t describing the options.
  */
-static int
+int
 zfsvfs_parse_options(char *mntopts, vfs_t **vfsp)
 {
 	vfs_t *tmp_vfsp;
 	int error;
 
-	tmp_vfsp = kmem_zalloc(sizeof (vfs_t), KM_SLEEP);
-	mutex_init(&tmp_vfsp->vfs_mntpt_lock, NULL, MUTEX_DEFAULT, NULL);
+	tmp_vfsp = zfsvfs_vfs_alloc();
 
 	if (mntopts != NULL) {
 		substring_t args[MAX_OPT_ARGS];
@@ -234,8 +302,10 @@ zfsvfs_parse_options(char *mntopts, vfs_t **vfsp)
 		int token;
 
 		tmp_mntopts = t = kmem_strdup(mntopts);
-		if (tmp_mntopts == NULL)
+		if (tmp_mntopts == NULL) {
+			zfsvfs_vfs_free(tmp_vfsp);
 			return (SET_ERROR(ENOMEM));
+		}
 
 		while ((p = strsep(&t, ",")) != NULL) {
 			if (!*p)
@@ -1488,19 +1558,18 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
 static atomic_long_t zfs_bdi_seq = ATOMIC_LONG_INIT(0);
 
 int
-zfs_domount(struct super_block *sb, zfs_mnt_t *zm, int silent)
+zfs_domount_vfs(struct super_block *sb, const char *osname, vfs_t *vfs,
+    int silent)
 {
-	const char *osname = zm->mnt_osname;
 	struct inode *root_inode = NULL;
 	uint64_t recordsize;
 	int error = 0;
 	zfsvfs_t *zfsvfs = NULL;
-	vfs_t *vfs = NULL;
 	int canwrite;
 	int dataset_visible_zone;
 
-	ASSERT(zm);
 	ASSERT(osname);
+	ASSERT(vfs);
 
 	dataset_visible_zone = zone_dataset_visible(osname, &canwrite);
 
@@ -1510,12 +1579,9 @@ zfs_domount(struct super_block *sb, zfs_mnt_t *zm, int silent)
 	 */
 	if (!INGLOBALZONE(curproc) &&
 	    (!dataset_visible_zone || !canwrite)) {
+		zfsvfs_vfs_free(vfs);
 		return (SET_ERROR(EPERM));
 	}
-
-	error = zfsvfs_parse_options(zm->mnt_data, &vfs);
-	if (error)
-		return (error);
 
 	/*
 	 * If a non-writable filesystem is being mounted without the
@@ -1525,16 +1591,12 @@ zfs_domount(struct super_block *sb, zfs_mnt_t *zm, int silent)
 		vfs->vfs_readonly = B_TRUE;
 
 	error = zfsvfs_create(osname, vfs->vfs_readonly, &zfsvfs);
-	if (error) {
-		zfsvfs_vfs_free(vfs);
+	if (error)
 		goto out;
-	}
 
 	if ((error = dsl_prop_get_integer(osname, "recordsize",
-	    &recordsize, NULL))) {
-		zfsvfs_vfs_free(vfs);
+	    &recordsize, NULL)))
 		goto out;
-	}
 
 	vfs->vfs_data = zfsvfs;
 	zfsvfs->z_vfs = vfs;
@@ -1612,6 +1674,8 @@ out:
 		if (zfsvfs != NULL) {
 			dmu_objset_disown(zfsvfs->z_os, B_TRUE, zfsvfs);
 			zfsvfs_free(zfsvfs);
+		} else {
+			zfsvfs_vfs_free(vfs);
 		}
 		/*
 		 * make sure we don't have dangling sb->s_fs_info which
@@ -1621,6 +1685,22 @@ out:
 	}
 
 	return (error);
+}
+
+int
+zfs_domount(struct super_block *sb, zfs_mnt_t *zm, int silent)
+{
+	vfs_t *vfs;
+	int error;
+
+	ASSERT(zm);
+	ASSERT(zm->mnt_osname);
+
+	error = zfsvfs_parse_options(zm->mnt_data, &vfs);
+	if (error)
+		return (error);
+
+	return (zfs_domount_vfs(sb, zm->mnt_osname, vfs, silent));
 }
 
 /*
@@ -1709,22 +1789,20 @@ zfs_umount(struct super_block *sb)
 }
 
 int
-zfs_remount(struct super_block *sb, int *flags, zfs_mnt_t *zm)
+zfs_remount_vfs(struct super_block *sb, int *flags, vfs_t *vfsp)
 {
 	zfsvfs_t *zfsvfs = sb->s_fs_info;
-	vfs_t *vfsp;
 	boolean_t issnap = dmu_objset_is_snapshot(zfsvfs->z_os);
-	int error;
+	int error = 0;
+
+	ASSERT(vfsp);
 
 	if ((issnap || !spa_writeable(dmu_objset_spa(zfsvfs->z_os))) &&
 	    !(*flags & SB_RDONLY)) {
+		zfsvfs_vfs_free(vfsp);
 		*flags |= SB_RDONLY;
 		return (EROFS);
 	}
-
-	error = zfsvfs_parse_options(zm->mnt_data, &vfsp);
-	if (error)
-		return (error);
 
 	if (!zfs_is_readonly(zfsvfs) && (*flags & SB_RDONLY))
 		txg_wait_synced(dmu_objset_pool(zfsvfs->z_os), 0);
@@ -1738,6 +1816,19 @@ zfs_remount(struct super_block *sb, int *flags, zfs_mnt_t *zm)
 		(void) zfs_register_callbacks(vfsp);
 
 	return (error);
+}
+
+int
+zfs_remount(struct super_block *sb, int *flags, zfs_mnt_t *zm)
+{
+	vfs_t *vfsp;
+	int error;
+
+	error = zfsvfs_parse_options(zm->mnt_data, &vfsp);
+	if (error)
+		return (error);
+
+	return (zfs_remount_vfs(sb, flags, vfsp));
 }
 
 int
