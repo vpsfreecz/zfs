@@ -84,7 +84,7 @@ zpl_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 	}
 
 	error = -zfs_lookup(ITOZ(dir), dname(dentry), &zp,
-	    zfs_flags, cr, NULL, ppn);
+	    zfs_flags | LOOKUP_SKIP_SEARCH, cr, NULL, ppn, zfs_init_idmap);
 	spl_fstrans_unmark(cookie);
 	ASSERT3S(error, <=, 0);
 	crfree(cr);
@@ -162,6 +162,52 @@ is_nametoolong(struct dentry *dentry)
 
 	return ((!zfsvfs->z_longname && dlen >= ZAP_MAXNAMELEN) ||
 	    dlen >= ZAP_MAXNAMELEN_NEW);
+}
+
+static int
+#ifdef HAVE_IOPS_PERMISSION_USERNS
+zpl_permission(struct user_namespace *user_ns, struct inode *ip, int mask)
+#elif defined(HAVE_IOPS_PERMISSION_IDMAP)
+zpl_permission(struct mnt_idmap *user_ns, struct inode *ip, int mask)
+#else
+zpl_permission(struct inode *ip, int mask)
+#endif
+{
+	cred_t *cr = CRED();
+	znode_t *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ITOZSB(ip);
+	fstrans_cookie_t cookie;
+	mode_t mode = 0;
+	int error;
+#if !defined(HAVE_IOPS_PERMISSION_USERNS) && \
+	!defined(HAVE_IOPS_PERMISSION_IDMAP)
+	zidmap_t *user_ns = zfs_init_idmap;
+#endif
+
+	if (mask & MAY_NOT_BLOCK)
+		return (-ECHILD);
+
+	if (mask & MAY_READ)
+		mode |= S_IRUSR;
+	if (mask & (MAY_WRITE | MAY_APPEND))
+		mode |= S_IWUSR;
+	if (mask & MAY_EXEC)
+		mode |= S_IXUSR;
+	if (mode == 0)
+		return (0);
+
+	crhold(cr);
+	cookie = spl_fstrans_mark();
+	error = zpl_enter_verify_zp(zfsvfs, zp, FTAG);
+	if (error == 0) {
+		error = -zfs_zaccess_rwx(zp, mode, 0, cr, user_ns);
+		zpl_exit(zfsvfs, FTAG);
+	}
+	spl_fstrans_unmark(cookie);
+	crfree(cr);
+	ASSERT3S(error, <=, 0);
+
+	return (error);
 }
 
 static int
@@ -857,6 +903,7 @@ out:
 }
 
 const struct inode_operations zpl_inode_operations = {
+	.permission	= zpl_permission,
 	.setattr	= zpl_setattr,
 	.getattr	= zpl_getattr,
 	.listxattr	= zpl_xattr_list,
@@ -894,6 +941,7 @@ const struct inode_operations zpl_dir_inode_operations = {
 	.rename		= zpl_rename,
 #endif
 	.tmpfile	= zpl_tmpfile,
+	.permission	= zpl_permission,
 	.setattr	= zpl_setattr,
 	.getattr	= zpl_getattr,
 	.listxattr	= zpl_xattr_list,
@@ -922,6 +970,7 @@ const struct inode_operations zpl_symlink_inode_operations = {
 };
 
 const struct inode_operations zpl_special_inode_operations = {
+	.permission	= zpl_permission,
 	.setattr	= zpl_setattr,
 	.getattr	= zpl_getattr,
 	.listxattr	= zpl_xattr_list,

@@ -143,7 +143,8 @@ zpl_get_parent(struct dentry *child)
 
 	crhold(cr);
 	cookie = spl_fstrans_mark();
-	error = -zfs_lookup(ITOZ(child->d_inode), "..", &zp, 0, cr, NULL, NULL);
+	error = -zfs_lookup(ITOZ(child->d_inode), "..", &zp, 0, cr,
+	    NULL, NULL, zfs_init_idmap);
 	spl_fstrans_unmark(cookie);
 	crfree(cr);
 	ASSERT3S(error, <=, 0);
