@@ -52,11 +52,12 @@ extern int zfs_create(znode_t *dzp, char *name, vattr_t *vap, int excl,
 extern int zfs_tmpfile(struct inode *dip, vattr_t *vapzfs, int excl,
     int mode, struct inode **ipp, cred_t *cr, int flag, vsecattr_t *vsecp,
     zidmap_t *mnt_ns);
-extern int zfs_remove(znode_t *dzp, char *name, cred_t *cr, int flags);
+extern int zfs_remove(znode_t *dzp, char *name, cred_t *cr, int flags,
+    zidmap_t *mnt_ns);
 extern int zfs_mkdir(znode_t *dzp, char *dirname, vattr_t *vap,
     znode_t **zpp, cred_t *cr, int flags, vsecattr_t *vsecp, zidmap_t *mnt_ns);
 extern int zfs_rmdir(znode_t *dzp, char *name, znode_t *cwd,
-    cred_t *cr, int flags);
+    cred_t *cr, int flags, zidmap_t *mnt_ns);
 extern int zfs_readdir(struct inode *ip, struct dir_context *ctx, cred_t *cr);
 #ifdef HAVE_GENERIC_FILLATTR_IDMAP_REQMASK
 extern int zfs_getattr_fast(zidmap_t *, u32 request_mask, struct inode *ip,

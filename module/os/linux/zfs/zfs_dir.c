@@ -1271,7 +1271,8 @@ top:
  * The function returns 0 if remove access is granted.
  */
 int
-zfs_sticky_remove_access(znode_t *zdp, znode_t *zp, cred_t *cr)
+zfs_sticky_remove_access(znode_t *zdp, znode_t *zp, cred_t *cr,
+    zidmap_t *mnt_ns)
 {
 	uid_t		uid;
 	uid_t		downer;
@@ -1291,7 +1292,7 @@ zfs_sticky_remove_access(znode_t *zdp, znode_t *zp, cred_t *cr)
 
 	if ((uid = crgetuid(cr)) == downer || uid == fowner ||
 	    zfs_zaccess(zp, ACE_WRITE_DATA, 0, B_FALSE, cr,
-	    zfs_init_idmap) == 0)
+	    mnt_ns) == 0)
 		return (0);
 	else
 		return (secpolicy_vnode_remove(cr));
