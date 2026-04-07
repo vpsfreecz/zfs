@@ -210,7 +210,7 @@ zfsvfs_parse_option(char *option, int token, substring_t *args, vfs_t *vfsp)
 			return (SET_ERROR(ENOMEM));
 		break;
 	default:
-		break;
+		return (SET_ERROR(EINVAL));
 	}
 
 	return (0);
