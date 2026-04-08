@@ -409,18 +409,20 @@ zpl_mmap(struct file *filp, struct vm_area_struct *vma)
  * data in the ARC which is kept up to date via .write() and .writepage().
  */
 static inline int
-zpl_readpage_common(struct page *pp)
+zpl_read_folio_common(struct folio *folio)
 {
-	struct address_space *mapping = pp->mapping;
+	struct page *pp = &folio->page;
+	struct address_space *mapping = folio_mapping(folio);
 	struct inode *ip = mapping->host;
-	pgoff_t index = pp->index;
+	pgoff_t index = folio_pos(folio) >> PAGE_SHIFT;
 	fstrans_cookie_t cookie;
 	int error;
 
+	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
 	ASSERT(PageLocked(pp));
 
 	cookie = spl_fstrans_mark();
-	error = zfs_getpage(ip, pp, mapping, index);
+	error = zfs_getfolio(ip, folio, mapping, index);
 	spl_fstrans_unmark(cookie);
 
 	if (error == AOP_TRUNCATED_PAGE)
@@ -431,11 +433,19 @@ zpl_readpage_common(struct page *pp)
 	return (-error);
 }
 
+static inline int
+zpl_readpage_common(struct page *pp)
+{
+	ASSERT3U(page_size(pp), ==, PAGE_SIZE);
+
+	return (zpl_read_folio_common(page_folio(pp)));
+}
+
 #ifdef HAVE_VFS_READ_FOLIO
 static int
 zpl_read_folio(struct file *filp, struct folio *folio)
 {
-	return (zpl_readpage_common(&folio->page));
+	return (zpl_read_folio_common(folio));
 }
 #else
 static int
@@ -448,7 +458,7 @@ zpl_readpage(struct file *filp, struct page *pp)
 static int
 zpl_readpage_filler(void *data, struct page *pp)
 {
-	return (zpl_readpage_common(pp));
+	return (zpl_read_folio_common(page_folio(pp)));
 }
 
 /*
@@ -482,27 +492,42 @@ zpl_readahead(struct readahead_control *ractl)
 #endif
 
 static int
-zpl_putpage(struct page *pp, struct writeback_control *wbc, void *data)
+zpl_writeback_folio_common(struct folio *folio,
+    struct writeback_control *wbc, boolean_t for_sync)
 {
-	boolean_t *for_sync = data;
+	struct address_space *mapping = folio_mapping(folio);
 	fstrans_cookie_t cookie;
 	int ret;
 
-	ASSERT(PageLocked(pp));
-	ASSERT(!PageWriteback(pp));
+	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
 
 	cookie = spl_fstrans_mark();
-	ret = zfs_putpage(pp->mapping->host, pp, wbc, *for_sync);
+	ret = zfs_putfolio(mapping->host, folio, wbc, for_sync);
 	spl_fstrans_unmark(cookie);
 
 	return (ret);
 }
 
+static int
+zpl_writeback_page(struct page *pp, struct writeback_control *wbc, void *data)
+{
+	boolean_t *for_sync = data;
+
+	ASSERT(PageLocked(pp));
+	ASSERT(!PageWriteback(pp));
+
+	return (zpl_writeback_folio_common(page_folio(pp), wbc, *for_sync));
+}
+
 #ifdef HAVE_WRITEPAGE_T_FOLIO
 static int
-zpl_putfolio(struct folio *pp, struct writeback_control *wbc, void *data)
+zpl_writeback_folio(struct folio *folio, struct writeback_control *wbc,
+    void *data)
 {
-	return (zpl_putpage(&pp->page, wbc, data));
+	boolean_t *for_sync = data;
+
+	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
+	return (zpl_writeback_folio_common(folio, wbc, *for_sync));
 }
 #endif
 
@@ -513,9 +538,9 @@ zpl_write_cache_pages(struct address_space *mapping,
 	int result;
 
 #ifdef HAVE_WRITEPAGE_T_FOLIO
-	result = write_cache_pages(mapping, wbc, zpl_putfolio, data);
+	result = write_cache_pages(mapping, wbc, zpl_writeback_folio, data);
 #else
-	result = write_cache_pages(mapping, wbc, zpl_putpage, data);
+	result = write_cache_pages(mapping, wbc, zpl_writeback_page, data);
 #endif
 	return (result);
 }
@@ -538,8 +563,9 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 
 	/*
 	 * We don't want to run write_cache_pages() in SYNC mode here, because
-	 * that would make putpage() wait for a single page to be committed to
-	 * disk every single time, resulting in atrocious performance. Instead
+	 * that would make the writeback path wait for each cache unit
+	 * to reach disk every single time, resulting in atrocious
+	 * performance. Instead
 	 * we run it once in non-SYNC mode so that the ZIL gets all the data,
 	 * and then we commit it all in one go.
 	 */
@@ -573,7 +599,7 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 
 	/*
 	 * If zil_commit_flags() failed, it's unclear what state things
-	 * are currently in. putpage() has written back out what it can
+	 * are currently in. The writeback path has written out what it can
 	 * to the DMU, but it may not be on disk. We have little choice
 	 * but to escape.
 	 */
@@ -609,7 +635,7 @@ zpl_writepage(struct page *pp, struct writeback_control *wbc)
 
 	boolean_t for_sync = (wbc->sync_mode == WB_SYNC_ALL);
 
-	return (zpl_putpage(pp, wbc, &for_sync));
+	return (zpl_writeback_page(pp, wbc, &for_sync));
 }
 #endif
 static int
