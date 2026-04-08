@@ -33,6 +33,7 @@
 #include <linux/exportfs.h>
 #include <linux/falloc.h>
 #include <linux/mm_compat.h>
+#include <linux/pagemap_compat.h>
 #include <linux/parser.h>
 #include <linux/vfs_compat.h>
 #include <linux/writeback.h>
@@ -209,27 +210,53 @@ extern int zpl_dedupe_file_range(struct file *src_file, loff_t src_off,
 #define	zpl_inode_set_mtime_to_ts(ip, ts)	(ip->i_mtime = ts)
 #endif
 
-/*
- * Segment-only page-cache mutators may preserve whole-page validity that
- * already existed, but they must not create it unless they cover the whole
- * page.
- */
-static inline boolean_t
-zpl_page_range_is_full(size_t off, size_t len)
+static inline struct page *
+zpl_folio_head_page(struct folio *folio)
 {
-	ASSERT3U(off + len, <=, PAGE_SIZE);
-	return (off == 0 && len == PAGE_SIZE);
+	return (folio_page(folio, 0));
 }
 
 static inline void
-zpl_page_range_write_done(struct page *pp, boolean_t was_uptodate,
+zpl_folio_wait_writeback(struct folio *folio)
+{
+#ifdef HAVE_PAGEMAP_FOLIO_WAIT_BIT
+	folio_wait_bit(folio, PG_writeback);
+#else
+	wait_on_page_bit(zpl_folio_head_page(folio), PG_writeback);
+#endif
+}
+
+/*
+ * Segment-only page-cache mutators may preserve existing validity for the
+ * whole cache unit, but they must not create it unless they cover the whole
+ * unit.
+ */
+static inline boolean_t
+zpl_folio_range_valid(struct folio *folio, size_t off, size_t len)
+{
+	size_t fsize = folio_size(folio);
+
+	return (off <= fsize && len <= fsize - off);
+}
+
+static inline boolean_t
+zpl_folio_range_is_full(struct folio *folio, size_t off, size_t len)
+{
+	size_t fsize = folio_size(folio);
+
+	ASSERT(zpl_folio_range_valid(folio, off, len));
+	return (off == 0 && len == fsize);
+}
+
+static inline void
+zpl_folio_range_write_done(struct folio *folio, boolean_t was_uptodate,
     size_t off, size_t len)
 {
-	ClearPageError(pp);
-	if (was_uptodate || zpl_page_range_is_full(off, len))
-		SetPageUptodate(pp);
+	ClearPageError(zpl_folio_head_page(folio));
+	if (was_uptodate || zpl_folio_range_is_full(folio, off, len))
+		folio_mark_uptodate(folio);
 	else
-		ClearPageUptodate(pp);
+		folio_clear_uptodate(folio);
 }
 
 #endif	/* _SYS_ZPL_H */

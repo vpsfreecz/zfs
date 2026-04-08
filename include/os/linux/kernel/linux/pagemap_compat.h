@@ -27,10 +27,25 @@
 #ifndef _ZFS_PAGEMAP_COMPAT_H
 #define	_ZFS_PAGEMAP_COMPAT_H
 
+#include <linux/mm_compat.h>
 #include <linux/pagemap.h>
 
-#ifndef HAVE_PAGEMAP_READAHEAD_PAGE
-#define	readahead_page(ractl) (&(__readahead_folio(ractl)->page))
+#if !defined(HAVE_PAGEMAP_READAHEAD_PAGE) && \
+    defined(HAVE_PAGEMAP_READAHEAD_FOLIO)
+static inline struct page *
+zfs_readahead_page(struct readahead_control *ractl)
+{
+	struct folio *folio = readahead_folio(ractl);
+	struct page *page;
+
+	if (folio == NULL)
+		return (NULL);
+
+	page = folio_page(folio, 0);
+	get_page(page);
+	return (page);
+}
+#define	readahead_page(ractl) zfs_readahead_page(ractl)
 #endif
 
 #endif
