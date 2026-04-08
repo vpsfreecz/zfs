@@ -1,9 +1,9 @@
 dnl # SPDX-License-Identifier: CDDL-1.0
 dnl #
 dnl # Linux 5.16 no longer allows directly calling wait_on_page_bit, and
-dnl # instead requires you to call folio-specific functions. In this case,
-dnl # wait_on_page_bit(pg, PG_writeback) becomes
-dnl # folio_wait_bit(pg, PG_writeback)
+dnl # instead requires folio-specific wait helpers.  folio_wait_bit() is
+dnl # exported for non-GPL modules; folio_wait_writeback() is GPL-only on
+dnl # current kernels, so do not probe or use it here.
 dnl #
 AC_DEFUN([ZFS_AC_KERNEL_SRC_PAGEMAP_FOLIO_WAIT_BIT], [
 	ZFS_LINUX_TEST_SRC([pagemap_has_folio_wait_bit], [
