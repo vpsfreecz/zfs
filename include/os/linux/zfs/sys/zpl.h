@@ -199,23 +199,28 @@ extern int zpl_dedupe_file_range(struct file *src_file, loff_t src_off,
 #endif
 
 /*
- * Segment-only page-cache mutators may preserve whole-page validity that
- * already existed, but they must not create it unless they cover the whole
- * page.
+ * Segment-only page-cache mutators may preserve existing validity for the
+ * whole cache unit, but they must not create it unless they cover the whole
+ * unit.
  */
 static inline boolean_t
-zpl_page_range_is_full(size_t off, size_t len)
+zpl_folio_range_is_full(struct folio *folio, size_t off, size_t len)
 {
-	ASSERT3U(off + len, <=, PAGE_SIZE);
-	return (off == 0 && len == PAGE_SIZE);
+	size_t fsize = folio_size(folio);
+
+	ASSERT3U(off + len, <=, fsize);
+	return (off == 0 && len == fsize);
 }
 
 static inline void
-zpl_page_range_write_done(struct page *pp, boolean_t was_uptodate,
+zpl_folio_range_write_done(struct folio *folio, boolean_t was_uptodate,
     size_t off, size_t len)
 {
+	struct page *pp = &folio->page;
+
+	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
 	ClearPageError(pp);
-	if (was_uptodate || zpl_page_range_is_full(off, len))
+	if (was_uptodate || zpl_folio_range_is_full(folio, off, len))
 		SetPageUptodate(pp);
 	else
 		ClearPageUptodate(pp);
