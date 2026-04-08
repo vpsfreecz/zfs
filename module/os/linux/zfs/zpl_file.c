@@ -43,13 +43,12 @@
 #include <sys/zfs_znode.h>
 #include <sys/zfs_vfsops.h>
 #include <sys/zfs_vnops.h>
+#include <sys/zpl.h>
 #include <sys/zfs_project.h>
 #include <linux/pagemap_compat.h>
 #include <linux/mm_compat.h>
 #include <linux/fadvise.h>
-#ifdef HAVE_VFS_FILEMAP_DIRTY_FOLIO
 #include <linux/writeback.h>
-#endif
 #ifdef HAVE_FILELOCK_HEADER
 #include <linux/filelock.h>
 #endif
@@ -486,18 +485,25 @@ zpl_mmap(struct file *filp, struct vm_area_struct *vma)
  * data in the ARC which is kept up to date via .write() and .writepage().
  */
 static inline int
-zpl_readpage_common(struct page *pp)
+zpl_read_folio_common(struct folio *folio)
 {
-	struct address_space *mapping = pp->mapping;
-	struct inode *ip = mapping->host;
-	pgoff_t index = pp->index;
+	struct page *pp = zpl_folio_head_page(folio);
+	struct address_space *mapping = folio_mapping(folio);
+	struct inode *ip;
+	pgoff_t index = folio_pos(folio) >> PAGE_SHIFT;
 	fstrans_cookie_t cookie;
 	int error;
 
 	ASSERT(PageLocked(pp));
 
+	if (unlikely(mapping == NULL)) {
+		unlock_page(pp);
+		return (AOP_TRUNCATED_PAGE);
+	}
+
+	ip = mapping->host;
 	cookie = spl_fstrans_mark();
-	error = zfs_getpage(ip, pp, mapping, index);
+	error = zfs_getfolio(ip, folio, mapping, index);
 	spl_fstrans_unmark(cookie);
 
 	if (error == AOP_TRUNCATED_PAGE)
@@ -508,11 +514,17 @@ zpl_readpage_common(struct page *pp)
 	return (-error);
 }
 
+static inline int
+zpl_readpage_common(struct page *pp)
+{
+	return (zpl_read_folio_common(page_folio(pp)));
+}
+
 #ifdef HAVE_VFS_READ_FOLIO
 static int
 zpl_read_folio(struct file *filp, struct folio *folio)
 {
-	return (zpl_readpage_common(&folio->page));
+	return (zpl_read_folio_common(folio));
 }
 #else
 static int
@@ -522,18 +534,20 @@ zpl_readpage(struct file *filp, struct page *pp)
 }
 #endif
 
-static int
-zpl_readpage_filler(void *data, struct page *pp)
-{
-	return (zpl_readpage_common(pp));
-}
-
 /*
  * Populate a set of pages with data for the Linux page cache.  This
  * function will only be called for read ahead and never for demand
  * paging.  For simplicity, the code relies on read_cache_pages() to
  * correctly lock each page for IO and call zpl_readpage().
  */
+#if defined(HAVE_VFS_READPAGES) || !defined(HAVE_PAGEMAP_READAHEAD_FOLIO)
+static int
+zpl_readpage_filler(void *data, struct page *pp)
+{
+	return (zpl_read_folio_common(page_folio(pp)));
+}
+#endif
+
 #ifdef HAVE_VFS_READPAGES
 static int
 zpl_readpages(struct file *filp, struct address_space *mapping,
@@ -545,44 +559,225 @@ zpl_readpages(struct file *filp, struct address_space *mapping,
 static void
 zpl_readahead(struct readahead_control *ractl)
 {
+#ifdef HAVE_PAGEMAP_READAHEAD_FOLIO
+	struct folio *folio;
+
+	while ((folio = readahead_folio(ractl)) != NULL) {
+		int ret;
+
+		ret = zpl_read_folio_common(folio);
+		if (ret)
+			break;
+	}
+#else
 	struct page *page;
 
-	while ((page = readahead_page(ractl)) != NULL) {
+	while (readahead_count(ractl) != 0) {
 		int ret;
+
+		page = readahead_page(ractl);
+		if (page == NULL)
+			break;
 
 		ret = zpl_readpage_filler(NULL, page);
 		put_page(page);
 		if (ret)
 			break;
 	}
+#endif
 }
 #endif
 
+typedef struct zpl_writeback_data {
+	boolean_t for_sync;
+	boolean_t counted;
+} zpl_writeback_data_t;
+
 static int
-zpl_putpage(struct page *pp, struct writeback_control *wbc, void *data)
+zpl_writeback_folio_common(struct folio *folio,
+    struct writeback_control *wbc, boolean_t for_sync, boolean_t *countedp)
 {
-	boolean_t *for_sync = data;
+	struct address_space *mapping = folio_mapping(folio);
 	fstrans_cookie_t cookie;
 	int ret;
 
-	ASSERT(PageLocked(pp));
-	ASSERT(!PageWriteback(pp));
+	if (mapping == NULL) {
+		folio_unlock(folio);
+		return (0);
+	}
 
 	cookie = spl_fstrans_mark();
-	ret = zfs_putpage(pp->mapping->host, pp, wbc, *for_sync);
+	ret = zfs_putfolio(mapping->host, folio, wbc, for_sync, countedp);
 	spl_fstrans_unmark(cookie);
+
+	if (ret > 0)
+		ret = -ret;
 
 	return (ret);
 }
 
-#ifdef HAVE_WRITE_CACHE_PAGES
-#ifdef HAVE_WRITEPAGE_T_FOLIO
 static int
-zpl_putfolio(struct folio *pp, struct writeback_control *wbc, void *data)
+zpl_writeback_page(struct page *pp, struct writeback_control *wbc, void *data)
 {
-	return (zpl_putpage(&pp->page, wbc, data));
+	struct folio *folio = page_folio(pp);
+	zpl_writeback_data_t *zdata = data;
+
+	ASSERT(PageLocked(pp));
+	ASSERT(!folio_test_writeback(folio));
+
+	zdata->counted = B_FALSE;
+	return (zpl_writeback_folio_common(folio, wbc, zdata->for_sync,
+	    &zdata->counted));
+}
+
+#if defined(HAVE_WRITE_CACHE_PAGES)
+#if !defined(HAVE_FILEMAP_GET_FOLIOS_TAG) && defined(HAVE_WRITEPAGE_T_FOLIO)
+static int
+zpl_writeback_folio(struct folio *folio, struct writeback_control *wbc,
+    void *data)
+{
+	zpl_writeback_data_t *zdata = data;
+
+	zdata->counted = B_FALSE;
+	return (zpl_writeback_folio_common(folio, wbc, zdata->for_sync,
+	    &zdata->counted));
 }
 #endif
+#endif
+
+#if defined(HAVE_FILEMAP_GET_FOLIOS_TAG)
+static inline pgoff_t
+zpl_wbc_end(struct writeback_control *wbc)
+{
+	if (wbc->range_cyclic)
+		return ((pgoff_t)-1);
+
+	return (wbc->range_end >> PAGE_SHIFT);
+}
+
+static inline pgoff_t
+zpl_wbc_index(struct folio *folio)
+{
+	return (folio_pos(folio) >> PAGE_SHIFT);
+}
+
+static inline void
+zpl_wbc_advance(struct address_space *mapping, struct folio *folio)
+{
+	mapping->writeback_index = folio_next_index(folio);
+}
+
+static inline void
+zpl_wbc_retry(struct address_space *mapping, struct folio *folio)
+{
+	mapping->writeback_index = zpl_wbc_index(folio);
+}
+
+static inline unsigned int
+zpl_wbc_tag(struct writeback_control *wbc, boolean_t for_sync)
+{
+	if (for_sync || wbc->sync_mode != WB_SYNC_NONE ||
+	    wbc->tagged_writepages)
+		return (PAGECACHE_TAG_TOWRITE);
+
+	return (PAGECACHE_TAG_DIRTY);
+}
+
+static inline int
+zpl_write_cache_pages(struct address_space *mapping,
+    struct writeback_control *wbc, void *data)
+{
+	zpl_writeback_data_t *zdata = data;
+	boolean_t for_sync = (zdata != NULL && zdata->for_sync) ||
+	    wbc->sync_mode != WB_SYNC_NONE;
+	pgoff_t start = wbc->range_cyclic ? mapping->writeback_index :
+	    wbc->range_start >> PAGE_SHIFT;
+	pgoff_t end = zpl_wbc_end(wbc);
+	unsigned int tag = zpl_wbc_tag(wbc, for_sync);
+	struct folio_batch fbatch;
+	int err = 0;
+	boolean_t done = B_FALSE;
+	unsigned int nfolios;
+
+	folio_batch_init(&fbatch);
+
+	/*
+	 * Match writeback_iter(): data-integrity or explicitly tagged writeback
+	 * snapshots dirty folios to TOWRITE to avoid livelock, while background
+	 * writeback scans DIRTY directly.
+	 */
+	if (tag == PAGECACHE_TAG_TOWRITE)
+		tag_pages_for_writeback(mapping, start, end);
+
+	while (!done) {
+		cond_resched();
+
+		nfolios = filemap_get_folios_tag(mapping, &start, end,
+		    tag, &fbatch);
+		if (nfolios == 0)
+			break;
+
+		unsigned int i;
+
+		for (i = 0; i < nfolios; i++) {
+			struct folio *folio = fbatch.folios[i];
+			int ferr;
+
+		folio_retry:
+			folio_lock(folio);
+
+			if (folio_mapping(folio) != mapping ||
+			    !folio_test_dirty(folio)) {
+				folio_unlock(folio);
+				continue;
+			}
+
+			if (folio_test_writeback(folio)) {
+				if (!for_sync) {
+					folio_unlock(folio);
+					continue;
+				}
+
+				folio_unlock(folio);
+				zpl_folio_wait_writeback(folio);
+				goto folio_retry;
+			}
+
+			ferr = zpl_writeback_page(zpl_folio_head_page(folio),
+			    wbc, data);
+			if (err == 0 && ferr != 0)
+				err = ferr;
+
+			boolean_t counted = zdata->counted;
+			if (counted)
+				wbc->nr_to_write -= folio_nr_pages(folio);
+			if (!for_sync && (ferr != 0 || wbc->nr_to_write <= 0)) {
+				if (wbc->range_cyclic) {
+					/*
+					 * Only completed writeback advances the
+					 * cyclic cursor.  If this folio was not
+					 * accepted, retry it on the next pass.
+					 */
+					if (counted)
+						zpl_wbc_advance(mapping, folio);
+					else
+						zpl_wbc_retry(mapping, folio);
+				}
+				done = B_TRUE;
+				break;
+			}
+		}
+
+		folio_batch_release(&fbatch);
+	}
+
+	if (!done && wbc->range_cyclic)
+		mapping->writeback_index = 0;
+
+	return (err);
+}
+
+#elif defined(HAVE_WRITE_CACHE_PAGES)
 
 static inline int
 zpl_write_cache_pages(struct address_space *mapping,
@@ -591,9 +786,9 @@ zpl_write_cache_pages(struct address_space *mapping,
 	int result;
 
 #ifdef HAVE_WRITEPAGE_T_FOLIO
-	result = write_cache_pages(mapping, wbc, zpl_putfolio, data);
+	result = write_cache_pages(mapping, wbc, zpl_writeback_folio, data);
 #else
-	result = write_cache_pages(mapping, wbc, zpl_putpage, data);
+	result = write_cache_pages(mapping, wbc, zpl_writeback_page, data);
 #endif
 	return (result);
 }
@@ -602,71 +797,7 @@ static inline int
 zpl_write_cache_pages(struct address_space *mapping,
     struct writeback_control *wbc, void *data)
 {
-	pgoff_t start = wbc->range_start >> PAGE_SHIFT;
-	pgoff_t end = wbc->range_end >> PAGE_SHIFT;
-
-	struct folio_batch fbatch;
-	folio_batch_init(&fbatch);
-
-	/*
-	 * This atomically (-ish) tags all DIRTY pages in the range with
-	 * TOWRITE, allowing users to continue dirtying or undirtying pages
-	 * while we get on with writeback, without us treading on each other.
-	 */
-	tag_pages_for_writeback(mapping, start, end);
-
-	int err = 0;
-	unsigned int npages;
-
-	/*
-	 * Grab references to the TOWRITE pages just flagged. This may not get
-	 * all of them, so we do it in a loop until there are none left.
-	 */
-	while ((npages = filemap_get_folios_tag(mapping, &start, end,
-	    PAGECACHE_TAG_TOWRITE, &fbatch)) != 0) {
-
-		/* Loop over each page and write it out. */
-		struct folio *folio;
-		while ((folio = folio_batch_next(&fbatch)) != NULL) {
-			folio_lock(folio);
-
-			/*
-			 * If the folio has been remapped, or is no longer
-			 * dirty, then there's nothing to do.
-			 */
-			if (folio->mapping != mapping ||
-			    !folio_test_dirty(folio)) {
-				folio_unlock(folio);
-				continue;
-			}
-
-			/*
-			 * If writeback is already in progress, wait for it to
-			 * finish. We continue after this even if the page
-			 * ends up clean; zfs_putpage() will skip it if no
-			 * further work is required.
-			 */
-			while (folio_test_writeback(folio))
-				folio_wait_bit(folio, PG_writeback);
-
-			/*
-			 * Write it out and collect any error. zfs_putpage()
-			 * will clear the TOWRITE and DIRTY flags, and return
-			 * with the page unlocked.
-			 */
-			int ferr = zpl_putpage(&folio->page, wbc, data);
-			if (err == 0 && ferr != 0)
-				err = ferr;
-
-			/* Housekeeping for the caller. */
-			wbc->nr_to_write -= folio_nr_pages(folio);
-		}
-
-		/* Release any remaining references on the batch. */
-		folio_batch_release(&fbatch);
-	}
-
-	return (err);
+	return (-SET_ERROR(ENOTSUP));
 }
 #endif
 
@@ -677,7 +808,7 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 	zfsvfs_t	*zfsvfs = ITOZSB(mapping->host);
 	enum writeback_sync_modes sync_mode;
 	int first_pass_error;
-	int result;
+	int result = 0;
 
 	if ((result = zpl_enter(zfsvfs, FTAG)) != 0)
 		return (result);
@@ -688,14 +819,16 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 
 	/*
 	 * We don't want to run write_cache_pages() in SYNC mode here, because
-	 * that would make putpage() wait for a single page to be committed to
-	 * disk every single time, resulting in atrocious performance. Instead
+	 * that would make the writeback path wait for each cache unit to reach
+	 * disk every single time, resulting in atrocious performance. Instead,
 	 * we run it once in non-SYNC mode so that the ZIL gets all the data,
 	 * and then we commit it all in one go.
 	 */
-	boolean_t for_sync = (sync_mode == WB_SYNC_ALL);
+	zpl_writeback_data_t zdata = {
+		.for_sync = (sync_mode != WB_SYNC_NONE),
+	};
 	wbc->sync_mode = WB_SYNC_NONE;
-	first_pass_error = zpl_write_cache_pages(mapping, wbc, &for_sync);
+	first_pass_error = zpl_write_cache_pages(mapping, wbc, &zdata);
 	if (sync_mode == wbc->sync_mode)
 		return (first_pass_error);
 
@@ -705,8 +838,10 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 	 * completion.
 	 */
 	result = zpl_enter_verify_zp(zfsvfs, zp, FTAG);
-	if (result != 0)
+	if (result != 0) {
+		wbc->sync_mode = sync_mode;
 		return (first_pass_error != 0 ? first_pass_error : result);
+	}
 
 	if (zfsvfs->z_log != NULL) {
 		/*
@@ -723,15 +858,19 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 
 	/*
 	 * If zil_commit_flags() failed, it's unclear what state things
-	 * are currently in. putpage() has written back out what it can
+	 * are currently in. The writeback path has written out what it can
 	 * to the DMU, but it may not be on disk. We have little choice
 	 * but to escape.
 	 */
-	if (result != 0)
+	if (result != 0) {
+		wbc->sync_mode = sync_mode;
 		return (result);
+	}
 
-	if (first_pass_error != 0)
+	if (first_pass_error != 0) {
+		wbc->sync_mode = sync_mode;
 		return (first_pass_error);
+	}
 
 	/*
 	 * We need to call write_cache_pages() again (we can't just
@@ -741,7 +880,7 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 	 * details). That being said, this is a no-op in most cases.
 	 */
 	wbc->sync_mode = sync_mode;
-	return (zpl_write_cache_pages(mapping, wbc, &for_sync));
+	return (zpl_write_cache_pages(mapping, wbc, &zdata));
 }
 
 #ifdef HAVE_VFS_WRITEPAGE
@@ -754,12 +893,22 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 static int
 zpl_writepage(struct page *pp, struct writeback_control *wbc)
 {
-	if (ITOZSB(pp->mapping->host)->z_os->os_sync == ZFS_SYNC_ALWAYS)
+	struct folio *folio = page_folio(pp);
+	struct address_space *mapping = folio_mapping(folio);
+
+	if (mapping == NULL) {
+		folio_unlock(folio);
+		return (0);
+	}
+
+	if (ITOZSB(mapping->host)->z_os->os_sync == ZFS_SYNC_ALWAYS)
 		wbc->sync_mode = WB_SYNC_ALL;
 
-	boolean_t for_sync = (wbc->sync_mode == WB_SYNC_ALL);
+	zpl_writeback_data_t zdata = {
+		.for_sync = (wbc->sync_mode != WB_SYNC_NONE),
+	};
 
-	return (zpl_putpage(pp, wbc, &for_sync));
+	return (zpl_writeback_page(zpl_folio_head_page(folio), wbc, &zdata));
 }
 #endif
 static int
