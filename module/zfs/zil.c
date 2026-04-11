@@ -734,12 +734,20 @@ zil_clone_range_record_valid(const lr_t *lrc)
 {
 	const lr_clone_range_t *lr = (const lr_clone_range_t *)lrc;
 	size_t len;
+	uint64_t expected_nbps;
 
 	if (lrc->lrc_reclen < sizeof (*lr))
 		return (B_FALSE);
 
 	len = lrc->lrc_reclen - offsetof(lr_clone_range_t, lr_bps);
-	return (lr->lr_nbps <= len / sizeof (lr->lr_bps[0]));
+	if (lr->lr_nbps > len / sizeof (lr->lr_bps[0]))
+		return (B_FALSE);
+
+	if (lr->lr_length == 0 || lr->lr_blksz == 0)
+		return (B_FALSE);
+
+	expected_nbps = ((lr->lr_length - 1) / lr->lr_blksz) + 1;
+	return (lr->lr_nbps == expected_nbps);
 }
 
 static int
