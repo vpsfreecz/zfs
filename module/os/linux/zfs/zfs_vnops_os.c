@@ -484,7 +484,7 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
  * pages with the contents of the coresponding dmu buffer.
  */
 void
-update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
+update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 {
 	struct address_space *mp = ZTOI(zp)->i_mapping;
 	int64_t off = start & (PAGE_SIZE - 1);

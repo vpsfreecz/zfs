@@ -385,7 +385,7 @@ page_unhold(vm_page_t pp)
  *		the page and the dmu buffer.
  */
 void
-update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
+update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 {
 	vm_object_t obj;
 	struct sf_buf *sf;
@@ -6249,6 +6249,12 @@ zfs_freebsd_copy_file_range(struct vop_copy_file_range_args *ap)
 	struct mount *mp;
 	int error;
 	uint64_t len = *ap->a_lenp;
+	/*
+	 * VOP_COPY_FILE_RANGE cannot pass per-descriptor sync flags to the
+	 * filesystem entry point, so use the znode's synchronous-open count as
+	 * the narrowest durability signal here.
+	 */
+	boolean_t commit = (VTOZ(outvp)->z_sync_cnt != 0);
 
 	if (!zfs_bclone_enabled) {
 		mp = NULL;
@@ -6295,7 +6301,7 @@ zfs_freebsd_copy_file_range(struct vop_copy_file_range_args *ap)
 #endif
 
 	error = zfs_clone_range(VTOZ(invp), ap->a_inoffp, VTOZ(outvp),
-	    ap->a_outoffp, &len, ap->a_outcred);
+	    ap->a_outoffp, &len, commit, ap->a_outcred);
 	if (error == EXDEV || error == EAGAIN || error == EINVAL ||
 	    error == EOPNOTSUPP)
 		goto bad_locked_fallback;

@@ -37,7 +37,7 @@ extern int zfs_write(znode_t *, zfs_uio_t *, int, cred_t *);
 extern int zfs_holey(znode_t *, ulong_t, loff_t *);
 extern int zfs_access(znode_t *, int, int, cred_t *);
 extern int zfs_clone_range(znode_t *, uint64_t *, znode_t *, uint64_t *,
-    uint64_t *, cred_t *);
+    uint64_t *, boolean_t, cred_t *);
 extern int zfs_clone_range_replay(znode_t *, uint64_t, uint64_t, uint64_t,
     const blkptr_t *, size_t);
 extern int zfs_rewrite(znode_t *, uint64_t, uint64_t, uint64_t, uint64_t);
@@ -49,7 +49,7 @@ extern int zfs_get_direct_alignment(znode_t *, uint64_t *);
 
 extern int mappedread(znode_t *, int, zfs_uio_t *);
 extern int mappedread_sf(znode_t *, int, zfs_uio_t *);
-extern void update_pages(znode_t *, int64_t, int, objset_t *);
+extern void update_pages(znode_t *, int64_t, uint64_t, objset_t *);
 #if defined(__linux__)
 extern int mappedread_writable(znode_t *, int, zfs_uio_t *);
 extern int zfs_read_mapped_range(znode_t *, uint64_t, uint64_t, void *,

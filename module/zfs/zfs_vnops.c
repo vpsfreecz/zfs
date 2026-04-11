@@ -1669,10 +1669,12 @@ zfs_exit_two(zfsvfs_t *zfsvfs1, zfsvfs_t *zfsvfs2, const char *tag)
  * brt limitations `EINVAL` is returned. In the most cases a user
  * requested bad parameters, it could be possible to clone the file but
  * some parameters don't match the requirements.
+ * If `commit` is true, the committed prefix must also be durably pushed
+ * through the ZIL before returning success.
  */
 int
 zfs_clone_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
-    uint64_t *outoffp, uint64_t *lenp, cred_t *cr)
+    uint64_t *outoffp, uint64_t *lenp, boolean_t commit, cred_t *cr)
 {
 	zfsvfs_t	*inzfsvfs, *outzfsvfs;
 	objset_t	*inos, *outos;
@@ -2076,7 +2078,7 @@ unlock:
 
 		ZFS_ACCESSTIME_STAMP(inzfsvfs, inzp);
 
-		if (outos->os_sync == ZFS_SYNC_ALWAYS) {
+		if (commit || outos->os_sync == ZFS_SYNC_ALWAYS) {
 			error = zil_commit(zilog, outzp->z_id);
 		}
 
