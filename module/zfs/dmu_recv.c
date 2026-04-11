@@ -1910,6 +1910,27 @@ receive_handle_existing_object(const struct receive_writer_arg *rwa,
 	return (0);
 }
 
+static boolean_t
+receive_raw_object_geometry_valid(const struct drr_object *drro)
+{
+	int epbs;
+	int needed = 1;
+	uint64_t span;
+
+	if (drro->drr_nlevels == 0 || drro->drr_nblkptr == 0)
+		return (B_FALSE);
+	if (drro->drr_indblkshift < DN_MIN_INDBLKSHIFT ||
+	    drro->drr_indblkshift > SPA_MAXBLOCKSHIFT)
+		return (B_FALSE);
+
+	epbs = drro->drr_indblkshift - SPA_BLKPTRSHIFT;
+	for (span = drro->drr_nblkptr; span <= drro->drr_maxblkid &&
+	    span >= drro->drr_nblkptr; span <<= epbs)
+		needed++;
+
+	return (drro->drr_nlevels >= needed);
+}
+
 noinline static int
 receive_object(struct receive_writer_arg *rwa, struct drr_object *drro,
     void *data)
@@ -1948,11 +1969,11 @@ receive_object(struct receive_writer_arg *rwa, struct drr_object *drro,
 		if (drro->drr_object < rwa->or_firstobj ||
 		    drro->drr_object >= rwa->or_firstobj + rwa->or_numslots ||
 		    drro->drr_raw_bonuslen < drro->drr_bonuslen ||
-		    drro->drr_indblkshift > SPA_MAXBLOCKSHIFT ||
 		    drro->drr_nlevels > DN_MAX_LEVELS ||
 		    drro->drr_nblkptr > DN_MAX_NBLKPTR ||
 		    DN_SLOTS_TO_BONUSLEN(dn_slots) <
-		    drro->drr_raw_bonuslen)
+		    drro->drr_raw_bonuslen ||
+		    !receive_raw_object_geometry_valid(drro))
 			return (SET_ERROR(EINVAL));
 	} else {
 		/*
