@@ -1532,11 +1532,16 @@ do_corrective_recv(struct receive_writer_arg *rwa, struct drr_write *drrw,
 		dsl_dataset_rele_flags(ds, DS_HOLD_FLAG_DECRYPT, FTAG);
 		dsl_pool_config_exit(dp, FTAG);
 
-		ASSERT0(no_crypt);
 		if (err != 0) {
 			abd_free(eabd);
 			return (err);
 		}
+		/*
+		 * Encrypted dnode rewrites can legitimately report no_crypt when
+		 * there are no encryptable bonus-buffer regions in the block.  In
+		 * that case zio_do_crypt_abd() still returns the authenticated copy
+		 * in eabd, which is the buffer we want to rewrite.
+		 */
 		/* Swap in the newly encrypted data into the abd */
 		abd_free(abd);
 		abd = eabd;
