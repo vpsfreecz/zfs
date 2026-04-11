@@ -614,8 +614,8 @@ out:
 }
 
 int
-zvol_clone_range(zvol_state_t *zv_src, uint64_t inoff, zvol_state_t *zv_dst,
-    uint64_t outoff, uint64_t len)
+zvol_clone_range(zvol_state_t *zv_src, uint64_t *inoffp, zvol_state_t *zv_dst,
+    uint64_t *outoffp, uint64_t *lenp)
 {
 	zilog_t	*zilog_dst;
 	zfs_locked_range_t *inlr, *outlr;
@@ -623,7 +623,13 @@ zvol_clone_range(zvol_state_t *zv_src, uint64_t inoff, zvol_state_t *zv_dst,
 	dmu_tx_t *tx;
 	blkptr_t *bps;
 	size_t maxblocks;
+	uint64_t inoff = *inoffp;
+	uint64_t outoff = *outoffp;
+	uint64_t len = *lenp;
+	uint64_t done = 0;
 	int error = 0;
+
+	*lenp = 0;
 
 	rw_enter(&zv_dst->zv_suspend_lock, RW_READER);
 	if (zv_dst->zv_zilog == NULL) {
@@ -773,11 +779,25 @@ zvol_clone_range(zvol_state_t *zv_src, uint64_t inoff, zvol_state_t *zv_dst,
 		inoff += size;
 		outoff += size;
 		len -= size;
+		done += size;
 	}
 	vmem_free(bps, sizeof (bps[0]) * maxblocks);
 	zfs_rangelock_exit(outlr);
 	zfs_rangelock_exit(inlr);
-	if (error == 0 && zv_dst->zv_objset->os_sync == ZFS_SYNC_ALWAYS) {
+	if (done > 0) {
+		/*
+		 * Once any chunk has committed we can no longer report the whole
+		 * operation as an all-or-nothing failure. Mirror the file clone
+		 * contract and return the committed prefix to the caller.
+		 */
+		error = 0;
+		if (zv_dst->zv_objset->os_sync == ZFS_SYNC_ALWAYS)
+			error = zil_commit(zilog_dst, ZVOL_OBJ);
+
+		*inoffp += done;
+		*outoffp += done;
+		*lenp = done;
+	} else if (error == 0 && zv_dst->zv_objset->os_sync == ZFS_SYNC_ALWAYS) {
 		error = zil_commit(zilog_dst, ZVOL_OBJ);
 	}
 out:
