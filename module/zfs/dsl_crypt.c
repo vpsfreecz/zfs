@@ -959,12 +959,11 @@ spa_keystore_unload_wkey(const char *dsname)
 	if (ret != 0)
 		goto error;
 
-	dsl_dir_rele(dd, FTAG);
-	dsl_pool_rele(dp, FTAG);
-
-	/* remove any zvols under this ds */
+	/* remove any zvols under this ds while the pool hold is still live */
 	zvol_remove_minors(dp->dp_spa, dsname, B_TRUE);
 
+	dsl_dir_rele(dd, FTAG);
+	dsl_pool_rele(dp, FTAG);
 	return (0);
 
 error:
