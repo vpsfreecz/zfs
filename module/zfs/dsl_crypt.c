@@ -2010,6 +2010,25 @@ typedef struct dsl_crypto_recv_key_arg {
 	boolean_t dcrka_do_key;
 } dsl_crypto_recv_key_arg_t;
 
+static boolean_t
+dsl_crypto_raw_nlevels_valid(uint64_t nblkptr, uint64_t indblkshift,
+    uint64_t nlevels, uint64_t maxblkid)
+{
+	int epbs;
+	int needed = 1;
+	uint64_t span;
+
+	if (nlevels == 0)
+		return (B_FALSE);
+
+	epbs = indblkshift - SPA_BLKPTRSHIFT;
+	for (span = nblkptr; span <= maxblkid && span >= nblkptr;
+	    span <<= epbs)
+		needed++;
+
+	return (nlevels >= needed);
+}
+
 static int
 dsl_crypto_recv_raw_objset_check(dsl_dataset_t *ds, dsl_dataset_t *fromds,
     dmu_objset_type_t ostype, nvlist_t *nvl, dmu_tx_t *tx)
@@ -2039,7 +2058,8 @@ dsl_crypto_recv_raw_objset_check(dsl_dataset_t *ds, dsl_dataset_t *fromds,
 		return (SET_ERROR(EINVAL));
 
 	ret = nvlist_lookup_uint64(nvl, "mdn_blksz", &blksz);
-	if (ret != 0 || blksz < SPA_MINBLOCKSIZE)
+	if (ret != 0 || blksz < SPA_MINBLOCKSIZE ||
+	    P2PHASE(blksz, SPA_MINBLOCKSIZE) != 0)
 		return (SET_ERROR(EINVAL));
 	else if (blksz > spa_maxblocksize(tx->tx_pool->dp_spa))
 		return (SET_ERROR(ENOTSUP));
@@ -2054,6 +2074,8 @@ dsl_crypto_recv_raw_objset_check(dsl_dataset_t *ds, dsl_dataset_t *fromds,
 
 	ret = nvlist_lookup_uint64(nvl, "mdn_maxblkid", &maxblkid);
 	if (ret != 0)
+		return (SET_ERROR(EINVAL));
+	if (!dsl_crypto_raw_nlevels_valid(nblkptr, ibs, nlevels, maxblkid))
 		return (SET_ERROR(EINVAL));
 
 	ret = nvlist_lookup_uint8_array(nvl, "portable_mac", &buf, &len);
