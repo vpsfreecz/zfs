@@ -532,6 +532,15 @@ zvol_read_task(void *arg)
 /* Get the IO opcode */
 #define	ZVOL_OP(bio, rq) (bio != NULL ? bio_op(bio) : req_op(rq))
 
+/* Get the IO flags */
+#define	ZVOL_OPF(bio, rq) ((bio) != NULL ? (bio)->bi_opf : (rq)->cmd_flags)
+
+#ifdef REQ_SWAP
+#define	ZVOL_IS_SWAP(bio, rq) (!!(ZVOL_OPF((bio), (rq)) & REQ_SWAP))
+#else
+#define	ZVOL_IS_SWAP(bio, rq) (B_FALSE)
+#endif
+
 /*
  * Process a BIO or request
  *
@@ -581,7 +590,8 @@ zvol_request_impl(zvol_state_t *zv, struct bio *bio, struct request *rq,
 		goto out;
 	}
 
-	if (zvol_request_sync || zv->zv_threading == B_FALSE)
+	if (zvol_request_sync || zv->zv_threading == B_FALSE ||
+	    ZVOL_IS_SWAP(bio, rq))
 		force_sync = 1;
 
 	zv_request_t zvr = {
