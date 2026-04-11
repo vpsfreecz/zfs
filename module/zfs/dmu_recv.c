@@ -2585,10 +2585,12 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
     abd_t *abd)
 {
 	dmu_buf_t *db, *db_spill;
+	dmu_object_type_t spill_type;
 	int err;
 
 	if (drrs->drr_length < SPA_MINBLOCKSIZE ||
-	    drrs->drr_length > spa_maxblocksize(dmu_objset_spa(rwa->os)))
+	    drrs->drr_length > spa_maxblocksize(dmu_objset_spa(rwa->os)) ||
+	    P2PHASE(drrs->drr_length, SPA_MINBLOCKSIZE) != 0)
 		return (SET_ERROR(EINVAL));
 
 	/*
@@ -2602,11 +2604,23 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 		return (0);
 	}
 
+	spill_type = (drrs->drr_type == DMU_OT_NONE) ? DMU_OT_SA :
+	    drrs->drr_type;
+	if (spill_type != DMU_OT_SA)
+		return (SET_ERROR(EINVAL));
+
 	if (rwa->raw) {
-		if (!DMU_OT_IS_VALID(drrs->drr_type) ||
+		if (!DMU_OT_IS_VALID(spill_type) ||
 		    drrs->drr_compressiontype >= ZIO_COMPRESS_FUNCTIONS ||
-		    drrs->drr_compressed_size == 0)
+		    (drrs->drr_compressiontype != ZIO_COMPRESS_OFF &&
+		    zio_compress_table[drrs->drr_compressiontype].ci_decompress ==
+		    NULL) ||
+		    drrs->drr_compressed_size == 0 ||
+		    drrs->drr_compressed_size > drrs->drr_length)
 			return (SET_ERROR(EINVAL));
+	} else if (drrs->drr_compressed_size != 0 ||
+	    drrs->drr_compressiontype != ZIO_COMPRESS_OFF) {
+		return (SET_ERROR(EINVAL));
 	}
 
 	if (dmu_object_info(rwa->os, drrs->drr_object, NULL) != 0)
@@ -2653,16 +2667,16 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 
 		abuf = arc_loan_raw_buf(dmu_objset_spa(rwa->os),
 		    drrs->drr_object, byteorder, drrs->drr_salt,
-		    drrs->drr_iv, drrs->drr_mac, drrs->drr_type,
+		    drrs->drr_iv, drrs->drr_mac, spill_type,
 		    drrs->drr_compressed_size, drrs->drr_length,
 		    drrs->drr_compressiontype, 0);
 	} else {
 		abuf = arc_loan_buf(dmu_objset_spa(rwa->os),
-		    DMU_OT_IS_METADATA(drrs->drr_type),
+		    DMU_OT_IS_METADATA(spill_type),
 		    drrs->drr_length);
 		if (rwa->byteswap) {
 			dmu_object_byteswap_t byteswap =
-			    DMU_OT_BYTESWAP(drrs->drr_type);
+			    DMU_OT_BYTESWAP(spill_type);
 			dmu_ot_byteswap[byteswap].ob_func(abd_to_buf(abd),
 			    abd_get_size(abd));
 		}
@@ -3004,17 +3018,24 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 	{
 		const struct drr_spill *drrs = &drr->drr_u.drr_spill;
 
-		if (drrs->drr_length < SPA_MINBLOCKSIZE ||
-		    drrs->drr_length > max_blksz) {
+			if (drrs->drr_length < SPA_MINBLOCKSIZE ||
+			    drrs->drr_length > max_blksz ||
+			    P2PHASE(drrs->drr_length, SPA_MINBLOCKSIZE) != 0) {
 			return (SET_ERROR(EINVAL));
 		}
 
 		if (drc->drc_raw) {
-			if (drrs->drr_compressed_size == 0)
+			if (drrs->drr_compressiontype >= ZIO_COMPRESS_FUNCTIONS ||
+			    (drrs->drr_compressiontype != ZIO_COMPRESS_OFF &&
+			    zio_compress_table[drrs->drr_compressiontype].ci_decompress ==
+			    NULL) ||
+			    drrs->drr_compressed_size == 0 ||
+			    drrs->drr_compressed_size > drrs->drr_length)
 				return (SET_ERROR(EINVAL));
 			size = drrs->drr_compressed_size;
 		} else {
-			if (drrs->drr_compressed_size != 0)
+			if (drrs->drr_compressed_size != 0 ||
+			    drrs->drr_compressiontype != ZIO_COMPRESS_OFF)
 				return (SET_ERROR(EINVAL));
 			size = drrs->drr_length;
 		}
