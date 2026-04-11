@@ -590,12 +590,20 @@ static boolean_t
 zfs_replay_clone_range_record_valid(const lr_clone_range_t *lr)
 {
 	size_t len;
+	uint64_t expected_nbps;
 
 	if (lr->lr_common.lrc_reclen < sizeof (*lr))
 		return (B_FALSE);
 
 	len = lr->lr_common.lrc_reclen - offsetof(lr_clone_range_t, lr_bps);
-	return (lr->lr_nbps <= len / sizeof (lr->lr_bps[0]));
+	if (lr->lr_nbps > len / sizeof (lr->lr_bps[0]))
+		return (B_FALSE);
+
+	if (lr->lr_length == 0 || lr->lr_blksz == 0)
+		return (B_FALSE);
+
+	expected_nbps = ((lr->lr_length - 1) / lr->lr_blksz) + 1;
+	return (lr->lr_nbps == expected_nbps);
 }
 
 static boolean_t
@@ -1306,6 +1314,11 @@ zfs_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 
 	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
 		return (SET_ERROR(EINVAL));
+
+	if (byteswap) {
+		byteswap_uint64_array(lr->lr_bps,
+		    lr->lr_nbps * sizeof (lr->lr_bps[0]));
+	}
 
 	error = zfs_replay_zget_ooo(zfsvfs, lr->lr_foid, &zp);
 	if (error != 0 || zp == NULL)
