@@ -2461,7 +2461,7 @@ receive_process_write_record(struct receive_writer_arg *rwa,
 		if (rwa->raw)
 			flags |= DMU_READ_NO_DECRYPT;
 
-		if (rwa->byteswap) {
+			if (rwa->byteswap && !rwa->raw) {
 			dmu_object_byteswap_t byteswap =
 			    DMU_OT_BYTESWAP(drrw->drr_type);
 			dmu_ot_byteswap[byteswap].ob_func(abd_to_buf(rrd->abd),
