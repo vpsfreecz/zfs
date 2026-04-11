@@ -2588,7 +2588,8 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 	int err;
 
 	if (drrs->drr_length < SPA_MINBLOCKSIZE ||
-	    drrs->drr_length > spa_maxblocksize(dmu_objset_spa(rwa->os)))
+	    drrs->drr_length > spa_maxblocksize(dmu_objset_spa(rwa->os)) ||
+	    P2PHASE(drrs->drr_length, SPA_MINBLOCKSIZE) != 0)
 		return (SET_ERROR(EINVAL));
 
 	/*
@@ -2605,8 +2606,11 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 	if (rwa->raw) {
 		if (!DMU_OT_IS_VALID(drrs->drr_type) ||
 		    drrs->drr_compressiontype >= ZIO_COMPRESS_FUNCTIONS ||
-		    drrs->drr_compressed_size == 0)
+		    drrs->drr_compressed_size == 0 ||
+		    drrs->drr_compressed_size > drrs->drr_length)
 			return (SET_ERROR(EINVAL));
+	} else if (drrs->drr_compressed_size != 0) {
+		return (SET_ERROR(EINVAL));
 	}
 
 	if (dmu_object_info(rwa->os, drrs->drr_object, NULL) != 0)
@@ -3004,13 +3008,15 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 	{
 		const struct drr_spill *drrs = &drr->drr_u.drr_spill;
 
-		if (drrs->drr_length < SPA_MINBLOCKSIZE ||
-		    drrs->drr_length > max_blksz) {
+			if (drrs->drr_length < SPA_MINBLOCKSIZE ||
+			    drrs->drr_length > max_blksz ||
+			    P2PHASE(drrs->drr_length, SPA_MINBLOCKSIZE) != 0) {
 			return (SET_ERROR(EINVAL));
 		}
 
 		if (drc->drc_raw) {
-			if (drrs->drr_compressed_size == 0)
+				if (drrs->drr_compressed_size == 0 ||
+				    drrs->drr_compressed_size > drrs->drr_length)
 				return (SET_ERROR(EINVAL));
 			size = drrs->drr_compressed_size;
 		} else {
