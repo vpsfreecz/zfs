@@ -1634,6 +1634,8 @@ spa_keystore_change_key_sync(void *arg, dmu_tx_t *tx)
 int
 spa_keystore_change_key(const char *dsname, dsl_crypto_params_t *dcp)
 {
+	int ret;
+	spa_t *spa = NULL;
 	spa_keystore_change_key_args_t skcka;
 
 	/* initialize the args struct */
@@ -1646,9 +1648,25 @@ spa_keystore_change_key(const char *dsname, dsl_crypto_params_t *dcp)
 	 * lock and traversing all of the datasets that will have their keys
 	 * changed.
 	 */
-	return (dsl_sync_task(dsname, spa_keystore_change_key_check,
+	ret = dsl_sync_task(dsname, spa_keystore_change_key_check,
 	    spa_keystore_change_key_sync, &skcka, 15,
-	    ZFS_SPACE_CHECK_RESERVED));
+	    ZFS_SPACE_CHECK_RESERVED);
+	if (ret != 0)
+		return (ret);
+
+	/*
+	 * Recompute encrypted zvol minors after recursive key-root/key-residency
+	 * changes. This mirrors the explicit create/remove refreshes in the
+	 * load-key and unload-key paths.
+	 */
+	ret = spa_open(dsname, &spa, FTAG);
+	if (ret != 0)
+		return (ret);
+	zvol_remove_minors(spa, dsname, B_TRUE);
+	spa_close(spa, FTAG);
+	zvol_create_minors_recursive(dsname);
+
+	return (0);
 }
 
 int
