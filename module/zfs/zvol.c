@@ -632,6 +632,11 @@ zvol_clone_range(zvol_state_t *zv_src, uint64_t inoff, zvol_state_t *zv_dst,
 		error = SET_ERROR(EXDEV);
 		goto out;
 	}
+	if (inos != outos && inos->os_encrypted &&
+	    !dmu_objset_crypto_key_equal(inos, outos)) {
+		error = SET_ERROR(EXDEV);
+		goto out;
+	}
 	if (zv_src->zv_volblocksize != zv_dst->zv_volblocksize) {
 		error = SET_ERROR(EINVAL);
 		goto out;
