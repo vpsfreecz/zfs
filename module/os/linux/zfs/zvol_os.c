@@ -1804,10 +1804,13 @@ zvol_os_create_minor(const char *name)
 	 * up this process.
 	 */
 	len = MIN(zvol_prefetch_bytes, SPA_MAXBLOCKSIZE);
+	len = MIN(len, volsize);
 	if (len > 0) {
 		dmu_prefetch(os, ZVOL_OBJ, 0, 0, len, ZIO_PRIORITY_SYNC_READ);
-		dmu_prefetch(os, ZVOL_OBJ, 0, volsize - len, len,
-		    ZIO_PRIORITY_SYNC_READ);
+		if (volsize > len) {
+			dmu_prefetch(os, ZVOL_OBJ, 0, volsize - len, len,
+			    ZIO_PRIORITY_SYNC_READ);
+		}
 	}
 
 	zv->zv_objset = NULL;
