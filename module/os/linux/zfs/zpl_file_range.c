@@ -81,6 +81,7 @@ zpl_clone_file_range_impl(struct file *src_file, loff_t src_off,
 	uint64_t src_off_o = (uint64_t)src_off;
 	uint64_t dst_off_o = (uint64_t)dst_off;
 	uint64_t len_o = (uint64_t)len;
+	boolean_t commit = (dst_file->f_flags & (O_SYNC | O_DSYNC)) != 0;
 	cred_t *cr = CRED();
 	fstrans_cookie_t cookie;
 	int err;
@@ -111,7 +112,7 @@ zpl_clone_file_range_impl(struct file *src_file, loff_t src_off,
 	cookie = spl_fstrans_mark();
 
 	err = -zfs_clone_range(src_zp, &src_off_o, dst_zp,
-	    &dst_off_o, &len_o, cr);
+	    &dst_off_o, &len_o, commit, cr);
 
 	spl_fstrans_unmark(cookie);
 	crfree(cr);

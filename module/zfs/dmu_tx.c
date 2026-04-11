@@ -553,24 +553,34 @@ dmu_tx_count_clone(dmu_tx_hold_t *txh, uint64_t off, uint64_t len,
 {
 	dmu_tx_t *tx = txh->txh_tx;
 	dnode_t *dn = txh->txh_dnode;
+	uint64_t blkid, nblks, start, end;
+	zio_t *zio;
+	int shift;
 	int err;
 
 	ASSERT0(tx->tx_txg);
 	ASSERT(dn->dn_indblkshift != 0);
 	ASSERT(blksz != 0);
 	ASSERT0(off % blksz);
+	ASSERT(len == 0 || UINT64_MAX - off >= len - 1);
+
+	if (len == 0)
+		return;
+
+	blkid = off / blksz;
+	nblks = ((len - 1) / blksz) + 1;
 
 	(void) zfs_refcount_add_many(&txh->txh_memory_tohold,
-	    len / blksz * sizeof (brt_entry_t), FTAG);
+	    nblks * sizeof (brt_entry_t), FTAG);
 
-	int shift = dn->dn_indblkshift - SPA_BLKPTRSHIFT;
-	uint64_t start = off / blksz >> shift;
-	uint64_t end = (off + len) / blksz >> shift;
+	shift = dn->dn_indblkshift - SPA_BLKPTRSHIFT;
+	start = blkid >> shift;
+	end = (blkid + nblks - 1) >> shift;
 
 	(void) zfs_refcount_add_many(&txh->txh_space_towrite,
 	    (end - start + 1) << dn->dn_indblkshift, FTAG);
 
-	zio_t *zio = zio_root(tx->tx_pool->dp_spa,
+	zio = zio_root(tx->tx_pool->dp_spa,
 	    NULL, NULL, ZIO_FLAG_CANFAIL);
 	for (uint64_t i = start; i <= end; i++) {
 		err = dmu_tx_check_ioerr(zio, dn, 1, i);
