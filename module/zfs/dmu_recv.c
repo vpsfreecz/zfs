@@ -1967,6 +1967,10 @@ receive_object(struct receive_writer_arg *rwa, struct drr_object *drro,
 		 * We should have received a DRR_OBJECT_RANGE record
 		 * containing this block and stored it in rwa.
 		 */
+		if ((drro->drr_flags &
+		    ~(DRR_RAW_BYTESWAP | DRR_OBJECT_SPILL)) != 0)
+			return (SET_ERROR(EINVAL));
+
 		if (drro->drr_object < rwa->or_firstobj ||
 		    drro->drr_object >= rwa->or_firstobj + rwa->or_numslots ||
 		    drro->drr_raw_bonuslen < drro->drr_bonuslen ||
@@ -2609,6 +2613,10 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 	    P2PHASE(drrs->drr_length, SPA_MINBLOCKSIZE) != 0)
 		return (SET_ERROR(EINVAL));
 
+	if ((drrs->drr_flags & ~((rwa->raw ? DRR_RAW_BYTESWAP : 0) |
+	    (rwa->spill ? DRR_SPILL_UNMODIFIED : 0))) != 0)
+		return (SET_ERROR(EINVAL));
+
 	/*
 	 * This is an unmodified spill block which was added to the stream
 	 * to resolve an issue with incorrectly removing spill blocks.  It
@@ -2758,7 +2766,7 @@ receive_object_range(struct receive_writer_arg *rwa,
 	 */
 	if (drror->drr_numslots != DNODES_PER_BLOCK ||
 	    P2PHASE(drror->drr_firstobj, DNODES_PER_BLOCK) != 0 ||
-	    !rwa->raw)
+	    !rwa->raw || (drror->drr_flags & ~DRR_RAW_BYTESWAP) != 0)
 		return (SET_ERROR(EINVAL));
 
 	if (drror->drr_firstobj > rwa->max_object)
