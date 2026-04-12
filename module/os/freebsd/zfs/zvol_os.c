@@ -103,6 +103,25 @@
 
 #include "zfs_namecheck.h"
 
+typedef struct zvol_log_truncate_arg {
+	zvol_state_t *zlta_zv;
+	boolean_t zlta_logged;
+} zvol_log_truncate_arg_t;
+
+static void
+zvol_log_truncate_chunk(void *arg, objset_t *os, uint64_t object,
+    uint64_t offset, uint64_t length, dmu_tx_t *tx)
+{
+	zvol_log_truncate_arg_t *zlta = arg;
+	zvol_state_t *zv = zlta->zlta_zv;
+
+	ASSERT3P(os, ==, zv->zv_objset);
+	ASSERT3U(object, ==, ZVOL_OBJ);
+
+	zvol_log_truncate(zv, tx, offset, length);
+	zlta->zlta_logged = B_TRUE;
+}
+
 #define	ZVOL_DUMPSIZE		"dumpsize"
 
 #ifdef ZVOL_LOCK_DEBUG
@@ -591,12 +610,15 @@ zvol_strategy_impl(zv_request_t *zvr)
 	objset_t *os;
 	zfs_locked_range_t *lr;
 	int error = 0;
+	int log_error;
 	boolean_t doread = B_FALSE;
 	boolean_t is_dumpified;
 	boolean_t commit;
+	zvol_log_truncate_arg_t zlta = { 0 };
 
 	bp = zvr->bio;
 	zv = zvr->zv;
+	zlta.zlta_zv = zv;
 	if (zv == NULL) {
 		error = SET_ERROR(ENXIO);
 		goto out;
@@ -642,6 +664,10 @@ zvol_strategy_impl(zv_request_t *zvr)
 		error = SET_ERROR(EIO);
 		goto resume;
 	}
+	if (bp->bio_cmd == BIO_DELETE && resid > volsize - off) {
+		error = SET_ERROR(EIO);
+		goto resume;
+	}
 
 	is_dumpified = B_FALSE;
 	commit = !doread && !is_dumpified &&
@@ -655,17 +681,20 @@ zvol_strategy_impl(zv_request_t *zvr)
 	    doread ? RL_READER : RL_WRITER);
 
 	if (bp->bio_cmd == BIO_DELETE) {
-		dmu_tx_t *tx = dmu_tx_create(zv->zv_objset);
-		error = dmu_tx_assign(tx, DMU_TX_WAIT);
-		if (error != 0) {
-			dmu_tx_abort(tx);
-		} else {
-			zvol_log_truncate(zv, tx, off, resid);
-			dmu_tx_commit(tx);
-			error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ,
-			    off, resid);
+		error = dmu_free_long_range_cb(zv->zv_objset, ZVOL_OBJ,
+		    off, resid, zvol_log_truncate_chunk, &zlta);
+		/*
+		 * dmu_free_long_range() can commit chunks before it returns an
+		 * error.  Queue each TX_TRUNCATE in the same transaction as its
+		 * corresponding free chunk so replay coverage follows committed
+		 * progress instead of a separate post-free logging transaction.
+		 *
+		 * On failure we cannot recover the exact chunked-free progress
+		 * here, but we also must not claim the whole BIO completed if
+		 * the request still returns an error.
+		 */
+		if (error == 0)
 			resid = 0;
-		}
 		goto unlock;
 	}
 	while (resid != 0 && off < volsize) {
@@ -720,9 +749,24 @@ unlock:
 		break;
 	}
 
-	if (error == 0 && commit) {
+	/*
+	 * Sync writes can expose a completed prefix via bio_completed. Sync
+	 * deletes now log each committed free chunk inline. Once either kind
+	 * of progress has been reported or logged, we must still commit it
+	 * even when a later chunk fails. Otherwise a crash can lose work that
+	 * already escaped the request loop.
+	 */
+	if (commit) {
+		if (bp->bio_cmd == BIO_WRITE && bp->bio_completed != 0) {
 commit:
-		error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+			log_error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+			if (log_error != 0)
+				error = log_error;
+		} else if (bp->bio_cmd == BIO_DELETE && zlta.zlta_logged) {
+			log_error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+			if (error == 0)
+				error = log_error;
+		}
 	}
 resume:
 	rw_exit(&zv->zv_suspend_lock);
@@ -1121,7 +1165,8 @@ zvol_cdev_ioctl(struct cdev *dev, ulong_t cmd, caddr_t data,
 		length = ((off_t *)data)[1];
 		if ((offset % DEV_BSIZE) != 0 || (length % DEV_BSIZE) != 0 ||
 		    offset < 0 || offset >= zv->zv_volsize ||
-		    length <= 0) {
+		    length <= 0 ||
+		    (uint64_t)length > zv->zv_volsize - (uint64_t)offset) {
 			printf("%s: offset=%jd length=%jd\n", __func__, offset,
 			    length);
 			error = SET_ERROR(EINVAL);
@@ -1131,21 +1176,16 @@ zvol_cdev_ioctl(struct cdev *dev, ulong_t cmd, caddr_t data,
 		zvol_ensure_zilog(zv);
 		lr = zfs_rangelock_enter(&zv->zv_rangelock, offset, length,
 		    RL_WRITER);
-		dmu_tx_t *tx = dmu_tx_create(zv->zv_objset);
-		error = dmu_tx_assign(tx, DMU_TX_WAIT);
-		if (error != 0) {
-			sync = FALSE;
-			dmu_tx_abort(tx);
-		} else {
-			sync = (zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS);
-			zvol_log_truncate(zv, tx, offset, length);
-			dmu_tx_commit(tx);
-			error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ,
-			    offset, length);
-		}
+		sync = (zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS);
+		zvol_log_truncate_arg_t zlta = { .zlta_zv = zv };
+		error = dmu_free_long_range_cb(zv->zv_objset, ZVOL_OBJ,
+		    offset, length, zvol_log_truncate_chunk, &zlta);
 		zfs_rangelock_exit(lr);
-		if (sync)
-			error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+		if (sync && zlta.zlta_logged) {
+			int log_error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+			if (error == 0)
+				error = log_error;
+		}
 		rw_exit(&zv->zv_suspend_lock);
 		break;
 	case DIOCGSTRIPESIZE:
