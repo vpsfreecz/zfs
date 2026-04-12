@@ -2628,6 +2628,9 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 	if (rwa->raw) {
 		if (!DMU_OT_IS_VALID(spill_type) ||
 		    drrs->drr_compressiontype >= ZIO_COMPRESS_FUNCTIONS ||
+		    (drrs->drr_compressiontype != ZIO_COMPRESS_OFF &&
+		    zio_compress_table[drrs->drr_compressiontype].ci_decompress ==
+		    NULL) ||
 		    drrs->drr_compressed_size == 0 ||
 		    drrs->drr_compressed_size > drrs->drr_length)
 			return (SET_ERROR(EINVAL));
@@ -3045,8 +3048,12 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 		}
 
 		if (drc->drc_raw) {
-				if (drrs->drr_compressed_size == 0 ||
-				    drrs->drr_compressed_size > drrs->drr_length)
+			if (drrs->drr_compressiontype >= ZIO_COMPRESS_FUNCTIONS ||
+			    (drrs->drr_compressiontype != ZIO_COMPRESS_OFF &&
+			    zio_compress_table[drrs->drr_compressiontype].ci_decompress ==
+			    NULL) ||
+			    drrs->drr_compressed_size == 0 ||
+			    drrs->drr_compressed_size > drrs->drr_length)
 				return (SET_ERROR(EINVAL));
 			size = drrs->drr_compressed_size;
 		} else {
