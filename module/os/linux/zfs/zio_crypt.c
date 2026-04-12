@@ -339,6 +339,7 @@ zio_crypt_key_change_salt(zio_crypt_key_t *key)
 	key->zk_salt_count = 0;
 
 	/* destroy the old context template and create the new one */
+	mech.cm_type = crypto_mech2id(zio_crypt_table[key->zk_crypt].ci_mechname);
 	crypto_destroy_ctx_template(key->zk_current_tmpl);
 	ret = crypto_create_ctx_template(&mech, &key->zk_current_key,
 	    &key->zk_current_tmpl);
