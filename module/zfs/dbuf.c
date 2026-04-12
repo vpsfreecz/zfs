@@ -2775,7 +2775,22 @@ dmu_buf_is_dirty(dmu_buf_t *db_fake, dmu_tx_t *tx)
  * dbuf (and anything newer will be cached in the dbuf). However, a pending
  * block clone or not yet synced Direct I/O write will have a dirty record BP
  * pointing to the most recent data.
+ *
+ * Direct I/O publishes that replacement BP from dmu_sync_done(). Readers that
+ * consult dirty-record BPs must wait until publication is complete and then
+ * fall back to the on-disk BP if the write finished without an override.
  */
+static void
+dbuf_wait_diowrite_bp_ready_locked(dmu_buf_impl_t *db, dbuf_dirty_record_t *dr)
+{
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+	ASSERT0(db->db_level);
+	ASSERT(dr->dt.dl.dr_diowrite);
+
+	while (dr->dt.dl.dr_override_state == DR_IN_DMU_SYNC)
+		cv_wait(&db->db_changed, &db->db_mtx);
+}
+
 int
 dmu_buf_get_bp_from_dbuf(dmu_buf_impl_t *db, blkptr_t **bp)
 {
@@ -2789,15 +2804,15 @@ dmu_buf_get_bp_from_dbuf(dmu_buf_impl_t *db, blkptr_t **bp)
 
 	*bp = db->db_blkptr;
 	dbuf_dirty_record_t *dr = list_head(&db->db_dirty_records);
-	if (dr && db->db_state == DB_NOFILL) {
+	if (dr && dr->dt.dl.dr_diowrite) {
+		dbuf_wait_diowrite_bp_ready_locked(db, dr);
+		if (dr->dt.dl.dr_override_state == DR_OVERRIDDEN)
+			*bp = &dr->dt.dl.dr_overridden_by;
+	} else if (dr && db->db_state == DB_NOFILL) {
 		/* Block clone */
 		if (!dr->dt.dl.dr_brtwrite)
 			error = EIO;
 		else
-			*bp = &dr->dt.dl.dr_overridden_by;
-	} else if (dr && db->db_state == DB_UNCACHED) {
-		/* Direct I/O write */
-		if (dr->dt.dl.dr_diowrite)
 			*bp = &dr->dt.dl.dr_overridden_by;
 	}
 
@@ -2843,8 +2858,11 @@ dmu_buf_get_diowrite_bp_copy_locked(dmu_buf_impl_t *db,
 
 	dr = dbuf_find_dirty_eq_locked(db, txg);
 	if (dr != NULL && dr->dt.dl.dr_diowrite) {
-		*bp = dr->dt.dl.dr_overridden_by;
-		return (B_TRUE);
+		dbuf_wait_diowrite_bp_ready_locked(db, dr);
+		if (dr->dt.dl.dr_override_state == DR_OVERRIDDEN) {
+			*bp = dr->dt.dl.dr_overridden_by;
+			return (B_TRUE);
+		}
 	}
 
 	return (B_FALSE);
