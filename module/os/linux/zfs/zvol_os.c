@@ -104,6 +104,33 @@ zvol_end_io(struct bio *bio, struct request *rq, int error)
 	}
 }
 
+/*
+ * Finalize our BIO or request while preserving any already-completed prefix.
+ */
+static inline void
+zvol_end_io_partial(struct bio *bio, struct request *rq, uint64_t done,
+    int error)
+{
+	ASSERT3U(error, >=, 0);
+
+	if (bio != NULL) {
+		ASSERT3U(done, <=, BIO_BI_SIZE(bio));
+		if (error != 0 && done != 0 && done < BIO_BI_SIZE(bio)) {
+			bio_advance(bio, done);
+		}
+		bio->bi_status = errno_to_bi_status(error);
+		bio_endio(bio);
+	} else {
+		ASSERT3U(done, <=, blk_rq_bytes(rq));
+		if (error != 0 && done != 0 && done < blk_rq_bytes(rq)) {
+			boolean_t more = blk_update_request(rq, BLK_STS_OK,
+			    (unsigned int)done);
+			ASSERT3B(more, ==, B_TRUE);
+		}
+		blk_mq_end_request(rq, errno_to_bi_status(error));
+	}
+}
+
 static unsigned int zvol_blk_mq_queue_depth = BLKDEV_DEFAULT_RQ;
 static unsigned int zvol_actual_blk_mq_queue_depth;
 
@@ -337,7 +364,7 @@ zvol_write(zv_request_t *zvr)
 		blk_generic_end_io_acct(q, disk, WRITE, bio, start_time);
 	}
 
-	zvol_end_io(bio, rq, error);
+	zvol_end_io_partial(bio, rq, nwritten, error);
 }
 
 static void
@@ -502,7 +529,7 @@ zvol_read(zv_request_t *zvr)
 		blk_generic_end_io_acct(q, disk, READ, bio, start_time);
 	}
 
-	zvol_end_io(bio, rq, error);
+	zvol_end_io_partial(bio, rq, nread, error);
 }
 
 static void
