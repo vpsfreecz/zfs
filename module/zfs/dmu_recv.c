@@ -3127,6 +3127,47 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 	return (0);
 }
 
+static boolean_t
+receive_record_toguid_valid(dmu_recv_cookie_t *drc,
+    const dmu_replay_record_t *drr)
+{
+	uint64_t toguid;
+
+	switch (drr->drr_type) {
+	case DRR_OBJECT:
+		toguid = drr->drr_u.drr_object.drr_toguid;
+		break;
+	case DRR_FREEOBJECTS:
+		toguid = drr->drr_u.drr_freeobjects.drr_toguid;
+		break;
+	case DRR_WRITE:
+		toguid = drr->drr_u.drr_write.drr_toguid;
+		break;
+	case DRR_WRITE_EMBEDDED:
+		toguid = drr->drr_u.drr_write_embedded.drr_toguid;
+		break;
+	case DRR_FREE:
+		toguid = drr->drr_u.drr_free.drr_toguid;
+		break;
+	case DRR_SPILL:
+		toguid = drr->drr_u.drr_spill.drr_toguid;
+		break;
+	case DRR_OBJECT_RANGE:
+		toguid = drr->drr_u.drr_object_range.drr_toguid;
+		break;
+	case DRR_REDACT:
+		toguid = drr->drr_u.drr_redact.drr_toguid;
+		break;
+	case DRR_END:
+		toguid = drr->drr_u.drr_end.drr_toguid;
+		break;
+	default:
+		return (B_FALSE);
+	}
+
+	return (toguid == drc->drc_drrb->drr_toguid);
+}
+
 /*
  * Read records off the stream, issuing any necessary prefetches.
  */
@@ -3140,6 +3181,8 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	    &plan);
 	if (err != 0)
 		return (err);
+	if (!receive_record_toguid_valid(drc, &drc->drc_rrd->header))
+		return (SET_ERROR(EINVAL));
 
 	switch (drc->drc_rrd->header.drr_type) {
 	case DRR_OBJECT:
