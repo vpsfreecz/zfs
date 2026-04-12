@@ -288,7 +288,7 @@ zvol_write(zv_request_t *zvr)
 		error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
 		if (error != 0) {
 			rw_exit(&zv->zv_suspend_lock);
-			zvol_end_io(bio, rq, -error);
+			zvol_end_io(bio, rq, error);
 			return;
 		}
 	}
