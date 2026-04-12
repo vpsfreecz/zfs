@@ -2987,8 +2987,15 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 	{
 		const struct drr_write *drrw = &drr->drr_u.drr_write;
 
+		if (drc->drc_raw && !DRR_WRITE_COMPRESSED(drrw))
+			return (SET_ERROR(EINVAL));
+
 		if (DRR_WRITE_COMPRESSED(drrw)) {
-			if (drrw->drr_compressed_size == 0 ||
+			if (drrw->drr_compressiontype >= ZIO_COMPRESS_FUNCTIONS ||
+			    (drrw->drr_compressiontype != ZIO_COMPRESS_OFF &&
+			    zio_compress_table[drrw->drr_compressiontype].ci_decompress ==
+			    NULL) ||
+			    drrw->drr_compressed_size == 0 ||
 			    drrw->drr_logical_size < drrw->drr_compressed_size)
 				return (SET_ERROR(EINVAL));
 			size = drrw->drr_compressed_size;
