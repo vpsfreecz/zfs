@@ -2536,6 +2536,28 @@ receive_process_write_record(struct receive_writer_arg *rwa,
 	return (EAGAIN);
 }
 
+static boolean_t
+receive_write_embedded_metadata_valid(const struct drr_write_embedded *drrwe,
+    uint64_t max_blksz)
+{
+	if (drrwe->drr_etype != BP_EMBEDDED_TYPE_DATA ||
+	    drrwe->drr_compression >= ZIO_COMPRESS_FUNCTIONS ||
+	    drrwe->drr_length == 0 ||
+	    drrwe->drr_length > max_blksz ||
+	    drrwe->drr_lsize == 0 ||
+	    drrwe->drr_lsize != drrwe->drr_length ||
+	    drrwe->drr_psize == 0 ||
+	    drrwe->drr_psize > BPE_PAYLOAD_SIZE ||
+	    drrwe->drr_psize > drrwe->drr_lsize)
+		return (B_FALSE);
+
+	if (drrwe->drr_compression == ZIO_COMPRESS_OFF)
+		return (drrwe->drr_lsize == drrwe->drr_psize);
+
+	return (drrwe->drr_psize < drrwe->drr_lsize &&
+	    zio_compress_table[drrwe->drr_compression].ci_decompress != NULL);
+}
+
 static int
 receive_write_embedded(struct receive_writer_arg *rwa,
     struct drr_write_embedded *drrwe, void *data)
@@ -2546,14 +2568,8 @@ receive_write_embedded(struct receive_writer_arg *rwa,
 	if (drrwe->drr_offset + drrwe->drr_length < drrwe->drr_offset)
 		return (SET_ERROR(EINVAL));
 
-	if (drrwe->drr_psize > BPE_PAYLOAD_SIZE)
-		return (SET_ERROR(EINVAL));
-
-	if (drrwe->drr_etype >= NUM_BP_EMBEDDED_TYPES)
-		return (SET_ERROR(EINVAL));
-	if (drrwe->drr_compression >= ZIO_COMPRESS_FUNCTIONS)
-		return (SET_ERROR(EINVAL));
-	if (rwa->raw)
+	if (rwa->raw || !receive_write_embedded_metadata_valid(drrwe,
+	    spa_maxblocksize(dmu_objset_spa(rwa->os))))
 		return (SET_ERROR(EINVAL));
 
 	if (drrwe->drr_object > rwa->max_object)
@@ -3011,7 +3027,8 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 		const struct drr_write_embedded *drrwe =
 		    &drr->drr_u.drr_write_embedded;
 
-		if (drc->drc_raw || drrwe->drr_psize > BPE_PAYLOAD_SIZE)
+		if (drc->drc_raw ||
+		    !receive_write_embedded_metadata_valid(drrwe, max_blksz))
 			return (SET_ERROR(EINVAL));
 
 		size = P2ROUNDUP((uint64_t)drrwe->drr_psize, 8);
