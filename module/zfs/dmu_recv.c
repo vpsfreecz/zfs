@@ -1967,6 +1967,10 @@ receive_object(struct receive_writer_arg *rwa, struct drr_object *drro,
 		 * We should have received a DRR_OBJECT_RANGE record
 		 * containing this block and stored it in rwa.
 		 */
+		if ((drro->drr_flags &
+		    ~(DRR_RAW_BYTESWAP | DRR_OBJECT_SPILL)) != 0)
+			return (SET_ERROR(EINVAL));
+
 		if (drro->drr_object < rwa->or_firstobj ||
 		    drro->drr_object >= rwa->or_firstobj + rwa->or_numslots ||
 		    drro->drr_raw_bonuslen < drro->drr_bonuslen ||
@@ -2633,6 +2637,10 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 	    P2PHASE(drrs->drr_length, SPA_MINBLOCKSIZE) != 0)
 		return (SET_ERROR(EINVAL));
 
+	if ((drrs->drr_flags & ~((rwa->raw ? DRR_RAW_BYTESWAP : 0) |
+	    (rwa->spill ? DRR_SPILL_UNMODIFIED : 0))) != 0)
+		return (SET_ERROR(EINVAL));
+
 	/*
 	 * This is an unmodified spill block which was added to the stream
 	 * to resolve an issue with incorrectly removing spill blocks.  It
@@ -2783,7 +2791,7 @@ receive_object_range(struct receive_writer_arg *rwa,
 	 */
 	if (drror->drr_numslots != DNODES_PER_BLOCK ||
 	    P2PHASE(drror->drr_firstobj, DNODES_PER_BLOCK) != 0 ||
-	    !rwa->raw)
+	    !rwa->raw || (drror->drr_flags & ~DRR_RAW_BYTESWAP) != 0)
 		return (SET_ERROR(EINVAL));
 
 	if (drror->drr_firstobj > rwa->max_object)
@@ -3098,6 +3106,13 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 		}
 		break;
 	}
+	case DRR_FREEOBJECTS:
+	case DRR_FREE:
+	case DRR_REDACT:
+	case DRR_END:
+	case DRR_OBJECT_RANGE:
+		size = 0;
+		break;
 	default:
 		return (SET_ERROR(EINVAL));
 	}
@@ -3105,9 +3120,52 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 	err = receive_payload_read_size_valid(size);
 	if (err != 0)
 		return (err);
+	if (drr->drr_payloadlen != size)
+		return (SET_ERROR(EINVAL));
 
 	plan->rprp_size = size;
 	return (0);
+}
+
+static boolean_t
+receive_record_toguid_valid(dmu_recv_cookie_t *drc,
+    const dmu_replay_record_t *drr)
+{
+	uint64_t toguid;
+
+	switch (drr->drr_type) {
+	case DRR_OBJECT:
+		toguid = drr->drr_u.drr_object.drr_toguid;
+		break;
+	case DRR_FREEOBJECTS:
+		toguid = drr->drr_u.drr_freeobjects.drr_toguid;
+		break;
+	case DRR_WRITE:
+		toguid = drr->drr_u.drr_write.drr_toguid;
+		break;
+	case DRR_WRITE_EMBEDDED:
+		toguid = drr->drr_u.drr_write_embedded.drr_toguid;
+		break;
+	case DRR_FREE:
+		toguid = drr->drr_u.drr_free.drr_toguid;
+		break;
+	case DRR_SPILL:
+		toguid = drr->drr_u.drr_spill.drr_toguid;
+		break;
+	case DRR_OBJECT_RANGE:
+		toguid = drr->drr_u.drr_object_range.drr_toguid;
+		break;
+	case DRR_REDACT:
+		toguid = drr->drr_u.drr_redact.drr_toguid;
+		break;
+	case DRR_END:
+		toguid = drr->drr_u.drr_end.drr_toguid;
+		break;
+	default:
+		return (B_FALSE);
+	}
+
+	return (toguid == drc->drc_drrb->drr_toguid);
 }
 
 /*
@@ -3117,20 +3175,22 @@ static int
 receive_read_record(dmu_recv_cookie_t *drc)
 {
 	int err;
+	receive_payload_read_plan_t plan;
+
+	err = receive_build_payload_read_plan(drc, &drc->drc_rrd->header,
+	    &plan);
+	if (err != 0)
+		return (err);
+	if (!receive_record_toguid_valid(drc, &drc->drc_rrd->header))
+		return (SET_ERROR(EINVAL));
 
 	switch (drc->drc_rrd->header.drr_type) {
 	case DRR_OBJECT:
 	{
 		struct drr_object *drro =
 		    &drc->drc_rrd->header.drr_u.drr_object;
-		receive_payload_read_plan_t plan;
 		void *buf = NULL;
 		dmu_object_info_t doi;
-
-		err = receive_build_payload_read_plan(drc,
-		    &drc->drc_rrd->header, &plan);
-		if (err != 0)
-			return (err);
 
 		if (plan.rprp_size != 0)
 			buf = kmem_zalloc(plan.rprp_size, KM_SLEEP);
@@ -3164,13 +3224,7 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	{
 		struct drr_write *drrw =
 		    &drc->drc_rrd->header.drr_u.drr_write;
-		receive_payload_read_plan_t plan;
 		abd_t *abd;
-
-		err = receive_build_payload_read_plan(drc,
-		    &drc->drc_rrd->header, &plan);
-		if (err != 0)
-			return (err);
 
 		abd = abd_alloc_linear(plan.rprp_size, B_FALSE);
 		err = receive_read_payload_and_next_header(drc,
@@ -3189,13 +3243,7 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	{
 		struct drr_write_embedded *drrwe =
 		    &drc->drc_rrd->header.drr_u.drr_write_embedded;
-		receive_payload_read_plan_t plan;
 		void *buf;
-
-		err = receive_build_payload_read_plan(drc,
-		    &drc->drc_rrd->header, &plan);
-		if (err != 0)
-			return (err);
 
 		buf = kmem_zalloc(plan.rprp_size, KM_SLEEP);
 
@@ -3231,15 +3279,7 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	}
 	case DRR_SPILL:
 	{
-		struct drr_spill *drrs =
-		    &drc->drc_rrd->header.drr_u.drr_spill;
-		receive_payload_read_plan_t plan;
 		abd_t *abd;
-
-		err = receive_build_payload_read_plan(drc,
-		    &drc->drc_rrd->header, &plan);
-		if (err != 0)
-			return (err);
 
 		abd = abd_alloc_linear(plan.rprp_size, B_FALSE);
 		err = receive_read_payload_and_next_header(drc,
