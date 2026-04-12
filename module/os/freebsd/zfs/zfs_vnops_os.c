@@ -6205,8 +6205,15 @@ zfs_deallocate(struct vop_deallocate_args *ap)
 	zilog = zfsvfs->z_log;
 	off = *ap->a_offset;
 	len = *ap->a_len;
+	if (off < 0 || len < 0 || off > MAXOFFSET_T || len > MAXOFFSET_T ||
+	    (len != 0 && off > MAXOFFSET_T - len)) {
+		zfs_exit(zfsvfs, FTAG);
+		return (SET_ERROR(EINVAL));
+	}
 	file_sz = zp->z_size;
-	if (off + len > file_sz)
+	if (off >= file_sz)
+		len = 0;
+	else if (len > file_sz - off)
 		len = file_sz - off;
 	/* Fast path for out-of-range request. */
 	if (len <= 0) {
