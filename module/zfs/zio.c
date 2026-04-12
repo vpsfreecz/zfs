@@ -1434,6 +1434,18 @@ zio_write_override(zio_t *zio, blkptr_t *bp, int copies, int gang_copies,
 	zio->io_prop.zp_brtwrite = brtwrite;
 	zio->io_prop.zp_copies = copies;
 	zio->io_prop.zp_gang_copies = gang_copies;
+
+	/*
+	 * Payloadless overrides only carry an already-written BP into syncing
+	 * context. Keep the live zio properties aligned with that BP so later
+	 * override handling does not reinterpret it under a freshly recomputed
+	 * write policy.
+	 */
+	if (zio->io_abd == NULL) {
+		zio->io_prop.zp_checksum = BP_GET_CHECKSUM(bp);
+		zio->io_prop.zp_compress = BP_GET_COMPRESS(bp);
+	}
+
 	zio->io_bp_override = bp;
 }
 
@@ -3992,6 +4004,22 @@ zio_ddt_write(zio_t *zio)
 		 * shortfall.
 		 */
 		need_dvas -= parent_dvas;
+	}
+
+	if (zio->io_bp_override != NULL && zio->io_abd == NULL) {
+		/*
+		 * A payloadless override can reuse an existing DDT entry
+		 * only when that entry is already complete. It cannot
+		 * grow the entry or fall back to the regular write
+		 * pipeline without an in-memory payload, so keep the
+		 * prewritten override block instead.
+		 */
+		*bp = *zio->io_bp_override;
+		zp->zp_dedup = B_FALSE;
+		zp->zp_dedup_verify = B_FALSE;
+		zio->io_pipeline = ZIO_INTERLOCK_PIPELINE;
+		ddt_exit(ddt);
+		return (zio);
 	}
 
 	if (is_ganged) {
