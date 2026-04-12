@@ -2757,9 +2757,51 @@ dmu_buf_is_dirty(dmu_buf_t *db_fake, dmu_tx_t *tx)
 /*
  * Normally the db_blkptr points to the most recent on-disk content for the
  * dbuf (and anything newer will be cached in the dbuf). However, a pending
- * block clone or not yet synced Direct I/O write will have a dirty record BP
- * pointing to the most recent data.
+ * block clone or Direct I/O write may have a dirty-record BP pointing to the
+ * most recent data.
+ *
+ * Direct I/O first publishes that replacement BP from dmu_sync_done(). Later,
+ * syncing context clears DR_OVERRIDDEN before dbuf_write_ready() republishes
+ * the replacement BP into db_blkptr. Readers that consult dirty-record BPs
+ * must wait out the open-context publication and keep following the Direct I/O
+ * BP until db_blkptr catches up.
  */
+static void
+dbuf_wait_diowrite_bp_ready_locked(dmu_buf_impl_t *db, dbuf_dirty_record_t *dr)
+{
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+	ASSERT0(db->db_level);
+	ASSERT(dr->dt.dl.dr_diowrite);
+
+	while (dr->dt.dl.dr_override_state == DR_IN_DMU_SYNC)
+		cv_wait(&db->db_changed, &db->db_mtx);
+}
+
+static blkptr_t *
+dbuf_get_readable_diowrite_bp_locked(dmu_buf_impl_t *db,
+    dbuf_dirty_record_t *dr)
+{
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+	ASSERT0(db->db_level);
+	ASSERT(dr->dt.dl.dr_diowrite);
+
+	dbuf_wait_diowrite_bp_ready_locked(db, dr);
+
+	if (dr->dt.dl.dr_override_state == DR_OVERRIDDEN)
+		return (&dr->dt.dl.dr_overridden_by);
+
+	/*
+	 * Once syncing context starts carrying this Direct I/O block forward, the
+	 * dirty record remains the authoritative payload carrier until
+	 * dbuf_write_ready() republishes that BP into db_blkptr.
+	 */
+	if (db->db_data_pending == dr && db->db_blkptr != NULL &&
+	    !BP_EQUAL(db->db_blkptr, &dr->dt.dl.dr_overridden_by))
+		return (&dr->dt.dl.dr_overridden_by);
+
+	return (db->db_blkptr);
+}
+
 int
 dmu_buf_get_bp_from_dbuf(dmu_buf_impl_t *db, blkptr_t **bp)
 {
@@ -2773,19 +2815,66 @@ dmu_buf_get_bp_from_dbuf(dmu_buf_impl_t *db, blkptr_t **bp)
 
 	*bp = db->db_blkptr;
 	dbuf_dirty_record_t *dr = list_head(&db->db_dirty_records);
-	if (dr && db->db_state == DB_NOFILL) {
+	if (dr && dr->dt.dl.dr_diowrite) {
+		*bp = dbuf_get_readable_diowrite_bp_locked(db, dr);
+	} else if (dr && db->db_state == DB_NOFILL) {
 		/* Block clone */
 		if (!dr->dt.dl.dr_brtwrite)
 			error = EIO;
 		else
 			*bp = &dr->dt.dl.dr_overridden_by;
-	} else if (dr && db->db_state == DB_UNCACHED) {
-		/* Direct I/O write */
-		if (dr->dt.dl.dr_diowrite)
-			*bp = &dr->dt.dl.dr_overridden_by;
 	}
 
 	return (error);
+}
+
+static dbuf_dirty_record_t *
+dbuf_find_dirty_eq_locked(dmu_buf_impl_t *db, uint64_t txg)
+{
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+
+	return (dbuf_find_dirty_eq(db, txg));
+}
+
+int
+dmu_buf_get_bp_copy_from_dbuf_locked(dmu_buf_impl_t *db,
+    blkptr_t *bp, boolean_t *have_bp)
+{
+	blkptr_t *src = NULL;
+	int error;
+
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+
+	*have_bp = B_FALSE;
+	error = dmu_buf_get_bp_from_dbuf(db, &src);
+	if (error != 0 || src == NULL)
+		return (error);
+
+	*bp = *src;
+	*have_bp = B_TRUE;
+
+	return (0);
+}
+
+boolean_t
+dmu_buf_get_diowrite_bp_copy_locked(dmu_buf_impl_t *db,
+    uint64_t txg, blkptr_t *bp)
+{
+	dbuf_dirty_record_t *dr;
+
+	ASSERT0(db->db_level);
+	ASSERT(MUTEX_HELD(&db->db_mtx));
+
+	dr = dbuf_find_dirty_eq_locked(db, txg);
+	if (dr != NULL && dr->dt.dl.dr_diowrite) {
+		dbuf_wait_diowrite_bp_ready_locked(db, dr);
+		if (dr->dt.dl.dr_override_state == DR_OVERRIDDEN) {
+			*bp = dr->dt.dl.dr_overridden_by;
+			return (B_TRUE);
+		}
+	}
+
+	return (B_FALSE);
 }
 
 /*
