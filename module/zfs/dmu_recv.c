@@ -2444,6 +2444,9 @@ flush_write_batch(struct receive_writer_arg *rwa)
 	return (err);
 }
 
+static boolean_t receive_write_metadata_valid(const struct drr_write *drrw,
+    boolean_t raw);
+
 noinline static int
 receive_process_write_record(struct receive_writer_arg *rwa,
     struct receive_record_arg *rrd)
@@ -2454,7 +2457,7 @@ receive_process_write_record(struct receive_writer_arg *rwa,
 	struct drr_write *drrw = &rrd->header.drr_u.drr_write;
 
 	if (drrw->drr_offset + drrw->drr_logical_size < drrw->drr_offset ||
-	    !DMU_OT_IS_VALID(drrw->drr_type))
+	    !receive_write_metadata_valid(drrw, rwa->raw))
 		return (SET_ERROR(EINVAL));
 
 	if (rwa->heal) {
@@ -2538,6 +2541,27 @@ receive_process_write_record(struct receive_writer_arg *rwa,
 	 * so the caller should not free it
 	 */
 	return (EAGAIN);
+}
+
+static boolean_t
+receive_write_metadata_valid(const struct drr_write *drrw, boolean_t raw)
+{
+	uint8_t allowed_flags = DRR_CHECKSUM_DEDUP | (raw ? DRR_RAW_BYTESWAP : 0);
+	boolean_t dedup_cksum;
+
+	if (!DMU_OT_IS_VALID(drrw->drr_type) ||
+	    drrw->drr_checksumtype >= ZIO_CHECKSUM_FUNCTIONS ||
+	    (drrw->drr_flags & ~allowed_flags) != 0)
+		return (B_FALSE);
+
+	dedup_cksum = (drrw->drr_checksumtype != ZIO_CHECKSUM_OFF &&
+	    (zio_checksum_table[drrw->drr_checksumtype].ci_flags &
+	    ZCHECKSUM_FLAG_DEDUP) != 0);
+
+	if ((drrw->drr_flags & DRR_CHECKSUM_DEDUP) != 0 && !dedup_cksum)
+		return (B_FALSE);
+
+	return (B_TRUE);
 }
 
 static boolean_t
@@ -3013,6 +3037,9 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 	case DRR_WRITE:
 	{
 		const struct drr_write *drrw = &drr->drr_u.drr_write;
+
+		if (!receive_write_metadata_valid(drrw, drc->drc_raw))
+			return (SET_ERROR(EINVAL));
 
 		if (drc->drc_raw) {
 			if (drrw->drr_compressiontype >= ZIO_COMPRESS_FUNCTIONS ||
