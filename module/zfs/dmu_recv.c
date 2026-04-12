@@ -3106,6 +3106,13 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 		}
 		break;
 	}
+	case DRR_FREEOBJECTS:
+	case DRR_FREE:
+	case DRR_REDACT:
+	case DRR_END:
+	case DRR_OBJECT_RANGE:
+		size = 0;
+		break;
 	default:
 		return (SET_ERROR(EINVAL));
 	}
@@ -3113,6 +3120,8 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 	err = receive_payload_read_size_valid(size);
 	if (err != 0)
 		return (err);
+	if (drr->drr_payloadlen != size)
+		return (SET_ERROR(EINVAL));
 
 	plan->rprp_size = size;
 	return (0);
@@ -3125,20 +3134,20 @@ static int
 receive_read_record(dmu_recv_cookie_t *drc)
 {
 	int err;
+	receive_payload_read_plan_t plan;
+
+	err = receive_build_payload_read_plan(drc, &drc->drc_rrd->header,
+	    &plan);
+	if (err != 0)
+		return (err);
 
 	switch (drc->drc_rrd->header.drr_type) {
 	case DRR_OBJECT:
 	{
 		struct drr_object *drro =
 		    &drc->drc_rrd->header.drr_u.drr_object;
-		receive_payload_read_plan_t plan;
 		void *buf = NULL;
 		dmu_object_info_t doi;
-
-		err = receive_build_payload_read_plan(drc,
-		    &drc->drc_rrd->header, &plan);
-		if (err != 0)
-			return (err);
 
 		if (plan.rprp_size != 0)
 			buf = kmem_zalloc(plan.rprp_size, KM_SLEEP);
@@ -3172,13 +3181,7 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	{
 		struct drr_write *drrw =
 		    &drc->drc_rrd->header.drr_u.drr_write;
-		receive_payload_read_plan_t plan;
 		abd_t *abd;
-
-		err = receive_build_payload_read_plan(drc,
-		    &drc->drc_rrd->header, &plan);
-		if (err != 0)
-			return (err);
 
 		abd = abd_alloc_linear(plan.rprp_size, B_FALSE);
 		err = receive_read_payload_and_next_header(drc,
@@ -3197,13 +3200,7 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	{
 		struct drr_write_embedded *drrwe =
 		    &drc->drc_rrd->header.drr_u.drr_write_embedded;
-		receive_payload_read_plan_t plan;
 		void *buf;
-
-		err = receive_build_payload_read_plan(drc,
-		    &drc->drc_rrd->header, &plan);
-		if (err != 0)
-			return (err);
 
 		buf = kmem_zalloc(plan.rprp_size, KM_SLEEP);
 
@@ -3239,15 +3236,7 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	}
 	case DRR_SPILL:
 	{
-		struct drr_spill *drrs =
-		    &drc->drc_rrd->header.drr_u.drr_spill;
-		receive_payload_read_plan_t plan;
 		abd_t *abd;
-
-		err = receive_build_payload_read_plan(drc,
-		    &drc->drc_rrd->header, &plan);
-		if (err != 0)
-			return (err);
 
 		abd = abd_alloc_linear(plan.rprp_size, B_FALSE);
 		err = receive_read_payload_and_next_header(drc,
