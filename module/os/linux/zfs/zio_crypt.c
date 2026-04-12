@@ -279,7 +279,7 @@ zio_crypt_key_init(uint64_t crypt, zio_crypt_key_t *key)
 	key->zk_current_key.ck_data = key->zk_current_keydata;
 	key->zk_current_key.ck_length = CRYPTO_BYTES2BITS(keydata_len);
 
-	key->zk_hmac_key.ck_data = &key->zk_hmac_key;
+	key->zk_hmac_key.ck_data = key->zk_hmac_keydata;
 	key->zk_hmac_key.ck_length = CRYPTO_BYTES2BITS(SHA512_HMAC_KEYLEN);
 
 	/*
@@ -314,7 +314,7 @@ zio_crypt_key_change_salt(zio_crypt_key_t *key)
 {
 	int ret = 0;
 	uint8_t salt[ZIO_DATA_SALT_LEN];
-	crypto_mechanism_t mech;
+	crypto_mechanism_t mech = {0};
 	uint_t keydata_len = zio_crypt_table[key->zk_crypt].ci_keylen;
 
 	/* generate a new salt */
@@ -339,6 +339,8 @@ zio_crypt_key_change_salt(zio_crypt_key_t *key)
 	key->zk_salt_count = 0;
 
 	/* destroy the old context template and create the new one */
+	mech.cm_type = crypto_mech2id(
+	    zio_crypt_table[key->zk_crypt].ci_mechname);
 	crypto_destroy_ctx_template(key->zk_current_tmpl);
 	ret = crypto_create_ctx_template(&mech, &key->zk_current_key,
 	    &key->zk_current_tmpl);
@@ -559,7 +561,7 @@ zio_crypt_key_unwrap(crypto_key_t *cwkey, uint64_t crypt, uint64_t version,
     uint64_t guid, uint8_t *keydata, uint8_t *hmac_keydata, uint8_t *iv,
     uint8_t *mac, zio_crypt_key_t *key)
 {
-	crypto_mechanism_t mech;
+	crypto_mechanism_t mech = {0};
 	zfs_uio_t puio, cuio;
 	uint64_t aad[3];
 	iovec_t plain_iovecs[2], cipher_iovecs[3];
@@ -1981,6 +1983,9 @@ zio_do_crypt_data(boolean_t encrypt, zio_crypt_key_t *key,
 				rw_exit(&key->zk_salt_lock);
 				locked = B_FALSE;
 			}
+
+			if (ckey == &tmp_ckey)
+				memset(enc_keydata, 0, keydata_len);
 
 			return (0);
 		}
