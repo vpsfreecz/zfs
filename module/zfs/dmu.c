@@ -1011,7 +1011,8 @@ dmu_free_long_range_replay_done(objset_t *os, zilog_t *zilog)
 
 static int
 dmu_free_long_range_impl(objset_t *os, dnode_t *dn, uint64_t offset,
-    uint64_t length, zilog_t *replay_zilog)
+    uint64_t length, zilog_t *replay_zilog,
+    dmu_free_long_range_tx_func_t *tx_func, void *tx_arg)
 {
 	uint64_t object_size;
 	int err;
@@ -1117,6 +1118,8 @@ dmu_free_long_range_impl(objset_t *os, dnode_t *dn, uint64_t offset,
 		    uint64_t, long_free_dirty, uint64_t, chunk_len,
 		    uint64_t, txg);
 		dnode_free_range(dn, chunk_begin, chunk_len, tx);
+		if (tx_func != NULL)
+			tx_func(tx_arg, os, dn->dn_object, chunk_begin, chunk_len, tx);
 		if (replay_zilog != NULL && chunk_len == length)
 			VERIFY(zil_replaying(replay_zilog, tx));
 
@@ -1129,7 +1132,8 @@ dmu_free_long_range_impl(objset_t *os, dnode_t *dn, uint64_t offset,
 
 static int
 dmu_free_long_range_common(objset_t *os, uint64_t object,
-    uint64_t offset, uint64_t length, zilog_t *replay_zilog)
+    uint64_t offset, uint64_t length, zilog_t *replay_zilog,
+    dmu_free_long_range_tx_func_t *tx_func, void *tx_arg)
 {
 	dnode_t *dn;
 	int err;
@@ -1137,7 +1141,8 @@ dmu_free_long_range_common(objset_t *os, uint64_t object,
 	err = dnode_hold(os, object, FTAG, &dn);
 	if (err != 0)
 		return (err);
-	err = dmu_free_long_range_impl(os, dn, offset, length, replay_zilog);
+	err = dmu_free_long_range_impl(os, dn, offset, length, replay_zilog,
+	    tx_func, tx_arg);
 
 	/*
 	 * It is important to zero out the maxblkid when freeing the entire
@@ -1156,14 +1161,24 @@ int
 dmu_free_long_range(objset_t *os, uint64_t object,
     uint64_t offset, uint64_t length)
 {
-	return (dmu_free_long_range_common(os, object, offset, length, NULL));
+	return (dmu_free_long_range_common(os, object, offset, length, NULL,
+	    NULL, NULL));
+}
+
+int
+dmu_free_long_range_cb(objset_t *os, uint64_t object, uint64_t offset,
+    uint64_t length, dmu_free_long_range_tx_func_t *tx_func, void *tx_arg)
+{
+	return (dmu_free_long_range_common(os, object, offset, length, NULL,
+	    tx_func, tx_arg));
 }
 
 int
 dmu_free_long_range_replay(objset_t *os, uint64_t object,
     uint64_t offset, uint64_t length, zilog_t *zilog)
 {
-	return (dmu_free_long_range_common(os, object, offset, length, zilog));
+	return (dmu_free_long_range_common(os, object, offset, length, zilog,
+	    NULL, NULL));
 }
 
 int
