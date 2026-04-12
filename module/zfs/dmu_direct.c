@@ -203,8 +203,16 @@ dmu_write_direct(zio_t *pio, dmu_buf_impl_t *db, abd_t *data, dmu_tx_t *tx)
 	 * Disable nopwrite if the current block pointer could change
 	 * before this TXG syncs.
 	 */
-	if (list_next(&db->db_dirty_records, dr_head) != NULL)
+	dbuf_dirty_record_t *dr_next =
+	    list_next(&db->db_dirty_records, dr_head);
+	if (dr_next != NULL) {
 		zp.zp_nopwrite = B_FALSE;
+	} else {
+		DB_DNODE_ENTER(db);
+		if (dnode_block_freed(DB_DNODE(db), db->db_blkid))
+			zp.zp_nopwrite = B_FALSE;
+		DB_DNODE_EXIT(db);
+	}
 
 	ASSERT0(dr_head->dt.dl.dr_has_raw_params);
 	ASSERT3S(dr_head->dt.dl.dr_override_state, ==, DR_NOT_OVERRIDDEN);

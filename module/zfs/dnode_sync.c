@@ -214,10 +214,18 @@ free_verify(dmu_buf_impl_t *db, uint64_t start, uint64_t end, dmu_tx_t *tx)
 			continue;
 		ASSERT(err == 0);
 		ASSERT(child->db_level == 0);
+
+		/*
+		 * Stabilize the dirty-record list, dr_data handoff, and both
+		 * buffers for the full verification.  In particular, retaining
+		 * dr_data after dropping db_mtx can race dirty-record teardown.
+		 */
+		mutex_enter(&child->db_mtx);
+		rw_enter(&child->db_rwlock, RW_READER);
 		dr = dbuf_find_dirty_eq(child, txg);
 
 		/* data_old better be zeroed */
-		if (dr) {
+		if (dr != NULL && dr->dt.dl.dr_data != NULL) {
 			buf = dr->dt.dl.dr_data->b_data;
 			for (j = 0; j < child->db.db_size >> 3; j++) {
 				if (buf[j] != 0) {
@@ -235,8 +243,6 @@ free_verify(dmu_buf_impl_t *db, uint64_t start, uint64_t end, dmu_tx_t *tx)
 		 * db_data better be zeroed unless it's dirty in a
 		 * future txg.
 		 */
-		mutex_enter(&child->db_mtx);
-		rw_enter(&child->db_rwlock, RW_READER);
 		buf = child->db.db_data;
 		if (buf != NULL && child->db_state != DB_FILL &&
 		    list_is_empty(&child->db_dirty_records)) {
