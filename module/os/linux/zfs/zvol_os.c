@@ -427,16 +427,16 @@ zvol_discard(zv_request_t *zvr)
 	zfs_locked_range_t *lr = zfs_rangelock_enter(&zv->zv_rangelock,
 	    start, size, RL_WRITER);
 
-	tx = dmu_tx_create(zv->zv_objset);
-	dmu_tx_mark_netfree(tx);
-	error = dmu_tx_assign(tx, DMU_TX_WAIT);
-	if (error != 0) {
-		dmu_tx_abort(tx);
-	} else {
-		zvol_log_truncate(zv, tx, start, size);
-		dmu_tx_commit(tx);
-		error = dmu_free_long_range(zv->zv_objset,
-		    ZVOL_OBJ, start, size);
+	error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ, start, size);
+	if (error == 0) {
+		tx = dmu_tx_create(zv->zv_objset);
+		error = dmu_tx_assign(tx, DMU_TX_WAIT);
+		if (error != 0) {
+			dmu_tx_abort(tx);
+		} else {
+			zvol_log_truncate(zv, tx, start, size);
+			dmu_tx_commit(tx);
+		}
 	}
 	zfs_rangelock_exit(lr);
 
