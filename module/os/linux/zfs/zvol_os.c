@@ -50,6 +50,25 @@
 static void zvol_request_impl(zvol_state_t *zv, struct bio *bio,
     struct request *rq, boolean_t force_sync);
 
+typedef struct zvol_log_truncate_arg {
+	zvol_state_t *zlta_zv;
+	boolean_t zlta_logged;
+} zvol_log_truncate_arg_t;
+
+static void
+zvol_log_truncate_chunk(void *arg, objset_t *os, uint64_t object,
+    uint64_t offset, uint64_t length, dmu_tx_t *tx)
+{
+	zvol_log_truncate_arg_t *zlta = arg;
+	zvol_state_t *zv = zlta->zlta_zv;
+
+	ASSERT3P(os, ==, zv->zv_objset);
+	ASSERT3U(object, ==, ZVOL_OBJ);
+
+	zvol_log_truncate(zv, tx, offset, length);
+	zlta->zlta_logged = B_TRUE;
+}
+
 static unsigned int zvol_major = ZVOL_MAJOR;
 static unsigned int zvol_request_sync = 0;
 static unsigned int zvol_prefetch_bytes = (128 * 1024);
@@ -355,8 +374,17 @@ zvol_write(zv_request_t *zvr)
 	dataset_kstats_update_write_kstats(&zv->zv_kstat, nwritten);
 	task_io_account_write(nwritten);
 
-	if (error == 0 && sync)
-		error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+	/*
+	 * Once later-chunk failures become visible through a completed prefix,
+	 * sync/FUA writes must commit that prefix even when the request still
+	 * returns an error. Otherwise a crash can lose acknowledged bytes.
+	 */
+	if (sync && nwritten != 0) {
+		int commit_error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+
+		if (commit_error != 0)
+			error = commit_error;
+	}
 
 	rw_exit(&zv->zv_suspend_lock);
 
@@ -383,10 +411,11 @@ zvol_discard(zv_request_t *zvr)
 	zvol_state_t *zv = zvr->zv;
 	uint64_t start = io_offset(bio, rq);
 	uint64_t size = io_size(bio, rq);
-	uint64_t end = start + size;
+	uint64_t end;
 	boolean_t sync;
 	int error = 0;
-	dmu_tx_t *tx;
+	int log_error;
+	zvol_log_truncate_arg_t zlta = { .zlta_zv = zv };
 	struct request_queue *q = zv->zv_zso->zvo_queue;
 	struct gendisk *disk = zv->zv_zso->zvo_disk;
 	unsigned long start_time = 0;
@@ -405,6 +434,18 @@ zvol_discard(zv_request_t *zvr)
 	}
 
 	sync = io_is_fua(bio, rq) || zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS;
+
+	if (io_is_flush(bio, rq)) {
+		error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+		if (error != 0)
+			goto unlock;
+	}
+
+	if (size > UINT64_MAX - start) {
+		error = SET_ERROR(EIO);
+		goto unlock;
+	}
+	end = start + size;
 
 	if (end > zv->zv_volsize) {
 		error = SET_ERROR(EIO);
@@ -427,21 +468,27 @@ zvol_discard(zv_request_t *zvr)
 	zfs_locked_range_t *lr = zfs_rangelock_enter(&zv->zv_rangelock,
 	    start, size, RL_WRITER);
 
-	tx = dmu_tx_create(zv->zv_objset);
-	dmu_tx_mark_netfree(tx);
-	error = dmu_tx_assign(tx, DMU_TX_WAIT);
-	if (error != 0) {
-		dmu_tx_abort(tx);
-	} else {
-		zvol_log_truncate(zv, tx, start, size);
-		dmu_tx_commit(tx);
-		error = dmu_free_long_range(zv->zv_objset,
-		    ZVOL_OBJ, start, size);
-	}
+	/*
+	 * dmu_free_long_range() can commit chunks before it returns an error.
+	 * Queue each TX_TRUNCATE in the same transaction as its corresponding
+	 * free chunk so replay coverage tracks committed progress instead of
+	 * relying on a fragile post-free follow-on transaction.
+	 */
+	error = dmu_free_long_range_cb(zv->zv_objset, ZVOL_OBJ, start, size,
+	    zvol_log_truncate_chunk, &zlta);
 	zfs_rangelock_exit(lr);
 
-	if (error == 0 && sync)
-		error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+	/*
+	 * Once we have queued per-chunk TX_TRUNCATE records that match live
+	 * committed progress, sync requests still need to force them out even
+	 * if a later chunk fails. Otherwise a crash before txg sync can lose
+	 * synchronous frees from replay coverage.
+	 */
+	if (sync && zlta.zlta_logged) {
+		log_error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+		if (log_error != 0)
+			error = log_error;
+	}
 
 unlock:
 	rw_exit(&zv->zv_suspend_lock);
