@@ -86,7 +86,7 @@ typedef enum {
 } or_need_sync_t;
 
 static int receive_read_payload_and_next_header(dmu_recv_cookie_t *ra, int len,
-    void *buf);
+    int max_len, void *buf);
 
 struct receive_record_arg {
 	dmu_replay_record_t header;
@@ -1323,7 +1323,8 @@ dmu_recv_begin(const char *tofs, const char *tosnap,
 	 * upper limit. Systems with less than 1GB of RAM will see a lower
 	 * limit from `arc_all_memory() / 4`.
 	 */
-	if (payloadlen > (MIN((1U << 28), arc_all_memory() / 4))) {
+	uint64_t payload_limit = MIN((1U << 28), arc_all_memory() / 4);
+	if (payloadlen > payload_limit) {
 		crfree(cr);
 		drc->drc_cred = NULL;
 		return (SET_ERROR(E2BIG));
@@ -1340,7 +1341,7 @@ dmu_recv_begin(const char *tofs, const char *tosnap,
 		 */
 
 		err = receive_read_payload_and_next_header(drc, payloadlen,
-		    payload);
+		    payload_limit, payload);
 		if (err != 0) {
 			vmem_free(payload, payloadlen);
 			crfree(cr);
@@ -1940,6 +1941,10 @@ receive_object(struct receive_writer_arg *rwa, struct drr_object *drro,
 		 * We should have received a DRR_OBJECT_RANGE record
 		 * containing this block and stored it in rwa.
 		 */
+		if ((drro->drr_flags &
+		    ~(DRR_RAW_BYTESWAP | DRR_OBJECT_SPILL)) != 0)
+			return (SET_ERROR(EINVAL));
+
 		if (drro->drr_object < rwa->or_firstobj ||
 		    drro->drr_object >= rwa->or_firstobj + rwa->or_numslots ||
 		    drro->drr_raw_bonuslen < drro->drr_bonuslen ||
@@ -2413,6 +2418,9 @@ flush_write_batch(struct receive_writer_arg *rwa)
 	return (err);
 }
 
+static boolean_t receive_write_metadata_valid(const struct drr_write *drrw,
+    boolean_t raw, uint64_t max_blksz);
+
 noinline static int
 receive_process_write_record(struct receive_writer_arg *rwa,
     struct receive_record_arg *rrd)
@@ -2422,8 +2430,8 @@ receive_process_write_record(struct receive_writer_arg *rwa,
 	ASSERT3U(rrd->header.drr_type, ==, DRR_WRITE);
 	struct drr_write *drrw = &rrd->header.drr_u.drr_write;
 
-	if (drrw->drr_offset + drrw->drr_logical_size < drrw->drr_offset ||
-	    !DMU_OT_IS_VALID(drrw->drr_type))
+	if (!receive_write_metadata_valid(drrw, rwa->raw,
+	    spa_maxblocksize(dmu_objset_spa(rwa->os))))
 		return (SET_ERROR(EINVAL));
 
 	if (rwa->heal) {
@@ -2438,7 +2446,7 @@ receive_process_write_record(struct receive_writer_arg *rwa,
 			dmu_object_byteswap_t byteswap =
 			    DMU_OT_BYTESWAP(drrw->drr_type);
 			dmu_ot_byteswap[byteswap].ob_func(abd_to_buf(rrd->abd),
-			    DRR_WRITE_PAYLOAD_SIZE(drrw));
+			    rrd->payload_size);
 		}
 
 		err = dmu_buf_hold_noread(rwa->os, drrw->drr_object,
@@ -2484,15 +2492,18 @@ receive_process_write_record(struct receive_writer_arg *rwa,
 	}
 
 	struct receive_record_arg *first_rrd = list_head(&rwa->write_batch);
-	struct drr_write *first_drrw = &first_rrd->header.drr_u.drr_write;
 	uint64_t batch_size =
 	    MIN(zfs_recv_write_batch_size, DMU_MAX_ACCESS / 2);
-	if (first_rrd != NULL &&
-	    (drrw->drr_object != first_drrw->drr_object ||
-	    drrw->drr_offset >= first_drrw->drr_offset + batch_size)) {
-		err = flush_write_batch(rwa);
-		if (err != 0)
-			return (err);
+	if (first_rrd != NULL) {
+		struct drr_write *first_drrw =
+		    &first_rrd->header.drr_u.drr_write;
+
+		if (drrw->drr_object != first_drrw->drr_object ||
+		    drrw->drr_offset - first_drrw->drr_offset >= batch_size) {
+			err = flush_write_batch(rwa);
+			if (err != 0)
+				return (err);
+		}
 	}
 
 	rwa->last_object = drrw->drr_object;
@@ -2509,6 +2520,83 @@ receive_process_write_record(struct receive_writer_arg *rwa,
 	return (EAGAIN);
 }
 
+static boolean_t
+receive_payload_compression_valid(uint8_t compressiontype,
+    uint64_t logical_size, uint64_t compressed_size, boolean_t raw)
+{
+	if (logical_size == 0 || compressiontype >= ZIO_COMPRESS_FUNCTIONS)
+		return (B_FALSE);
+
+	if (!raw) {
+		if (compressiontype == ZIO_COMPRESS_INHERIT)
+			return (compressed_size == 0);
+
+		return (compressed_size != 0 &&
+		    compressed_size <= logical_size &&
+		    zio_compress_table[compressiontype].ci_decompress != NULL);
+	}
+
+	if (compressed_size == 0 || compressed_size > logical_size)
+		return (B_FALSE);
+
+	if (compressiontype == ZIO_COMPRESS_OFF)
+		return (compressed_size == logical_size);
+
+	return (zio_compress_table[compressiontype].ci_decompress != NULL);
+}
+
+static boolean_t
+receive_write_metadata_valid(const struct drr_write *drrw, boolean_t raw,
+    uint64_t max_blksz)
+{
+	uint8_t allowed_flags = DRR_CHECKSUM_DEDUP;
+	boolean_t dedup_cksum;
+
+	if (raw)
+		allowed_flags |= DRR_RAW_BYTESWAP;
+
+	if (!DMU_OT_IS_VALID(drrw->drr_type) ||
+	    drrw->drr_checksumtype >= ZIO_CHECKSUM_FUNCTIONS ||
+	    (drrw->drr_flags & ~allowed_flags) != 0 ||
+	    drrw->drr_logical_size == 0 ||
+	    drrw->drr_logical_size > max_blksz ||
+	    drrw->drr_offset + drrw->drr_logical_size < drrw->drr_offset ||
+	    !receive_payload_compression_valid(drrw->drr_compressiontype,
+	    drrw->drr_logical_size, drrw->drr_compressed_size, raw))
+		return (B_FALSE);
+
+	dedup_cksum = (drrw->drr_checksumtype != ZIO_CHECKSUM_OFF &&
+	    (zio_checksum_table[drrw->drr_checksumtype].ci_flags &
+	    ZCHECKSUM_FLAG_DEDUP) != 0);
+
+	if ((drrw->drr_flags & DRR_CHECKSUM_DEDUP) != 0 && !dedup_cksum)
+		return (B_FALSE);
+
+	return (B_TRUE);
+}
+
+static boolean_t
+receive_write_embedded_metadata_valid(const struct drr_write_embedded *drrwe,
+    uint64_t max_blksz)
+{
+	if (drrwe->drr_etype != BP_EMBEDDED_TYPE_DATA ||
+	    drrwe->drr_compression >= ZIO_COMPRESS_FUNCTIONS ||
+	    drrwe->drr_length == 0 ||
+	    drrwe->drr_length > max_blksz ||
+	    drrwe->drr_lsize == 0 ||
+	    drrwe->drr_lsize != drrwe->drr_length ||
+	    drrwe->drr_psize == 0 ||
+	    drrwe->drr_psize > BPE_PAYLOAD_SIZE ||
+	    drrwe->drr_psize > drrwe->drr_lsize)
+		return (B_FALSE);
+
+	if (drrwe->drr_compression == ZIO_COMPRESS_OFF)
+		return (drrwe->drr_lsize == drrwe->drr_psize);
+
+	return (drrwe->drr_psize < drrwe->drr_lsize &&
+	    zio_compress_table[drrwe->drr_compression].ci_decompress != NULL);
+}
+
 static int
 receive_write_embedded(struct receive_writer_arg *rwa,
     struct drr_write_embedded *drrwe, void *data)
@@ -2519,14 +2607,8 @@ receive_write_embedded(struct receive_writer_arg *rwa,
 	if (drrwe->drr_offset + drrwe->drr_length < drrwe->drr_offset)
 		return (SET_ERROR(EINVAL));
 
-	if (drrwe->drr_psize > BPE_PAYLOAD_SIZE)
-		return (SET_ERROR(EINVAL));
-
-	if (drrwe->drr_etype >= NUM_BP_EMBEDDED_TYPES)
-		return (SET_ERROR(EINVAL));
-	if (drrwe->drr_compression >= ZIO_COMPRESS_FUNCTIONS)
-		return (SET_ERROR(EINVAL));
-	if (rwa->raw)
+	if (rwa->raw || !receive_write_embedded_metadata_valid(drrwe,
+	    spa_maxblocksize(dmu_objset_spa(rwa->os))))
 		return (SET_ERROR(EINVAL));
 
 	if (drrwe->drr_object > rwa->max_object)
@@ -2558,10 +2640,16 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
     abd_t *abd)
 {
 	dmu_buf_t *db, *db_spill;
+	dmu_object_type_t spill_type;
 	int err;
 
 	if (drrs->drr_length < SPA_MINBLOCKSIZE ||
-	    drrs->drr_length > spa_maxblocksize(dmu_objset_spa(rwa->os)))
+	    drrs->drr_length > spa_maxblocksize(dmu_objset_spa(rwa->os)) ||
+	    P2PHASE(drrs->drr_length, SPA_MINBLOCKSIZE) != 0)
+		return (SET_ERROR(EINVAL));
+
+	if ((drrs->drr_flags & ~((rwa->raw ? DRR_RAW_BYTESWAP : 0) |
+	    (rwa->spill ? DRR_SPILL_UNMODIFIED : 0))) != 0)
 		return (SET_ERROR(EINVAL));
 
 	/*
@@ -2575,11 +2663,21 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 		return (0);
 	}
 
+	spill_type = (drrs->drr_type == DMU_OT_NONE) ? DMU_OT_SA :
+	    drrs->drr_type;
+	if (spill_type != DMU_OT_SA)
+		return (SET_ERROR(EINVAL));
+
 	if (rwa->raw) {
-		if (!DMU_OT_IS_VALID(drrs->drr_type) ||
-		    drrs->drr_compressiontype >= ZIO_COMPRESS_FUNCTIONS ||
-		    drrs->drr_compressed_size == 0)
+		if (!DMU_OT_IS_VALID(spill_type) ||
+		    !receive_payload_compression_valid(
+		    drrs->drr_compressiontype, drrs->drr_length,
+		    drrs->drr_compressed_size, B_TRUE))
 			return (SET_ERROR(EINVAL));
+	} else if (!receive_payload_compression_valid(
+	    drrs->drr_compressiontype, drrs->drr_length,
+	    drrs->drr_compressed_size, B_FALSE)) {
+		return (SET_ERROR(EINVAL));
 	}
 
 	if (dmu_object_info(rwa->os, drrs->drr_object, NULL) != 0)
@@ -2626,22 +2724,22 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 
 		abuf = arc_loan_raw_buf(dmu_objset_spa(rwa->os),
 		    drrs->drr_object, byteorder, drrs->drr_salt,
-		    drrs->drr_iv, drrs->drr_mac, drrs->drr_type,
+		    drrs->drr_iv, drrs->drr_mac, spill_type,
 		    drrs->drr_compressed_size, drrs->drr_length,
 		    drrs->drr_compressiontype, 0);
 	} else {
 		abuf = arc_loan_buf(dmu_objset_spa(rwa->os),
-		    DMU_OT_IS_METADATA(drrs->drr_type),
+		    DMU_OT_IS_METADATA(spill_type),
 		    drrs->drr_length);
 		if (rwa->byteswap) {
 			dmu_object_byteswap_t byteswap =
-			    DMU_OT_BYTESWAP(drrs->drr_type);
+			    DMU_OT_BYTESWAP(spill_type);
 			dmu_ot_byteswap[byteswap].ob_func(abd_to_buf(abd),
-			    DRR_SPILL_PAYLOAD_SIZE(drrs));
+			    abd_get_size(abd));
 		}
 	}
 
-	memcpy(abuf->b_data, abd_to_buf(abd), DRR_SPILL_PAYLOAD_SIZE(drrs));
+	memcpy(abuf->b_data, abd_to_buf(abd), abd_get_size(abd));
 	abd_free(abd);
 	dbuf_assign_arcbuf((dmu_buf_impl_t *)db_spill, abuf, tx,
 	    DMU_UNCACHEDIO);
@@ -2702,7 +2800,7 @@ receive_object_range(struct receive_writer_arg *rwa,
 	 */
 	if (drror->drr_numslots != DNODES_PER_BLOCK ||
 	    P2PHASE(drror->drr_firstobj, DNODES_PER_BLOCK) != 0 ||
-	    !rwa->raw)
+	    !rwa->raw || (drror->drr_flags & ~DRR_RAW_BYTESWAP) != 0)
 		return (SET_ERROR(EINVAL));
 
 	if (drror->drr_firstobj > rwa->max_object)
@@ -2793,12 +2891,15 @@ receive_cksum(dmu_recv_cookie_t *drc, int len, void *buf)
  * Verify checksum of payload and next record.
  */
 static int
-receive_read_payload_and_next_header(dmu_recv_cookie_t *drc, int len, void *buf)
+receive_read_payload_and_next_header(dmu_recv_cookie_t *drc, int len,
+    int max_len, void *buf)
 {
 	int err;
 
+	if (len < 0 || len > max_len)
+		return (SET_ERROR(EINVAL));
+
 	if (len != 0) {
-		ASSERT3U(len, <=, SPA_MAXBLOCKSIZE);
 		err = receive_read(drc, len, buf);
 		if (err != 0)
 			return (err);
@@ -2889,6 +2990,174 @@ receive_read_prefetch(dmu_recv_cookie_t *drc, uint64_t object, uint64_t offset,
 	}
 }
 
+typedef struct receive_payload_read_plan {
+	uint64_t rprp_size;
+} receive_payload_read_plan_t;
+
+static int
+receive_payload_read_size_valid(uint64_t size)
+{
+	if (size > SPA_MAXBLOCKSIZE)
+		return (SET_ERROR(EINVAL));
+
+	return (0);
+}
+
+static int
+receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
+    const dmu_replay_record_t *drr, receive_payload_read_plan_t *plan)
+{
+	spa_t *spa = dmu_objset_spa(drc->drc_os);
+	uint64_t max_dnodesize = spa_maxdnodesize(spa);
+	uint64_t max_bonuslen = DN_BONUS_SIZE(max_dnodesize);
+	uint64_t max_blksz = spa_maxblocksize(spa);
+	uint64_t size = 0;
+	int err;
+
+	plan->rprp_size = 0;
+
+	switch (drr->drr_type) {
+	case DRR_OBJECT:
+	{
+		const struct drr_object *drro = &drr->drr_u.drr_object;
+		uint8_t dn_slots = drro->drr_dn_slots != 0 ?
+		    drro->drr_dn_slots : DNODE_MIN_SLOTS;
+		uint64_t slot_bonuslen;
+
+		if (dn_slots > (max_dnodesize >> DNODE_SHIFT))
+			return (SET_ERROR(EINVAL));
+
+		slot_bonuslen = DN_SLOTS_TO_BONUSLEN(dn_slots);
+		if (drc->drc_raw) {
+			if (drro->drr_raw_bonuslen < drro->drr_bonuslen ||
+			    drro->drr_raw_bonuslen > slot_bonuslen) {
+				return (SET_ERROR(EINVAL));
+			}
+		} else if (drro->drr_raw_bonuslen != 0 ||
+		    drro->drr_bonuslen > slot_bonuslen) {
+			return (SET_ERROR(EINVAL));
+		}
+
+		size = drro->drr_raw_bonuslen != 0 ? drro->drr_raw_bonuslen :
+		    P2ROUNDUP((uint64_t)drro->drr_bonuslen, 8);
+		if (size > max_bonuslen)
+			return (SET_ERROR(EINVAL));
+		break;
+	}
+	case DRR_WRITE:
+	{
+		const struct drr_write *drrw = &drr->drr_u.drr_write;
+
+		if (!receive_write_metadata_valid(drrw, drc->drc_raw,
+		    max_blksz))
+			return (SET_ERROR(EINVAL));
+
+		if (drc->drc_raw) {
+			size = drrw->drr_compressed_size;
+		} else if (DRR_WRITE_COMPRESSED(drrw)) {
+			size = drrw->drr_compressed_size;
+		} else {
+			size = drrw->drr_logical_size;
+		}
+		break;
+	}
+	case DRR_WRITE_EMBEDDED:
+	{
+		const struct drr_write_embedded *drrwe =
+		    &drr->drr_u.drr_write_embedded;
+
+		if (drc->drc_raw ||
+		    !receive_write_embedded_metadata_valid(drrwe, max_blksz))
+			return (SET_ERROR(EINVAL));
+
+		size = P2ROUNDUP((uint64_t)drrwe->drr_psize, 8);
+		break;
+	}
+	case DRR_SPILL:
+	{
+		const struct drr_spill *drrs = &drr->drr_u.drr_spill;
+
+		if (drrs->drr_length < SPA_MINBLOCKSIZE ||
+		    drrs->drr_length > max_blksz ||
+		    P2PHASE(drrs->drr_length, SPA_MINBLOCKSIZE) != 0) {
+			return (SET_ERROR(EINVAL));
+		}
+
+		if (drc->drc_raw) {
+			if (!receive_payload_compression_valid(
+			    drrs->drr_compressiontype, drrs->drr_length,
+			    drrs->drr_compressed_size, B_TRUE))
+				return (SET_ERROR(EINVAL));
+			size = drrs->drr_compressed_size;
+		} else {
+			if (!receive_payload_compression_valid(
+			    drrs->drr_compressiontype, drrs->drr_length,
+			    drrs->drr_compressed_size, B_FALSE))
+				return (SET_ERROR(EINVAL));
+			size = drrs->drr_length;
+		}
+		break;
+	}
+	case DRR_FREEOBJECTS:
+	case DRR_FREE:
+	case DRR_REDACT:
+	case DRR_END:
+	case DRR_OBJECT_RANGE:
+		size = 0;
+		break;
+	default:
+		return (SET_ERROR(EINVAL));
+	}
+
+	err = receive_payload_read_size_valid(size);
+	if (err != 0)
+		return (err);
+
+	plan->rprp_size = size;
+	return (0);
+}
+
+static boolean_t
+receive_record_toguid_valid(dmu_recv_cookie_t *drc,
+    const dmu_replay_record_t *drr)
+{
+	uint64_t toguid;
+
+	switch (drr->drr_type) {
+	case DRR_OBJECT:
+		toguid = drr->drr_u.drr_object.drr_toguid;
+		break;
+	case DRR_FREEOBJECTS:
+		toguid = drr->drr_u.drr_freeobjects.drr_toguid;
+		break;
+	case DRR_WRITE:
+		toguid = drr->drr_u.drr_write.drr_toguid;
+		break;
+	case DRR_WRITE_EMBEDDED:
+		toguid = drr->drr_u.drr_write_embedded.drr_toguid;
+		break;
+	case DRR_FREE:
+		toguid = drr->drr_u.drr_free.drr_toguid;
+		break;
+	case DRR_SPILL:
+		toguid = drr->drr_u.drr_spill.drr_toguid;
+		break;
+	case DRR_OBJECT_RANGE:
+		toguid = drr->drr_u.drr_object_range.drr_toguid;
+		break;
+	case DRR_REDACT:
+		toguid = drr->drr_u.drr_redact.drr_toguid;
+		break;
+	case DRR_END:
+		toguid = drr->drr_u.drr_end.drr_toguid;
+		break;
+	default:
+		return (B_FALSE);
+	}
+
+	return (toguid == drc->drc_drrb->drr_toguid);
+}
+
 /*
  * Read records off the stream, issuing any necessary prefetches.
  */
@@ -2896,26 +3165,30 @@ static int
 receive_read_record(dmu_recv_cookie_t *drc)
 {
 	int err;
+	receive_payload_read_plan_t plan;
+
+	err = receive_build_payload_read_plan(drc, &drc->drc_rrd->header,
+	    &plan);
+	if (err != 0)
+		return (err);
+	if (!receive_record_toguid_valid(drc, &drc->drc_rrd->header))
+		return (SET_ERROR(EINVAL));
 
 	switch (drc->drc_rrd->header.drr_type) {
 	case DRR_OBJECT:
 	{
 		struct drr_object *drro =
 		    &drc->drc_rrd->header.drr_u.drr_object;
-		uint32_t size;
 		void *buf = NULL;
 		dmu_object_info_t doi;
 
-		size = DRR_OBJECT_PAYLOAD_SIZE(drro);
-		if (size > SPA_MAXBLOCKSIZE)
-			return (SET_ERROR(ERANGE));
+		if (plan.rprp_size != 0)
+			buf = vmem_zalloc(plan.rprp_size, KM_SLEEP);
 
-		if (size != 0)
-			buf = vmem_zalloc(size, KM_SLEEP);
-
-		err = receive_read_payload_and_next_header(drc, size, buf);
+		err = receive_read_payload_and_next_header(drc,
+		    (int)plan.rprp_size, SPA_MAXBLOCKSIZE, buf);
 		if (err != 0) {
-			vmem_free(buf, size);
+			vmem_free(buf, plan.rprp_size);
 			return (err);
 		}
 		err = dmu_object_info(drc->drc_os, drro->drr_object, &doi);
@@ -2933,50 +3206,46 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	}
 	case DRR_FREEOBJECTS:
 	{
-		err = receive_read_payload_and_next_header(drc, 0, NULL);
+		err = receive_read_payload_and_next_header(drc, 0,
+		    SPA_MAXBLOCKSIZE, NULL);
 		return (err);
 	}
 	case DRR_WRITE:
 	{
-		struct drr_write *drrw = &drc->drc_rrd->header.drr_u.drr_write;
-		uint64_t size = DRR_WRITE_PAYLOAD_SIZE(drrw);
+		struct drr_write *drrw =
+		    &drc->drc_rrd->header.drr_u.drr_write;
+		abd_t *abd;
 
-		if (size > SPA_MAXBLOCKSIZE)
-			return (SET_ERROR(ERANGE));
-
-		abd_t *abd = abd_alloc_linear(size, B_FALSE);
-		err = receive_read_payload_and_next_header(drc, size,
+		abd = abd_alloc_linear(plan.rprp_size, B_FALSE);
+		err = receive_read_payload_and_next_header(drc,
+		    (int)plan.rprp_size, SPA_MAXBLOCKSIZE,
 		    abd_to_buf(abd));
 		if (err != 0) {
 			abd_free(abd);
 			return (err);
 		}
 		drc->drc_rrd->abd = abd;
-		receive_read_prefetch(drc, drrw->drr_object, drrw->drr_offset,
-		    drrw->drr_logical_size);
+		receive_read_prefetch(drc, drrw->drr_object,
+		    drrw->drr_offset, drrw->drr_logical_size);
 		return (err);
 	}
 	case DRR_WRITE_EMBEDDED:
 	{
 		struct drr_write_embedded *drrwe =
 		    &drc->drc_rrd->header.drr_u.drr_write_embedded;
-		uint32_t size;
 		void *buf;
 
-		size = P2ROUNDUP(drrwe->drr_psize, 8);
-		if (size > SPA_MAXBLOCKSIZE)
-			return (SET_ERROR(ERANGE));
+		buf = vmem_zalloc(plan.rprp_size, KM_SLEEP);
 
-		buf = vmem_zalloc(size, KM_SLEEP);
-
-		err = receive_read_payload_and_next_header(drc, size, buf);
+		err = receive_read_payload_and_next_header(drc,
+		    (int)plan.rprp_size, SPA_MAXBLOCKSIZE, buf);
 		if (err != 0) {
-			vmem_free(buf, size);
+			vmem_free(buf, plan.rprp_size);
 			return (err);
 		}
 
-		receive_read_prefetch(drc, drrwe->drr_object, drrwe->drr_offset,
-		    drrwe->drr_length);
+		receive_read_prefetch(drc, drrwe->drr_object,
+		    drrwe->drr_offset, drrwe->drr_length);
 		return (err);
 	}
 	case DRR_FREE:
@@ -2986,7 +3255,8 @@ receive_read_record(dmu_recv_cookie_t *drc)
 		 * It might be beneficial to prefetch indirect blocks here, but
 		 * we don't really have the data to decide for sure.
 		 */
-		err = receive_read_payload_and_next_header(drc, 0, NULL);
+		err = receive_read_payload_and_next_header(drc, 0,
+		    SPA_MAXBLOCKSIZE, NULL);
 		return (err);
 	}
 	case DRR_END:
@@ -2999,14 +3269,11 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	}
 	case DRR_SPILL:
 	{
-		struct drr_spill *drrs = &drc->drc_rrd->header.drr_u.drr_spill;
-		uint64_t size = DRR_SPILL_PAYLOAD_SIZE(drrs);
+		abd_t *abd;
 
-		if (size > SPA_MAXBLOCKSIZE)
-			return (SET_ERROR(ERANGE));
-
-		abd_t *abd = abd_alloc_linear(size, B_FALSE);
-		err = receive_read_payload_and_next_header(drc, size,
+		abd = abd_alloc_linear(plan.rprp_size, B_FALSE);
+		err = receive_read_payload_and_next_header(drc,
+		    (int)plan.rprp_size, SPA_MAXBLOCKSIZE,
 		    abd_to_buf(abd));
 		if (err != 0)
 			abd_free(abd);
@@ -3016,7 +3283,8 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	}
 	case DRR_OBJECT_RANGE:
 	{
-		err = receive_read_payload_and_next_header(drc, 0, NULL);
+		err = receive_read_payload_and_next_header(drc, 0,
+		    SPA_MAXBLOCKSIZE, NULL);
 		return (err);
 
 	}
@@ -3431,7 +3699,8 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 	 * early, and it's the END record, we break the `recv_skip` logic.
 	 */
 	if (drc->drc_drr_begin->drr_payloadlen == 0) {
-		err = receive_read_payload_and_next_header(drc, 0, NULL);
+		err = receive_read_payload_and_next_header(drc, 0,
+		    SPA_MAXBLOCKSIZE, NULL);
 		if (err != 0)
 			goto out;
 	}

@@ -104,6 +104,10 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/send_doall
 scripts_zfs_tests_bin_PROGRAMS += %D%/stride_dd
 %C%_stride_dd_LDADD = -lrt
 
+scripts_zfs_tests_bin_PROGRAMS += %D%/stream_mangle
+%C%_stream_mangle_CPPFLAGS = $(AM_CPPFLAGS) $(LIBZPOOL_CPPFLAGS)
+%C%_stream_mangle_LDADD = libzpool.la
+
 scripts_zfs_tests_bin_PROGRAMS += %D%/threadsappend
 %C%_threadsappend_LDADD = -lpthread
 
