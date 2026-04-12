@@ -406,6 +406,12 @@ zvol_discard(zv_request_t *zvr)
 
 	sync = io_is_fua(bio, rq) || zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS;
 
+	if (io_is_flush(bio, rq)) {
+		error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+		if (error != 0)
+			goto unlock;
+	}
+
 	if (end > zv->zv_volsize) {
 		error = SET_ERROR(EIO);
 		goto unlock;
