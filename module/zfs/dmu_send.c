@@ -621,6 +621,8 @@ dump_spill(dmu_send_cookie_t *dscp, const blkptr_t *bp, uint64_t object,
 	drrs->drr_object = object;
 	drrs->drr_length = blksz;
 	drrs->drr_toguid = dscp->dsc_toguid;
+	ASSERT3U(BP_GET_TYPE(bp), ==, DMU_OT_SA);
+	drrs->drr_type = BP_GET_TYPE(bp);
 
 	/* See comment in piggyback_unmodified_spill() for full details */
 	if (zfs_send_unmodified_spill_blocks &&

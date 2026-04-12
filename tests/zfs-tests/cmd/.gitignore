@@ -40,6 +40,7 @@
 /send_doall
 /statx
 /stride_dd
+/stream_mangle
 /threadsappend
 /user_ns_exec
 /write_dos_attributes
