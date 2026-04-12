@@ -99,6 +99,86 @@ extern struct vop_vector zfs_vnodeops;
 extern struct vop_vector zfs_fifoops;
 extern struct vop_vector zfs_shareops;
 
+typedef struct zfs_freesp_log_arg {
+	zilog_t *zfla_zilog;
+	znode_t *zfla_zp;
+	boolean_t zfla_progress;
+	boolean_t zfla_track_tail;
+	boolean_t zfla_tail_progress;
+	uint64_t zfla_tail_start;
+} zfs_freesp_log_arg_t;
+
+static void
+zfs_log_free_chunk(void *arg, objset_t *os, uint64_t object,
+    uint64_t offset, uint64_t length, dmu_tx_t *tx)
+{
+	zfs_freesp_log_arg_t *zfla = arg;
+	zfla->zfla_progress = B_TRUE;
+
+	if (zfla->zfla_track_tail) {
+		zfla->zfla_tail_progress = B_TRUE;
+		if (offset < zfla->zfla_tail_start)
+			zfla->zfla_tail_start = offset;
+	}
+
+	if (zfla->zfla_zilog == NULL)
+		return;
+
+	ASSERT3P(os, ==, zfla->zfla_zp->z_zfsvfs->z_os);
+	ASSERT3U(object, ==, zfla->zfla_zp->z_id);
+
+	zfs_log_truncate(zfla->zfla_zilog, tx, TX_TRUNCATE,
+	    zfla->zfla_zp, offset, length);
+}
+
+static int
+zfs_freesp_commit_progress(znode_t *zp)
+{
+	zfsvfs_t *zfsvfs = zp->z_zfsvfs;
+	dmu_tx_t *tx;
+	sa_bulk_attr_t bulk[3];
+	uint64_t mtime[2], ctime[2];
+	int count = 0;
+	int error;
+
+	tx = dmu_tx_create(zfsvfs->z_os);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
+	zfs_sa_upgrade_txholds(tx, zp);
+	error = dmu_tx_assign(tx, DMU_TX_WAIT);
+	if (error != 0) {
+		dmu_tx_abort(tx);
+		return (error);
+	}
+
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_MTIME(zfsvfs), NULL, mtime, 16);
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_CTIME(zfsvfs), NULL, ctime, 16);
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_FLAGS(zfsvfs),
+	    NULL, &zp->z_pflags, 8);
+	zfs_tstamp_update_setup(zp, CONTENT_MODIFIED, mtime, ctime);
+	VERIFY(sa_bulk_update(zp->z_sa_hdl, bulk, count, tx) == 0);
+	dmu_tx_commit(tx);
+
+	return (0);
+}
+
+static boolean_t
+zfs_freesp_sync_required(znode_t *zp)
+{
+	zfsvfs_t *zfsvfs = zp->z_zfsvfs;
+
+	return (zp->z_sync_cnt != 0 ||
+	    zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS);
+}
+
+static int
+zfs_freesp_commit_sync_progress(znode_t *zp, zilog_t *zilog)
+{
+	if (zilog == NULL || !zfs_freesp_sync_required(zp))
+		return (0);
+
+	return (zil_commit(zilog, zp->z_id));
+}
+
 
 /*
  * This callback is invoked when acquiring a RL_WRITER or RL_APPEND lock on
@@ -1448,7 +1528,8 @@ zfs_extend(znode_t *zp, uint64_t end)
  *	RETURN:	0 on success, error code on failure
  */
 static int
-zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
+zfs_free_range(znode_t *zp, uint64_t off, uint64_t len,
+    zfs_freesp_log_arg_t *zfla)
 {
 	zfsvfs_t *zfsvfs = zp->z_zfsvfs;
 	zfs_locked_range_t *lr;
@@ -1470,12 +1551,38 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 	if (off + len > zp->z_size)
 		len = zp->z_size - off;
 
-	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, off, len);
+#if __FreeBSD_version >= 1400032
+	/*
+	 * Drop cached pages in the punched range before freeing blocks.
+	 * dmu_free_long_range() can return after committed tail progress, so
+	 * purging only on success can leave stale cached data for blocks that
+	 * were already freed.
+	 */
+	vnode_pager_purge_range(ZTOV(zp), off, off + len);
+#endif
+
+	if (zfla != NULL) {
+		/*
+		 * dmu_free_long_range() can commit early chunks before a
+		 * later failure. Log each committed free chunk in its own tx
+		 * so ZIL replay follows actual progress instead of relying
+		 * only on the follow-on zfs_freesp() TX_TRUNCATE record.
+		 * During replay the callback still tracks progress, although
+		 * per-chunk ZIL logging is suppressed.
+		 */
+		error = dmu_free_long_range_cb(zfsvfs->z_os, zp->z_id, off,
+		    len, zfs_log_free_chunk, zfla);
+		if (error != 0 && zfla->zfla_progress) {
+			int serr = zfs_freesp_commit_progress(zp);
+			zfs_rangelock_exit(lr);
+			return (serr != 0 ? serr : error);
+		}
+	} else {
+		error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, off, len);
+	}
 
 	if (error == 0) {
-#if __FreeBSD_version >= 1400032
-		vnode_pager_purge_range(ZTOV(zp), off, off + len);
-#else
+#if __FreeBSD_version < 1400032
 		/*
 		 * Before __FreeBSD_version 1400032 we cannot free block in the
 		 * middle of a file, but only at the end of a file, so this code
@@ -1490,6 +1597,46 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 	return (error);
 }
 
+static int
+zfs_trunc_commit_progress(znode_t *zp, uint64_t end, zilog_t *zilog)
+{
+	zfsvfs_t *zfsvfs = zp->z_zfsvfs;
+	dmu_tx_t *tx;
+	sa_bulk_attr_t bulk[4];
+	uint64_t mtime[2], ctime[2];
+	int count = 0;
+	int error;
+
+	tx = dmu_tx_create(zfsvfs->z_os);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
+	zfs_sa_upgrade_txholds(tx, zp);
+	dmu_tx_mark_netfree(tx);
+	error = dmu_tx_assign(tx, DMU_TX_WAIT);
+	if (error != 0) {
+		dmu_tx_abort(tx);
+		return (error);
+	}
+
+	zp->z_size = end;
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_SIZE(zfsvfs),
+	    NULL, &zp->z_size, sizeof (zp->z_size));
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_MTIME(zfsvfs), NULL, mtime, 16);
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_CTIME(zfsvfs), NULL, ctime, 16);
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_FLAGS(zfsvfs),
+	    NULL, &zp->z_pflags, 8);
+
+	zfs_tstamp_update_setup(zp, CONTENT_MODIFIED, mtime, ctime);
+	if (end == 0)
+		zp->z_pflags &= ~ZFS_SPARSE;
+
+	VERIFY0(sa_bulk_update(zp->z_sa_hdl, bulk, count, tx));
+	if (zilog != NULL)
+		zfs_log_truncate(zilog, tx, TX_TRUNCATE, zp, end, 0);
+	dmu_tx_commit(tx);
+
+	return (0);
+}
+
 /*
  * Truncate a file
  *
@@ -1499,15 +1646,18 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
  *	RETURN:	0 on success, error code on failure
  */
 static int
-zfs_trunc(znode_t *zp, uint64_t end)
+zfs_trunc(znode_t *zp, uint64_t end, zilog_t *zilog, boolean_t *progressp)
 {
 	zfsvfs_t *zfsvfs = zp->z_zfsvfs;
 	vnode_t *vp = ZTOV(zp);
 	dmu_tx_t *tx;
 	zfs_locked_range_t *lr;
+	zfs_freesp_log_arg_t zfla = { .zfla_zilog = zilog, .zfla_zp = zp,
+	    .zfla_track_tail = B_TRUE, .zfla_tail_start = UINT64_MAX };
 	int error;
 	sa_bulk_attr_t bulk[2];
 	int count = 0;
+	uint64_t old_size;
 
 	/*
 	 * We will change zp_size, lock the whole file.
@@ -1518,16 +1668,44 @@ zfs_trunc(znode_t *zp, uint64_t end)
 	 * Nothing to do if file already at desired length.
 	 */
 	if (end >= zp->z_size) {
+		*progressp = B_FALSE;
 		zfs_rangelock_exit(lr);
 		return (0);
 	}
 
-	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, end,
-	    DMU_OBJECT_END);
+	old_size = zp->z_size;
+#if __FreeBSD_version >= 1400032
+	/*
+	 * Drop cached pages in the soon-to-be-truncated tail before freeing
+	 * blocks.  dmu_free_long_range() can return after committed tail
+	 * progress, so leaving the old cache intact on an error can expose
+	 * stale bytes whose backing blocks are already gone.
+	 */
+	vnode_pager_purge_range(vp, end, old_size);
+#endif
+
+	/*
+	 * dmu_free_long_range() frees from the tail backwards. If it returns
+	 * an error after committing earlier chunks, the callback records the
+	 * lowest committed offset, so we shrink only to that boundary.
+	 */
+	error = dmu_free_long_range_cb(zfsvfs->z_os, zp->z_id, end,
+	    DMU_OBJECT_END, zfs_log_free_chunk, &zfla);
 	if (error) {
+		if (zfla.zfla_tail_progress) {
+			int serr = zfs_trunc_commit_progress(zp,
+			    zfla.zfla_tail_start, zilog);
+			zfs_rangelock_exit(lr);
+			*progressp = (serr == 0);
+			if (serr == 0)
+				zfs_znode_update_vfs(zp);
+			return (serr != 0 ? serr : error);
+		}
+		*progressp = B_FALSE;
 		zfs_rangelock_exit(lr);
 		return (error);
 	}
+	*progressp = B_FALSE;
 	tx = dmu_tx_create(zfsvfs->z_os);
 	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
 	zfs_sa_upgrade_txholds(tx, zp);
@@ -1582,11 +1760,25 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	dmu_tx_t *tx;
 	zfsvfs_t *zfsvfs = zp->z_zfsvfs;
 	zilog_t *zilog = zfsvfs->z_log;
+	zilog_t *chunklog_zilog = NULL;
+	zilog_t *progress_zilog = NULL;
+	zfs_freesp_log_arg_t zfla = { .zfla_zp = zp };
 	uint64_t mode;
 	uint64_t mtime[2], ctime[2];
 	sa_bulk_attr_t bulk[3];
 	int count = 0;
 	int error;
+	boolean_t sync_progress = B_FALSE;
+	boolean_t sync_required = zfs_freesp_sync_required(zp);
+
+	/*
+	 * Replay validates signed free/truncate ranges before calling back to
+	 * zfs_freesp(). Live callers should reject the same negative or
+	 * overflowed ranges instead of wrapping through uint64_t.
+	 */
+	if (off > MAXOFFSET_T || len > MAXOFFSET_T ||
+	    (len != 0 && off > MAXOFFSET_T - len))
+		return (SET_ERROR(EINVAL));
 
 	if ((error = sa_lookup(zp->z_sa_hdl, SA_ZPL_MODE(zfsvfs), &mode,
 	    sizeof (mode))) != 0)
@@ -1600,12 +1792,49 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 			return (error);
 	}
 
+	/*
+	 * Keep per-chunk TX_TRUNCATE logging for live operations only.
+	 * During ZIL replay the final zfs_freesp() metadata/log tx is what
+	 * must advance the replay sequence; letting each chunk do that would
+	 * mark a replay record complete before the full truncate finished.
+	 */
+	if (log && !zfsvfs->z_replay)
+		chunklog_zilog = zilog;
+	/*
+	 * ATTR_SIZE paths call zfs_freesp() with log == FALSE because
+	 * successful truncates are logged by their enclosing setattr tx. If a
+	 * sync truncate hits a chunked-free error after committing tail
+	 * progress, that outer TX_SETATTR never materializes. Keep a
+	 * progress-only zilog handle so zfs_trunc_commit_progress() can still
+	 * log and commit the exact size made durable before the error.
+	 */
+	if (len == 0 && !log && !zfsvfs->z_replay && sync_required)
+		progress_zilog = zilog;
+	zfla.zfla_zilog = chunklog_zilog;
+
 	if (len == 0) {
-		error = zfs_trunc(zp, off);
+		error = zfs_trunc(zp, off,
+		    chunklog_zilog != NULL ? chunklog_zilog : progress_zilog,
+		    &sync_progress);
 	} else {
-		if ((error = zfs_free_range(zp, off, len)) == 0 &&
+		if ((error = zfs_free_range(zp, off, len,
+		    log ? &zfla : NULL)) == 0 &&
 		    off + len > zp->z_size)
 			error = zfs_extend(zp, off+len);
+		sync_progress = zfla.zfla_progress;
+	}
+	/*
+	 * Once a sync file or sync-always dataset has queued TX_TRUNCATE
+	 * records for committed partial progress, force them out before
+	 * reporting a later error. Otherwise a crash can lose frees that
+	 * already escaped the long-free helper.
+	 */
+	if (error != 0 && sync_progress) {
+		int syncerr = zfs_freesp_commit_sync_progress(zp,
+		    chunklog_zilog != NULL ? chunklog_zilog : progress_zilog);
+
+		if (syncerr != 0)
+			return (syncerr);
 	}
 	if (error || !log)
 		return (error);

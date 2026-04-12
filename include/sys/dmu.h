@@ -907,8 +907,12 @@ void dmu_tx_do_callbacks(list_t *cb_list, int error);
 int dmu_free_range(objset_t *os, uint64_t object, uint64_t offset,
     uint64_t size, dmu_tx_t *tx);
 int dmu_free_long_range_validate(uint64_t offset, uint64_t size);
+typedef void dmu_free_long_range_tx_func_t(void *arg, objset_t *os,
+    uint64_t object, uint64_t offset, uint64_t length, dmu_tx_t *tx);
 int dmu_free_long_range(objset_t *os, uint64_t object, uint64_t offset,
     uint64_t size);
+int dmu_free_long_range_cb(objset_t *os, uint64_t object, uint64_t offset,
+    uint64_t size, dmu_free_long_range_tx_func_t *tx_func, void *tx_arg);
 int dmu_free_long_object(objset_t *os, uint64_t object);
 
 /*
