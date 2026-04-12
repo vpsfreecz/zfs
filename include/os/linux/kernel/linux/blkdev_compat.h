@@ -545,8 +545,10 @@ blk_generic_alloc_queue(make_request_fn make_request, int node_id)
 static inline int
 io_is_flush(struct bio *bio, struct request *rq)
 {
-	if (rq != NULL)
-		return (req_op(rq) == REQ_OP_FLUSH);
+	if (rq != NULL) {
+		return (req_op(rq) == REQ_OP_FLUSH ||
+		    op_is_flush(rq->cmd_flags));
+	}
 	return (bio_is_flush(bio));
 }
 
