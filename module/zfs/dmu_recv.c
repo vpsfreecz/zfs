@@ -2666,7 +2666,8 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 		    drrs->drr_compressed_size == 0 ||
 		    drrs->drr_compressed_size > drrs->drr_length)
 			return (SET_ERROR(EINVAL));
-	} else if (drrs->drr_compressed_size != 0) {
+	} else if (drrs->drr_compressed_size != 0 ||
+	    drrs->drr_compressiontype != ZIO_COMPRESS_OFF) {
 		return (SET_ERROR(EINVAL));
 	}
 
@@ -3098,7 +3099,8 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 				return (SET_ERROR(EINVAL));
 			size = drrs->drr_compressed_size;
 		} else {
-			if (drrs->drr_compressed_size != 0)
+			if (drrs->drr_compressed_size != 0 ||
+			    drrs->drr_compressiontype != ZIO_COMPRESS_OFF)
 				return (SET_ERROR(EINVAL));
 			size = drrs->drr_length;
 		}
