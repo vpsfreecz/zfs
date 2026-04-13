@@ -6259,6 +6259,12 @@ zfs_freebsd_copy_file_range(struct vop_copy_file_range_args *ap)
 	struct mount *mp;
 	int error;
 	uint64_t len = *ap->a_lenp;
+	/*
+	 * VOP_COPY_FILE_RANGE doesn't thread per-descriptor sync flags through to
+	 * the filesystem entry point, so use the znode's synchronous-open count as
+	 * the narrowest durability signal we have here.
+	 */
+	boolean_t commit = (VTOZ(outvp)->z_sync_cnt != 0);
 
 	if (!zfs_bclone_enabled) {
 		mp = NULL;
@@ -6305,7 +6311,7 @@ zfs_freebsd_copy_file_range(struct vop_copy_file_range_args *ap)
 #endif
 
 	error = zfs_clone_range(VTOZ(invp), ap->a_inoffp, VTOZ(outvp),
-	    ap->a_outoffp, &len, ap->a_outcred);
+	    ap->a_outoffp, &len, commit, ap->a_outcred);
 	if (error == EXDEV || error == EAGAIN || error == EINVAL ||
 	    error == EOPNOTSUPP)
 		goto bad_locked_fallback;
