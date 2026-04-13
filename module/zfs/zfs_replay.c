@@ -1315,11 +1315,6 @@ zfs_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
 		return (SET_ERROR(EINVAL));
 
-	if (byteswap) {
-		byteswap_uint64_array(lr->lr_bps,
-		    lr->lr_nbps * sizeof (lr->lr_bps[0]));
-	}
-
 	error = zfs_replay_zget_ooo(zfsvfs, lr->lr_foid, &zp);
 	if (error != 0 || zp == NULL)
 		return (error);
@@ -1781,6 +1776,11 @@ zfs_replay_clone_range(void *arg1, void *arg2, boolean_t byteswap)
 
 	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
 		return (SET_ERROR(EINVAL));
+
+	if (byteswap) {
+		byteswap_uint64_array(lr->lr_bps,
+		    lr->lr_nbps * sizeof (lr->lr_bps[0]));
+	}
 
 	error = zfs_replay_zget_ooo(zfsvfs, lr->lr_foid, &zp);
 	if (error != 0 || zp == NULL)
