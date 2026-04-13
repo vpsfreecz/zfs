@@ -1983,6 +1983,9 @@ zio_do_crypt_data(boolean_t encrypt, zio_crypt_key_t *key,
 				locked = B_FALSE;
 			}
 
+			if (ckey == &tmp_ckey)
+				memset(enc_keydata, 0, keydata_len);
+
 			return (0);
 		}
 		/* If the hardware implementation fails fall back to software */
