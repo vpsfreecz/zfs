@@ -1655,6 +1655,15 @@ spa_keystore_change_key(const char *dsname, dsl_crypto_params_t *dcp)
 	skcka.skcka_cp = dcp;
 
 	/*
+	 * Hold the spa across the recursive change-key sync and the subsequent
+	 * zvol-minor refresh so export/destroy cannot split the post-commit
+	 * refresh into a new error path.
+	 */
+	ret = spa_open(dsname, &spa, FTAG);
+	if (ret != 0)
+		return (ret);
+
+	/*
 	 * Perform the actual work in syncing context. The blocks modified
 	 * here could be calculated but it would require holding the pool
 	 * lock and traversing all of the datasets that will have their keys
@@ -1664,21 +1673,20 @@ spa_keystore_change_key(const char *dsname, dsl_crypto_params_t *dcp)
 	    spa_keystore_change_key_sync, &skcka, 15,
 	    ZFS_SPACE_CHECK_RESERVED);
 	if (ret != 0)
-		return (ret);
+		goto out;
 
 	/*
 	 * Recompute encrypted zvol minors after recursive key-root/key-residency
 	 * changes. This mirrors the explicit create/remove refreshes in the
-	 * load-key and unload-key paths.
+	 * load-key and unload-key paths. Remove synchronously before recreating
+	 * so the recreate pass cannot lose to a still-pending async removal.
 	 */
-	ret = spa_open(dsname, &spa, FTAG);
-	if (ret != 0)
-		return (ret);
-	zvol_remove_minors(spa, dsname, B_TRUE);
-	spa_close(spa, FTAG);
+	zvol_remove_minors(spa, dsname, B_FALSE);
 	zvol_create_minors_recursive(dsname);
 
-	return (0);
+out:
+	spa_close(spa, FTAG);
+	return (ret);
 }
 
 int
