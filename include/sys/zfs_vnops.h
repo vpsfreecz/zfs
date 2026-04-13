@@ -37,7 +37,7 @@ extern int zfs_write(znode_t *, zfs_uio_t *, int, cred_t *);
 extern int zfs_holey(znode_t *, ulong_t, loff_t *);
 extern int zfs_access(znode_t *, int, int, cred_t *);
 extern int zfs_clone_range(znode_t *, uint64_t *, znode_t *, uint64_t *,
-    uint64_t *, cred_t *);
+    uint64_t *, boolean_t, cred_t *);
 extern int zfs_clone_range_replay(znode_t *, uint64_t, uint64_t, uint64_t,
     const blkptr_t *, size_t);
 extern int zfs_rewrite(znode_t *, uint64_t, uint64_t, uint64_t, uint64_t);
