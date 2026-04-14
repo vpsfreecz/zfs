@@ -279,6 +279,16 @@ compatible_redact_snaps(uint64_t *origin_snaps, uint64_t origin_num_snaps,
 }
 
 static boolean_t
+same_redact_snaps(uint64_t *first_snaps, uint64_t first_num_snaps,
+    uint64_t *second_snaps, uint64_t second_num_snaps)
+{
+	return (compatible_redact_snaps(first_snaps, first_num_snaps,
+	    second_snaps, second_num_snaps) &&
+	    compatible_redact_snaps(second_snaps, second_num_snaps,
+	    first_snaps, first_num_snaps));
+}
+
+static boolean_t
 redact_check(dmu_recv_begin_arg_t *drba, dsl_dataset_t *origin)
 {
 	uint64_t *origin_snaps;
@@ -300,7 +310,8 @@ redact_check(dmu_recv_begin_arg_t *drba, dsl_dataset_t *origin)
 	VERIFY(dsl_dataset_get_uint64_array_feature(origin,
 	    SPA_FEATURE_REDACTED_DATASETS, &origin_num_snaps, &origin_snaps));
 
-	if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
+	if (drc->drc_begin_nvl != NULL &&
+	    nvlist_lookup_uint64_array(drc->drc_begin_nvl,
 	    BEGINNV_REDACT_FROM_SNAPS, &redact_snaps, &numredactsnaps) ==
 	    0) {
 		/*
@@ -355,6 +366,145 @@ recv_check_large_blocks(dsl_dataset_t *ds, uint64_t featureflags)
 	if (dsl_dataset_feature_is_active(ds, SPA_FEATURE_LARGE_BLOCKS) &&
 	    !(featureflags & DMU_BACKUP_FEATURE_LARGE_BLOCKS))
 		return (SET_ERROR(ZFS_ERR_STREAM_LARGE_BLOCK_MISMATCH));
+	return (0);
+}
+
+/*
+ * Resumable receives persist the original stream shape in on-disk resume
+ * state so resumed sends can reconstruct the same contract.  Reject resumed
+ * begin records that drift from the saved feature set instead of trusting the
+ * new stream header alone.
+ */
+static int
+recv_resume_feature_enabled(dsl_dataset_t *ds, const char *resume_field,
+    boolean_t *enabled)
+{
+	objset_t *mos = ds->ds_dir->dd_pool->dp_meta_objset;
+	int error;
+
+	error = zap_contains(mos, ds->ds_object, resume_field);
+	if (error == 0) {
+		*enabled = B_TRUE;
+		return (0);
+	}
+	if (error == ENOENT) {
+		*enabled = B_FALSE;
+		return (0);
+	}
+
+	return (error);
+}
+
+static int
+recv_resume_uint64_array(dsl_dataset_t *ds, const char *resume_field,
+    boolean_t *exists, uint64_t **valsp, uint64_t *countp)
+{
+	objset_t *mos = ds->ds_dir->dd_pool->dp_meta_objset;
+	uint64_t int_size, count;
+	size_t alloc_size;
+	int error;
+
+	error = zap_length(mos, ds->ds_object, resume_field, &int_size, &count);
+	if (error == ENOENT) {
+		*exists = B_FALSE;
+		*valsp = NULL;
+		*countp = 0;
+		return (0);
+	}
+	if (error != 0)
+		return (error);
+	if (int_size != sizeof (uint64_t))
+		return (SET_ERROR(EINVAL));
+	if (count > ZAP_MAXVALUELEN / int_size)
+		return (SET_ERROR(EINVAL));
+
+	*exists = B_TRUE;
+	*countp = count;
+	if (count == 0) {
+		*valsp = NULL;
+		return (0);
+	}
+
+	alloc_size = int_size * count;
+	*valsp = kmem_alloc(alloc_size, KM_SLEEP);
+	error = zap_lookup(mos, ds->ds_object, resume_field, int_size, count,
+	    *valsp);
+	if (error != 0) {
+		kmem_free(*valsp, alloc_size);
+		*valsp = NULL;
+		*countp = 0;
+		*exists = B_FALSE;
+	}
+
+	return (error);
+}
+
+static void
+recv_resume_zap_remove(objset_t *mos, uint64_t dsobj, const char *resume_field,
+    dmu_tx_t *tx)
+{
+	int error = zap_remove(mos, dsobj, resume_field, tx);
+
+	ASSERT(error == 0 || error == ENOENT);
+}
+
+static void
+recv_resume_state_clear(objset_t *mos, uint64_t dsobj, dmu_tx_t *tx)
+{
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_FROMGUID, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_TOGUID, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_TONAME, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_OBJECT, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_OFFSET, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_BYTES, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_LARGEBLOCK, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_EMBEDOK, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_COMPRESSOK, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_RAWOK, tx);
+	recv_resume_zap_remove(mos, dsobj,
+	    DS_FIELD_RESUME_REDACT_BOOKMARK_SNAPS, tx);
+}
+
+static int
+recv_check_resume_feature_contract(dsl_dataset_t *ds, uint64_t featureflags)
+{
+	const struct {
+		uint64_t featureflag;
+		const char *resume_field;
+	} resume_flags[] = {
+		{ DMU_BACKUP_FEATURE_LARGE_BLOCKS, DS_FIELD_RESUME_LARGEBLOCK },
+		{ DMU_BACKUP_FEATURE_EMBED_DATA, DS_FIELD_RESUME_EMBEDOK },
+		{ DMU_BACKUP_FEATURE_COMPRESSED, DS_FIELD_RESUME_COMPRESSOK },
+		{ DMU_BACKUP_FEATURE_RAW, DS_FIELD_RESUME_RAWOK },
+	};
+	boolean_t saved_redacted = dsl_dataset_feature_is_active(ds,
+	    SPA_FEATURE_REDACTED_DATASETS);
+	boolean_t stream_redacted =
+	    ((featureflags & DMU_BACKUP_FEATURE_REDACTED) != 0);
+	int error;
+
+	for (size_t i = 0; i < ARRAY_SIZE(resume_flags); i++) {
+		boolean_t saved_enabled;
+
+		error = recv_resume_feature_enabled(ds,
+		    resume_flags[i].resume_field, &saved_enabled);
+		if (error != 0)
+			return (error);
+
+		if (saved_enabled !=
+		    ((featureflags & resume_flags[i].featureflag) != 0)) {
+			if (resume_flags[i].featureflag ==
+			    DMU_BACKUP_FEATURE_LARGE_BLOCKS) {
+				return (SET_ERROR(
+				    ZFS_ERR_STREAM_LARGE_BLOCK_MISMATCH));
+			}
+			return (SET_ERROR(EINVAL));
+		}
+	}
+
+	if (saved_redacted != stream_redacted)
+		return (SET_ERROR(EINVAL));
+
 	return (0);
 }
 
@@ -559,6 +709,70 @@ recv_begin_check_existing_impl(dmu_recv_begin_arg_t *drba, dsl_dataset_t *ds,
  * explicitly check.
  */
 static int
+recv_redact_array_fits_zap(nvlist_t *nvl, const char *field,
+    boolean_t required)
+{
+	uint64_t *redact_snaps;
+	uint_t num_redact_snaps;
+	int error;
+
+	if (nvl == NULL)
+		return (required ? SET_ERROR(EINVAL) : 0);
+
+	error = nvlist_lookup_uint64_array(nvl, field, &redact_snaps,
+	    &num_redact_snaps);
+	if (error != 0)
+		return (required ? SET_ERROR(EINVAL) : 0);
+	if (num_redact_snaps > ZAP_MAXVALUELEN / sizeof (*redact_snaps))
+		return (SET_ERROR(E2BIG));
+
+	return (0);
+}
+
+static boolean_t
+recv_begin_nvl_required(dmu_recv_cookie_t *drc)
+{
+	return ((drc->drc_featureflags & (DMU_BACKUP_FEATURE_RAW |
+	    DMU_BACKUP_FEATURE_RESUMING |
+	    DMU_BACKUP_FEATURE_REDACTED)) != 0);
+}
+
+static int
+recv_require_begin_nvl(dmu_recv_cookie_t *drc)
+{
+	if (drc->drc_begin_nvl != NULL || !recv_begin_nvl_required(drc))
+		return (0);
+
+	return (SET_ERROR(EINVAL));
+}
+
+static int
+recv_redact_begin_zap_array_check(dmu_recv_cookie_t *drc)
+{
+	int error;
+
+	/*
+	 * Redacted receive state persists these begin-NVL arrays in single ZAP
+	 * values, either in per-dataset resume state or in the per-dataset
+	 * redacted-dataset feature.  Reject oversized or missing arrays before
+	 * begin_sync hits VERIFYs while trying to write them.
+	 */
+	if (drc->drc_resumable ||
+	    (drc->drc_featureflags & DMU_BACKUP_FEATURE_RESUMING)) {
+		error = recv_redact_array_fits_zap(drc->drc_begin_nvl,
+		    BEGINNV_REDACT_FROM_SNAPS, B_FALSE);
+		if (error != 0)
+			return (error);
+	}
+
+	if (drc->drc_featureflags & DMU_BACKUP_FEATURE_REDACTED)
+		return (recv_redact_array_fits_zap(drc->drc_begin_nvl,
+		    BEGINNV_REDACT_SNAPS, B_TRUE));
+
+	return (0);
+}
+
+static int
 recv_begin_check_feature_flags_impl(uint64_t featureflags, spa_t *spa)
 {
 	/*
@@ -642,6 +856,14 @@ dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
 		return (SET_ERROR(EINVAL));
 
 	error = recv_begin_check_feature_flags_impl(featureflags, dp->dp_spa);
+	if (error != 0)
+		return (error);
+
+	error = recv_require_begin_nvl(drba->drba_cookie);
+	if (error != 0)
+		return (error);
+
+	error = recv_redact_begin_zap_array_check(drba->drba_cookie);
 	if (error != 0)
 		return (error);
 
@@ -933,6 +1155,18 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 
 	if (drc->drc_resumable) {
 		dsl_dataset_zapify(newds, tx);
+
+		/*
+		 * Start each resumable receive from a clean on-disk resume
+		 * state.  Successful receives remove the required cursor
+		 * fields, but older buggy resumable receives could leave
+		 * optional feature markers behind.  If we keep those stale
+		 * booleans, a later interrupted receive on the same dataset
+		 * can inherit the wrong feature contract and fail resume
+		 * validation even when the resumed stream is correct.
+		 */
+		recv_resume_state_clear(mos, dsobj, tx);
+
 		if (drrb->drr_fromguid != 0) {
 			VERIFY0(zap_add(mos, dsobj, DS_FIELD_RESUME_FROMGUID,
 			    8, 1, &drrb->drr_fromguid, tx));
@@ -968,9 +1202,12 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 
 		uint64_t *redact_snaps;
 		uint_t numredactsnaps;
-		if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
+		if (drc->drc_begin_nvl != NULL &&
+		    nvlist_lookup_uint64_array(drc->drc_begin_nvl,
 		    BEGINNV_REDACT_FROM_SNAPS, &redact_snaps,
 		    &numredactsnaps) == 0) {
+			ASSERT3U(numredactsnaps, <=,
+			    ZAP_MAXVALUELEN / sizeof (*redact_snaps));
 			VERIFY0(zap_add(mos, dsobj,
 			    DS_FIELD_RESUME_REDACT_BOOKMARK_SNAPS,
 			    sizeof (*redact_snaps), numredactsnaps,
@@ -1078,6 +1315,11 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 	ds_hold_flags_t dsflags = DS_HOLD_FLAG_NONE;
 	dsl_dataset_t *ds;
 	const char *tofs = drc->drc_tofs;
+	uint64_t *saved_book_redact_snaps = NULL;
+	uint64_t num_saved_book_redact_snaps = 0;
+	boolean_t saved_book_redact_snaps_exists = B_FALSE;
+	uint64_t *stream_from_redact_snaps;
+	uint_t num_stream_from_redact_snaps;
 
 	/* already checked */
 	ASSERT3U(drrb->drr_magic, ==, DMU_BACKUP_MAGIC);
@@ -1110,6 +1352,10 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 	} else {
 		dsflags |= DS_HOLD_FLAG_DECRYPT;
 	}
+
+	error = recv_redact_begin_zap_array_check(drc);
+	if (error != 0)
+		return (error);
 
 	boolean_t recvexist = B_TRUE;
 	if (dsl_dataset_hold_flags(dp, recvname, dsflags, FTAG, &ds) != 0) {
@@ -1178,6 +1424,43 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 		return (SET_ERROR(EINVAL));
 	}
 
+	error = recv_require_begin_nvl(drc);
+	if (error != 0) {
+		dsl_dataset_rele_flags(ds, dsflags, FTAG);
+		return (error);
+	}
+
+	error = recv_check_resume_feature_contract(ds, drc->drc_featureflags);
+	if (error != 0) {
+		dsl_dataset_rele_flags(ds, dsflags, FTAG);
+		return (error);
+	}
+
+	error = recv_resume_uint64_array(ds,
+	    DS_FIELD_RESUME_REDACT_BOOKMARK_SNAPS,
+	    &saved_book_redact_snaps_exists, &saved_book_redact_snaps,
+	    &num_saved_book_redact_snaps);
+	if (error != 0) {
+		dsl_dataset_rele_flags(ds, dsflags, FTAG);
+		return (error);
+	}
+
+	if (saved_book_redact_snaps_exists) {
+		if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
+		    BEGINNV_REDACT_FROM_SNAPS, &stream_from_redact_snaps,
+		    &num_stream_from_redact_snaps) != 0 ||
+		    !same_redact_snaps(saved_book_redact_snaps,
+		    num_saved_book_redact_snaps, stream_from_redact_snaps,
+		    num_stream_from_redact_snaps)) {
+			error = SET_ERROR(EINVAL);
+			goto out;
+		}
+	} else if (nvlist_exists(drc->drc_begin_nvl,
+	    BEGINNV_REDACT_FROM_SNAPS)) {
+		error = SET_ERROR(EINVAL);
+		goto out;
+	}
+
 	if (ds->ds_prev != NULL && drrb->drr_fromguid != 0)
 		drc->drc_fromsnapobj = ds->ds_prev->ds_object;
 
@@ -1196,34 +1479,33 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 		if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
 		    BEGINNV_REDACT_SNAPS, &stream_redact_snaps,
 		    &num_stream_redact_snaps) != 0) {
-			dsl_dataset_rele_flags(ds, dsflags, FTAG);
-			return (SET_ERROR(EINVAL));
+			error = SET_ERROR(EINVAL);
+			goto out;
 		}
 
 		if (!dsl_dataset_get_uint64_array_feature(ds,
 		    SPA_FEATURE_REDACTED_DATASETS, &num_ds_redact_snaps,
 		    &ds_redact_snaps)) {
-			dsl_dataset_rele_flags(ds, dsflags, FTAG);
-			return (SET_ERROR(EINVAL));
+			error = SET_ERROR(EINVAL);
+			goto out;
 		}
 
-		for (int i = 0; i < num_ds_redact_snaps; i++) {
-			if (!redact_snaps_contains(ds_redact_snaps,
-			    num_ds_redact_snaps, stream_redact_snaps[i])) {
-				dsl_dataset_rele_flags(ds, dsflags, FTAG);
-				return (SET_ERROR(EINVAL));
-			}
+		if (!same_redact_snaps(ds_redact_snaps, num_ds_redact_snaps,
+		    stream_redact_snaps, num_stream_redact_snaps)) {
+			error = SET_ERROR(EINVAL);
+			goto out;
 		}
 	}
 
 	error = recv_check_large_blocks(ds, drc->drc_featureflags);
-	if (error != 0) {
-		dsl_dataset_rele_flags(ds, dsflags, FTAG);
-		return (error);
+out:
+	if (saved_book_redact_snaps != NULL) {
+		kmem_free(saved_book_redact_snaps,
+		    sizeof (*saved_book_redact_snaps) *
+		    num_saved_book_redact_snaps);
 	}
-
 	dsl_dataset_rele_flags(ds, dsflags, FTAG);
-	return (0);
+	return (error);
 }
 
 static void
@@ -1640,8 +1922,8 @@ deduce_nblkptr(dmu_object_type_t bonus_type, uint64_t bonus_size)
 }
 
 static void
-save_resume_state(struct receive_writer_arg *rwa,
-    uint64_t object, uint64_t offset, dmu_tx_t *tx)
+save_resume_state_impl(struct receive_writer_arg *rwa,
+    uint64_t object, uint64_t offset, uint64_t bytes_read, dmu_tx_t *tx)
 {
 	int txgoff = dmu_tx_get_txg(tx) & TXG_MASK;
 
@@ -1652,7 +1934,7 @@ save_resume_state(struct receive_writer_arg *rwa,
 	 * We use ds_resume_bytes[] != 0 to indicate that we need to
 	 * update this on disk, so it must not be 0.
 	 */
-	ASSERT(rwa->bytes_read != 0);
+	ASSERT(bytes_read != 0);
 
 	/*
 	 * We only resume from write records, which have a valid
@@ -1668,12 +1950,19 @@ save_resume_state(struct receive_writer_arg *rwa,
 	ASSERT3U(object, >=, rwa->os->os_dsl_dataset->ds_resume_object[txgoff]);
 	ASSERT(object != rwa->os->os_dsl_dataset->ds_resume_object[txgoff] ||
 	    offset >= rwa->os->os_dsl_dataset->ds_resume_offset[txgoff]);
-	ASSERT3U(rwa->bytes_read, >=,
+	ASSERT3U(bytes_read, >=,
 	    rwa->os->os_dsl_dataset->ds_resume_bytes[txgoff]);
 
 	rwa->os->os_dsl_dataset->ds_resume_object[txgoff] = object;
 	rwa->os->os_dsl_dataset->ds_resume_offset[txgoff] = offset;
-	rwa->os->os_dsl_dataset->ds_resume_bytes[txgoff] = rwa->bytes_read;
+	rwa->os->os_dsl_dataset->ds_resume_bytes[txgoff] = bytes_read;
+}
+
+static inline void
+save_resume_state(struct receive_writer_arg *rwa,
+    uint64_t object, uint64_t offset, dmu_tx_t *tx)
+{
+	save_resume_state_impl(rwa, object, offset, rwa->bytes_read, tx);
 }
 
 static int
@@ -2413,8 +2702,15 @@ flush_write_batch_impl(struct receive_writer_arg *rwa)
 		 * start with the same record that we last successfully
 		 * received (as opposed to the next record), so that we can
 		 * verify that we are resuming from the correct location.
+		 *
+		 * Use the batched WRITE record's own stream position here.
+		 * flush_write_batch_impl() can run after a later non-WRITE
+		 * has already advanced rwa->bytes_read, and mixing that later
+		 * byte position with this WRITE record's object/offset would
+		 * over-advance resume state.
 		 */
-		save_resume_state(rwa, drrw->drr_object, drrw->drr_offset, tx);
+		save_resume_state_impl(rwa, drrw->drr_object,
+		    drrw->drr_offset, rrd->bytes_read, tx);
 
 		list_remove(&rwa->write_batch, rrd);
 		kmem_free(rrd, sizeof (*rrd));
@@ -3623,7 +3919,8 @@ resume_check(dmu_recv_cookie_t *drc, nvlist_t *begin_nvl)
 	uint64_t dsobj = dmu_objset_id(drc->drc_os);
 	uint64_t resume_obj, resume_off;
 
-	if (nvlist_lookup_uint64(begin_nvl,
+	if (begin_nvl == NULL ||
+	    nvlist_lookup_uint64(begin_nvl,
 	    "resume_object", &resume_obj) != 0 ||
 	    nvlist_lookup_uint64(begin_nvl,
 	    "resume_offset", &resume_off) != 0) {
@@ -3677,6 +3974,10 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 	ASSERT(dsl_dataset_phys(drc->drc_ds)->ds_flags & DS_FLAG_INCONSISTENT);
 	ASSERT0(drc->drc_os->os_encrypted &&
 	    (drc->drc_featureflags & DMU_BACKUP_FEATURE_EMBED_DATA));
+
+	err = recv_require_begin_nvl(drc);
+	if (err != 0)
+		goto out;
 
 	/* handle DSL encryption key payload */
 	if (drc->drc_featureflags & DMU_BACKUP_FEATURE_RAW) {
@@ -4065,20 +4366,8 @@ dmu_recv_end_sync(void *arg, dmu_tx_t *tx)
 		dmu_buf_will_dirty(ds->ds_dbuf, tx);
 		dsl_dataset_phys(ds)->ds_flags &= ~DS_FLAG_INCONSISTENT;
 		if (dsl_dataset_has_resume_receive_state(ds)) {
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_FROMGUID, tx);
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_OBJECT, tx);
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_OFFSET, tx);
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_BYTES, tx);
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_TOGUID, tx);
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_TONAME, tx);
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_REDACT_BOOKMARK_SNAPS, tx);
+			recv_resume_state_clear(dp->dp_meta_objset,
+			    ds->ds_object, tx);
 		}
 		newsnapobj =
 		    dsl_dataset_phys(drc->drc_ds)->ds_prev_snap_obj;
