@@ -2109,6 +2109,20 @@ dsl_crypto_recv_raw_objset_check(dsl_dataset_t *ds, dsl_dataset_t *fromds,
 	mdn = DMU_META_DNODE(os);
 
 	/*
+	 * Older errata streams can be missing IVset guids entirely. By default
+	 * reject those streams so raw receive preserves the source snapshot's
+	 * IVset identity exactly. The errata override explicitly relaxes both the
+	 * source and destination IVset-guid checks.
+	 */
+	if (!zfs_disable_ivset_guid_check) {
+		intval = 0;
+
+		(void) nvlist_lookup_uint64(nvl, "to_ivset_guid", &intval);
+		if (intval == 0)
+			return (SET_ERROR(ZFS_ERR_FROM_IVSET_GUID_MISSING));
+	}
+
+	/*
 	 * If we already created the objset, make sure its unchangeable
 	 * properties match the ones received in the nvlist.
 	 */
