@@ -358,6 +358,75 @@ recv_check_large_blocks(dsl_dataset_t *ds, uint64_t featureflags)
 	return (0);
 }
 
+/*
+ * Resumable receives persist the original stream shape in on-disk resume
+ * state so resumed sends can reconstruct the same contract.  Reject resumed
+ * begin records that drift from the saved feature set instead of trusting the
+ * new stream header alone.
+ */
+static int
+recv_resume_feature_enabled(dsl_dataset_t *ds, const char *resume_field,
+    boolean_t *enabled)
+{
+	objset_t *mos = ds->ds_dir->dd_pool->dp_meta_objset;
+	int error;
+
+	error = zap_contains(mos, ds->ds_object, resume_field);
+	if (error == 0) {
+		*enabled = B_TRUE;
+		return (0);
+	}
+	if (error == ENOENT) {
+		*enabled = B_FALSE;
+		return (0);
+	}
+
+	return (error);
+}
+
+static int
+recv_check_resume_feature_contract(dsl_dataset_t *ds, uint64_t featureflags)
+{
+	const struct {
+		uint64_t featureflag;
+		const char *resume_field;
+	} resume_flags[] = {
+		{ DMU_BACKUP_FEATURE_LARGE_BLOCKS, DS_FIELD_RESUME_LARGEBLOCK },
+		{ DMU_BACKUP_FEATURE_EMBED_DATA, DS_FIELD_RESUME_EMBEDOK },
+		{ DMU_BACKUP_FEATURE_COMPRESSED, DS_FIELD_RESUME_COMPRESSOK },
+		{ DMU_BACKUP_FEATURE_RAW, DS_FIELD_RESUME_RAWOK },
+	};
+	boolean_t saved_redacted = dsl_dataset_feature_is_active(ds,
+	    SPA_FEATURE_REDACTED_DATASETS);
+	boolean_t stream_redacted =
+	    ((featureflags & DMU_BACKUP_FEATURE_REDACTED) != 0);
+	int error;
+
+	for (size_t i = 0; i < ARRAY_SIZE(resume_flags); i++) {
+		boolean_t saved_enabled;
+
+		error = recv_resume_feature_enabled(ds,
+		    resume_flags[i].resume_field, &saved_enabled);
+		if (error != 0)
+			return (error);
+
+		if (saved_enabled !=
+		    ((featureflags & resume_flags[i].featureflag) != 0)) {
+			if (resume_flags[i].featureflag ==
+			    DMU_BACKUP_FEATURE_LARGE_BLOCKS) {
+				return (SET_ERROR(
+				    ZFS_ERR_STREAM_LARGE_BLOCK_MISMATCH));
+			}
+			return (SET_ERROR(EINVAL));
+		}
+	}
+
+	if (saved_redacted != stream_redacted)
+		return (SET_ERROR(EINVAL));
+
+	return (0);
+}
+
 static int
 recv_begin_check_existing_impl(dmu_recv_begin_arg_t *drba, dsl_dataset_t *ds,
     uint64_t fromguid, uint64_t featureflags)
@@ -1176,6 +1245,12 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 	if (drrb->drr_fromguid != val) {
 		dsl_dataset_rele_flags(ds, dsflags, FTAG);
 		return (SET_ERROR(EINVAL));
+	}
+
+	error = recv_check_resume_feature_contract(ds, drc->drc_featureflags);
+	if (error != 0) {
+		dsl_dataset_rele_flags(ds, dsflags, FTAG);
+		return (error);
 	}
 
 	if (ds->ds_prev != NULL && drrb->drr_fromguid != 0)
