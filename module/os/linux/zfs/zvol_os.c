@@ -1266,12 +1266,23 @@ zvol_queue_limits_init(zvol_queue_limits_t *limits, zvol_state_t *zv,
 		 * number of chunks you want.
 		 */
 		if (zvol_blk_mq_blocks_per_thread != 0) {
+			uint64_t bytes, max_segments;
 			unsigned int chunks;
+
 			chunks = MIN(zvol_blk_mq_blocks_per_thread, UINT16_MAX);
 
+			/*
+			 * Queue limits store max_segments in a 16-bit field.
+			 * Compute the PAGE_SIZE segment count in 64 bits, round up
+			 * sub-page requests, and clamp oversized blk-mq tunings.
+			 */
+			bytes = zv->zv_volblocksize * chunks;
+			max_segments = DIV_ROUND_UP(bytes, PAGE_SIZE);
+			if (max_segments > UINT16_MAX)
+				max_segments = UINT16_MAX;
+
 			limits->zql_max_segment_size = PAGE_SIZE;
-			limits->zql_max_segments =
-			    (zv->zv_volblocksize * chunks) / PAGE_SIZE;
+			limits->zql_max_segments = max_segments;
 		} else {
 			/*
 			 * Special case: zvol_blk_mq_blocks_per_thread = 0
