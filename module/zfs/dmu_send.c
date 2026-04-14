@@ -917,6 +917,8 @@ do_dump(dmu_send_cookie_t *dscp, struct send_range *range)
 		blkptr_t *bp = &srdp->bp;
 		spa_t *spa =
 		    dmu_objset_spa(dscp->dsc_os);
+		uint64_t offset = range->start_blkid * srdp->datablksz;
+		boolean_t split_large_blocks;
 
 		ASSERT3U(srdp->datablksz, ==, BP_GET_LSIZE(bp));
 		ASSERT3U(range->start_blkid + 1, ==, range->end_blkid);
@@ -927,11 +929,18 @@ do_dump(dmu_send_cookie_t *dscp, struct send_range *range)
 			    srdp->datablksz, bp);
 			return (err);
 		}
+
+		split_large_blocks =
+		    srdp->datablksz > SPA_OLD_MAXBLOCKSIZE &&
+		    !(dscp->dsc_featureflags &
+		    DMU_BACKUP_FEATURE_LARGE_BLOCKS);
+
 		ASSERT(range->object > dscp->dsc_resume_object ||
 		    (range->object == dscp->dsc_resume_object &&
 		    (range->start_blkid == DMU_SPILL_BLKID ||
-		    range->start_blkid * srdp->datablksz >=
-		    dscp->dsc_resume_offset)));
+		    offset >= dscp->dsc_resume_offset ||
+		    (split_large_blocks && offset < dscp->dsc_resume_offset &&
+		    dscp->dsc_resume_offset - offset < srdp->datablksz))));
 		/* it's a level-0 block of a regular object */
 
 		mutex_enter(&srdp->lock);
@@ -975,18 +984,38 @@ do_dump(dmu_send_cookie_t *dscp, struct send_range *range)
 			return (err);
 		}
 
-		uint64_t offset = range->start_blkid * srdp->datablksz;
+		uint64_t resume_skip = 0;
+
+		/*
+		 * Resume tokens are saved at WRITE-record granularity. When a
+		 * legacy send splits a large on-disk block into old-max-sized
+		 * WRITE records, the saved resume offset can legitimately land
+		 * in the middle of that underlying block. Resume still restarts
+		 * from the containing L0 blkid, so skip the emitted prefix.
+		 */
+		if (split_large_blocks &&
+		    range->object == dscp->dsc_resume_object &&
+		    offset < dscp->dsc_resume_offset &&
+		    dscp->dsc_resume_offset - offset < srdp->datablksz) {
+			resume_skip = dscp->dsc_resume_offset - offset;
+			ASSERT3U(resume_skip, <, srdp->datablksz);
+			ASSERT0(P2PHASE(resume_skip, SPA_OLD_MAXBLOCKSIZE));
+		}
 
 		/*
 		 * If we have large blocks stored on disk but the send flags
 		 * don't allow us to send large blocks, we split the data from
 		 * the arc buf into chunks.
 		 */
-		if (srdp->datablksz > SPA_OLD_MAXBLOCKSIZE &&
-		    !(dscp->dsc_featureflags &
-		    DMU_BACKUP_FEATURE_LARGE_BLOCKS)) {
-			while (srdp->datablksz > 0 && err == 0) {
-				int n = MIN(srdp->datablksz,
+		if (split_large_blocks) {
+			uint64_t remaining = srdp->datablksz - resume_skip;
+
+			offset += resume_skip;
+			if (data != NULL)
+				data += resume_skip;
+
+			while (remaining > 0 && err == 0) {
+				int n = MIN(remaining,
 				    SPA_OLD_MAXBLOCKSIZE);
 				err = dmu_dump_write(dscp, srdp->obj_type,
 				    range->object, offset, n, n, NULL, B_FALSE,
@@ -999,7 +1028,7 @@ do_dump(dmu_send_cookie_t *dscp, struct send_range *range)
 				 */
 				if (data != NULL)
 					data += n;
-				srdp->datablksz -= n;
+				remaining -= n;
 			}
 		} else {
 			err = dmu_dump_write(dscp, srdp->obj_type,
