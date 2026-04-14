@@ -422,7 +422,11 @@ load_zfeature(objset_t *mos, dsl_dataset_t *ds, spa_feature_t f)
 			err = 0;
 			break;
 		}
-		ASSERT3U(int_size, ==, sizeof (uint64_t));
+		if (int_size != sizeof (uint64_t) ||
+		    num_int > ZAP_MAXVALUELEN / int_size) {
+			err = SET_ERROR(EINVAL);
+			break;
+		}
 		data = kmem_alloc(int_size * num_int, KM_SLEEP);
 		VERIFY0(zap_lookup(mos, ds->ds_object,
 		    spa_feature_table[f].fi_guid, int_size, num_int, data));
@@ -658,8 +662,13 @@ dsl_dataset_hold_obj(dsl_pool_t *dp, uint64_t dsobj, const void *tag,
 				    ZFEATURE_FLAG_PER_DATASET))
 					continue;
 				err = load_zfeature(mos, ds, f);
+				if (err != 0)
+					break;
 			}
 		}
+
+		if (err != 0)
+			goto after_dsl_bookmark_fini;
 
 		if (!ds->ds_is_snapshot) {
 			ds->ds_snapname[0] = '\0';
@@ -2446,19 +2455,24 @@ get_receive_resume_token_impl(dsl_dataset_t *ds)
 	    DS_FIELD_RESUME_REDACT_BOOKMARK_SNAPS) == 0) {
 		uint64_t num_redact_snaps = 0, int_size = 0;
 		uint64_t *redact_snaps = NULL;
+		size_t alloc_size;
 		VERIFY0(zap_length(dp->dp_meta_objset, ds->ds_object,
 		    DS_FIELD_RESUME_REDACT_BOOKMARK_SNAPS, &int_size,
 		    &num_redact_snaps));
-		ASSERT3U(int_size, ==, sizeof (uint64_t));
+		if (int_size != sizeof (uint64_t) ||
+		    num_redact_snaps > ZAP_MAXVALUELEN / int_size) {
+			fnvlist_free(token_nv);
+			return (NULL);
+		}
 
-		redact_snaps = kmem_alloc(int_size * num_redact_snaps,
-		    KM_SLEEP);
+		alloc_size = int_size * num_redact_snaps;
+		redact_snaps = kmem_alloc(alloc_size, KM_SLEEP);
 		VERIFY0(zap_lookup(dp->dp_meta_objset, ds->ds_object,
 		    DS_FIELD_RESUME_REDACT_BOOKMARK_SNAPS, int_size,
 		    num_redact_snaps, redact_snaps));
 		fnvlist_add_uint64_array(token_nv, "book_redact_snaps",
 		    redact_snaps, num_redact_snaps);
-		kmem_free(redact_snaps, int_size * num_redact_snaps);
+		kmem_free(redact_snaps, alloc_size);
 	}
 	packed = fnvlist_pack(token_nv, &packed_size);
 	fnvlist_free(token_nv);
