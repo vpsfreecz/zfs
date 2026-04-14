@@ -1715,8 +1715,8 @@ deduce_nblkptr(dmu_object_type_t bonus_type, uint64_t bonus_size)
 }
 
 static void
-save_resume_state(struct receive_writer_arg *rwa,
-    uint64_t object, uint64_t offset, dmu_tx_t *tx)
+save_resume_state_impl(struct receive_writer_arg *rwa,
+    uint64_t object, uint64_t offset, uint64_t bytes_read, dmu_tx_t *tx)
 {
 	int txgoff = dmu_tx_get_txg(tx) & TXG_MASK;
 
@@ -1727,7 +1727,7 @@ save_resume_state(struct receive_writer_arg *rwa,
 	 * We use ds_resume_bytes[] != 0 to indicate that we need to
 	 * update this on disk, so it must not be 0.
 	 */
-	ASSERT(rwa->bytes_read != 0);
+	ASSERT(bytes_read != 0);
 
 	/*
 	 * We only resume from write records, which have a valid
@@ -1743,12 +1743,19 @@ save_resume_state(struct receive_writer_arg *rwa,
 	ASSERT3U(object, >=, rwa->os->os_dsl_dataset->ds_resume_object[txgoff]);
 	ASSERT(object != rwa->os->os_dsl_dataset->ds_resume_object[txgoff] ||
 	    offset >= rwa->os->os_dsl_dataset->ds_resume_offset[txgoff]);
-	ASSERT3U(rwa->bytes_read, >=,
+	ASSERT3U(bytes_read, >=,
 	    rwa->os->os_dsl_dataset->ds_resume_bytes[txgoff]);
 
 	rwa->os->os_dsl_dataset->ds_resume_object[txgoff] = object;
 	rwa->os->os_dsl_dataset->ds_resume_offset[txgoff] = offset;
-	rwa->os->os_dsl_dataset->ds_resume_bytes[txgoff] = rwa->bytes_read;
+	rwa->os->os_dsl_dataset->ds_resume_bytes[txgoff] = bytes_read;
+}
+
+static inline void
+save_resume_state(struct receive_writer_arg *rwa,
+    uint64_t object, uint64_t offset, dmu_tx_t *tx)
+{
+	save_resume_state_impl(rwa, object, offset, rwa->bytes_read, tx);
 }
 
 static int
@@ -2488,8 +2495,14 @@ flush_write_batch_impl(struct receive_writer_arg *rwa)
 		 * start with the same record that we last successfully
 		 * received (as opposed to the next record), so that we can
 		 * verify that we are resuming from the correct location.
+		 *
+		 * Use the batched WRITE record's own stream position here.
+		 * flush_write_batch_impl() can run after a later non-WRITE has already
+		 * advanced rwa->bytes_read, and mixing that later byte position with
+		 * this WRITE record's object/offset would over-advance resume state.
 		 */
-		save_resume_state(rwa, drrw->drr_object, drrw->drr_offset, tx);
+		save_resume_state_impl(rwa, drrw->drr_object, drrw->drr_offset,
+		    rrd->bytes_read, tx);
 
 		list_remove(&rwa->write_batch, rrd);
 		kmem_free(rrd, sizeof (*rrd));
