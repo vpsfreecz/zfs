@@ -23,6 +23,7 @@
  * Copyright (c) 2011, Lawrence Livermore National Security, LLC.
  * Copyright (c) 2023, Datto Inc. All rights reserved.
  * Copyright (c) 2025, Klara, Inc.
+ * Copyright (c) 2025, Rob Norris <robn@despairlabs.com>
  */
 
 
@@ -34,6 +35,7 @@
 #include <sys/mntent.h>
 #include <linux/iversion.h>
 #include <linux/version.h>
+#include <linux/vfs_compat.h>
 #ifdef HAVE_FILE_SYSTEM_TYPE_INIT_FS_CONTEXT
 #include <linux/fs_context.h>
 #include <linux/fs_parser.h>
