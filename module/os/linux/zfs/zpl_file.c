@@ -379,17 +379,48 @@ static const struct vm_operations_struct zpl_file_vm_ops = {
 };
 
 static int
-zpl_mmap(struct file *filp, struct vm_area_struct *vma)
+zpl_mmap_common(struct file *filp, pgoff_t pgoff, unsigned long start,
+    unsigned long end, unsigned long flags)
 {
 	struct inode *ip = filp->f_mapping->host;
-	int error;
 	fstrans_cookie_t cookie;
+	int error;
 
 	cookie = spl_fstrans_mark();
-	error = -zfs_map(ip, vma->vm_pgoff, (caddr_t *)vma->vm_start,
-	    (size_t)(vma->vm_end - vma->vm_start), vma->vm_flags);
+	error = -zfs_map(ip, pgoff, (caddr_t *)start,
+	    (size_t)(end - start), flags);
 	spl_fstrans_unmark(cookie);
 
+	return (error);
+}
+
+#ifdef HAVE_FILE_OPERATIONS_MMAP_PREPARE
+static int
+zpl_mmap_prepare(struct vm_area_desc *desc)
+{
+	int error;
+
+	error = zpl_mmap_common(desc->file, desc->pgoff, desc->start,
+	    desc->end, desc->vm_flags);
+	if (error)
+		return (error);
+
+	error = generic_file_mmap_prepare(desc);
+	if (error)
+		return (error);
+
+	desc->vm_ops = &zpl_file_vm_ops;
+
+	return (0);
+}
+#else
+static int
+zpl_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	int error;
+
+	error = zpl_mmap_common(filp, vma->vm_pgoff, vma->vm_start,
+	    vma->vm_end, vma->vm_flags);
 	if (error)
 		return (error);
 
@@ -399,8 +430,9 @@ zpl_mmap(struct file *filp, struct vm_area_struct *vma)
 
 	vma->vm_ops = &zpl_file_vm_ops;
 
-	return (error);
+	return (0);
 }
+#endif
 
 /*
  * Populate a page with data for the Linux page cache.  This function is
@@ -1465,7 +1497,11 @@ const struct file_operations zpl_file_operations = {
 	.splice_read	= generic_file_splice_read,
 #endif
 	.splice_write	= iter_file_splice_write,
+#ifdef HAVE_FILE_OPERATIONS_MMAP_PREPARE
+	.mmap_prepare	= zpl_mmap_prepare,
+#else
 	.mmap		= zpl_mmap,
+#endif
 	.fsync		= zpl_fsync,
 	.fallocate	= zpl_fallocate,
 	.copy_file_range	= zpl_copy_file_range,
