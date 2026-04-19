@@ -1224,6 +1224,12 @@ zfsctl_snapshot_mount_fscontext(struct path *path, const char *full_name,
 {
 	struct fs_context *fc;
 	struct vfsmount *mnt;
+	struct fs_parameter source_param = {
+		.key = "source",
+		.type = fs_value_is_string,
+		.string = (char *)full_name,
+		.size = strlen(full_name),
+	};
 	zfsvfs_t *snap_zfsvfs;
 	int error;
 
@@ -1231,8 +1237,7 @@ zfsctl_snapshot_mount_fscontext(struct path *path, const char *full_name,
 	if (IS_ERR(fc))
 		return (ERR_CAST(fc));
 
-	error = vfs_parse_fs_string(fc, "source", full_name,
-	    strlen(full_name));
+	error = vfs_parse_fs_param_source(fc, &source_param);
 	if (error)
 		goto out;
 
