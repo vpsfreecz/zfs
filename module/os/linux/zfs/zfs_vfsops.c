@@ -1135,9 +1135,11 @@ zfs_statfs_project(zfsvfs_t *zfsvfs, znode_t *zp, struct kstatfs *statp,
 	} else {
 		err = zap_lookup(zfsvfs->z_os, zfsvfs->z_projectquota_obj,
 		    buf + offset, 8, 1, &quota);
-		if (err && (quota = zfsvfs->z_defaultprojectquota) == 0) {
-			if (err == ENOENT)
+		if (err == ENOENT) {
+			if (zfsvfs->z_defaultprojectquota == 0)
 				goto objs;
+			quota = zfsvfs->z_defaultprojectquota;
+		} else if (err) {
 			return (err);
 		}
 	}
@@ -1174,9 +1176,11 @@ objs:
 	} else {
 		err = zap_lookup(zfsvfs->z_os, zfsvfs->z_projectobjquota_obj,
 		    buf + offset, 8, 1, &quota);
-		if (err && (quota = zfsvfs->z_defaultprojectobjquota) == 0) {
-			if (err == ENOENT)
+		if (err == ENOENT) {
+			if (zfsvfs->z_defaultprojectobjquota == 0)
 				return (0);
+			quota = zfsvfs->z_defaultprojectobjquota;
+		} else if (err) {
 			return (err);
 		}
 	}

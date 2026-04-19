@@ -261,8 +261,13 @@ zfs_getquota(zfsvfs_t *zfsvfs, uid_t id, int isgroup, struct dqblk64 *dqp)
 	} else {
 		error = zap_lookup(zfsvfs->z_os, quotaobj, buf, sizeof (quota),
 		    1, &quota);
-		if (error && (quota = defaultquota) == 0)
+		if (error == ENOENT) {
+			if (defaultquota == 0)
+				return (ENOENT);
+			quota = defaultquota;
+		} else if (error) {
 			return (error);
+		}
 	}
 
 	/*

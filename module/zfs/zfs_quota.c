@@ -443,8 +443,13 @@ zfs_id_overobjquota(zfsvfs_t *zfsvfs, uint64_t usedobj, uint64_t id)
 		quota = default_quota;
 	} else {
 		err = zap_lookup(zfsvfs->z_os, quotaobj, buf, 8, 1, &quota);
-		if (err != 0 && ((quota = default_quota) == 0))
+		if (err == ENOENT) {
+			if (default_quota == 0)
+				return (B_FALSE);
+			quota = default_quota;
+		} else if (err != 0) {
 			return (B_FALSE);
+		}
 	}
 
 	(void) snprintf(buf, sizeof (buf), DMU_OBJACCT_PREFIX "%llx",
@@ -494,8 +499,13 @@ zfs_id_overblockquota(zfsvfs_t *zfsvfs, uint64_t usedobj, uint64_t id)
 		quota = default_quota;
 	} else {
 		err = zap_lookup(zfsvfs->z_os, quotaobj, buf, 8, 1, &quota);
-		if (err != 0 && ((quota = default_quota) == 0))
+		if (err == ENOENT) {
+			if (default_quota == 0)
+				return (B_FALSE);
+			quota = default_quota;
+		} else if (err != 0) {
 			return (B_FALSE);
+		}
 	}
 
 	err = zap_lookup(zfsvfs->z_os, usedobj, buf, 8, 1, &used);
