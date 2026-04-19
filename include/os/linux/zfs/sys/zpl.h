@@ -38,7 +38,11 @@
 #include <linux/writeback.h>
 #include <linux/xattr_compat.h>
 
+#if defined(HAVE_FILE_KATTR)
+struct file_kattr;
+#else
 struct fileattr;
+#endif
 
 /* zpl_inode.c */
 extern void zpl_vap_init(vattr_t *vap, struct inode *dir,
@@ -54,9 +58,15 @@ extern const struct address_space_operations zpl_address_space_operations;
 extern const struct file_operations zpl_file_operations;
 extern const struct file_operations zpl_dir_file_operations;
 #if defined(HAVE_FILEATTR_OPS)
+#if defined(HAVE_FILE_KATTR)
+extern int zpl_fileattr_get(struct dentry *dentry, struct file_kattr *fa);
+extern int zpl_fileattr_set(zidmap_t *idmap, struct dentry *dentry,
+    struct file_kattr *fa);
+#else
 extern int zpl_fileattr_get(struct dentry *dentry, struct fileattr *fa);
 extern int zpl_fileattr_set(zidmap_t *idmap, struct dentry *dentry,
     struct fileattr *fa);
+#endif
 #endif
 
 /* zpl_super.c */
