@@ -1146,7 +1146,11 @@ __zpl_ioctl_setxflags(zidmap_t *mnt_ns, struct inode *ip, uint32_t ioctl_flags,
 
 #if defined(HAVE_FILEATTR_OPS)
 int
+#if defined(HAVE_FILE_KATTR)
+zpl_fileattr_get(struct dentry *dentry, struct file_kattr *fa)
+#else
 zpl_fileattr_get(struct dentry *dentry, struct fileattr *fa)
+#endif
 {
 	struct inode *ip = d_inode(dentry);
 	boolean_t get_flags = fa->flags_valid;
@@ -1171,7 +1175,11 @@ zpl_fileattr_get(struct dentry *dentry, struct fileattr *fa)
 }
 
 int
+#if defined(HAVE_FILE_KATTR)
+zpl_fileattr_set(zidmap_t *mnt_ns, struct dentry *dentry, struct file_kattr *fa)
+#else
 zpl_fileattr_set(zidmap_t *mnt_ns, struct dentry *dentry, struct fileattr *fa)
+#endif
 {
 	struct inode *ip = d_inode(dentry);
 	cred_t *cr = CRED();
