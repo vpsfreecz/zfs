@@ -1018,10 +1018,18 @@ zfs_replay_remove(void *arg1, void *arg2, boolean_t byteswap)
 
 	switch ((int)lr->lr_common.lrc_txtype) {
 	case TX_REMOVE:
+#if defined(__linux__)
+		error = zfs_remove(dzp, name, kcred, vflg, zfs_init_idmap);
+#else
 		error = zfs_remove(dzp, name, kcred, vflg);
+#endif
 		break;
 	case TX_RMDIR:
+#if defined(__linux__)
+		error = zfs_rmdir(dzp, name, NULL, kcred, vflg, zfs_init_idmap);
+#else
 		error = zfs_rmdir(dzp, name, NULL, kcred, vflg);
+#endif
 		break;
 	default:
 		error = SET_ERROR(ENOTSUP);
