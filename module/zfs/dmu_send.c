@@ -937,7 +937,7 @@ do_dump(dmu_send_cookie_t *dscp, struct send_range *range)
 		    range->start_blkid * srdp->datablksz <
 		    dscp->dsc_resume_offset &&
 		    dscp->dsc_resume_offset -
-		    range->start_blkid * srdp->datablksz < srdp->datablksz)))));
+		    range->start_blkid * srdp->datablksz < srdp->datablksz))));
 		/* it's a level-0 block of a regular object */
 
 		mutex_enter(&srdp->lock);
