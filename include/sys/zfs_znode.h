@@ -36,6 +36,8 @@
 extern "C" {
 #endif
 
+typedef struct znode znode_t;
+
 /*
  * Additional file level attributes, that are stored
  * in the upper half of z_pflags
@@ -181,7 +183,7 @@ typedef struct zfs_dirlock {
 	struct zfs_dirlock *dl_next;	/* next in z_dirlocks list */
 } zfs_dirlock_t;
 
-typedef struct znode {
+struct znode {
 	uint64_t	z_id;		/* object ID for this znode */
 	kmutex_t	z_lock;		/* znode modification lock */
 	krwlock_t	z_parent_lock;	/* parent lock for directories */
@@ -216,7 +218,7 @@ typedef struct znode {
 	 * accessible from platform specific code.
 	 */
 	ZNODE_OS_FIELDS;
-} znode_t;
+};
 
 /* Verifies the znode is valid. */
 static inline int
