@@ -2332,7 +2332,7 @@ dmu_object_set_checksum(objset_t *os, uint64_t object, uint8_t checksum,
 	 * check ensures that the receiving system can understand the
 	 * checksum function transmitted.
 	 */
-	ASSERT3U(checksum, <, ZIO_CHECKSUM_LEGACY_FUNCTIONS);
+	ASSERT3U(checksum, <, ZIO_CHECKSUM_FUNCTIONS);
 
 	VERIFY0(dnode_hold(os, object, FTAG, &dn));
 	ASSERT3U(checksum, <, ZIO_CHECKSUM_FUNCTIONS);
@@ -2352,7 +2352,7 @@ dmu_object_set_compress(objset_t *os, uint64_t object, uint8_t compress,
 	 * check ensures that the receiving system can understand the
 	 * compression function transmitted.
 	 */
-	ASSERT3U(compress, <, ZIO_COMPRESS_LEGACY_FUNCTIONS);
+	ASSERT3U(compress, <, ZIO_COMPRESS_FUNCTIONS);
 
 	VERIFY0(dnode_hold(os, object, FTAG, &dn));
 	dn->dn_compress = compress;
