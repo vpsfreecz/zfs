@@ -2047,11 +2047,11 @@ dsl_crypto_recv_raw_objset_check(dsl_dataset_t *ds, dsl_dataset_t *fromds,
 
 	/* raw receives also need info about the structure of the metadnode */
 	ret = nvlist_lookup_uint64(nvl, "mdn_compress", &intval);
-	if (ret != 0 || intval >= ZIO_COMPRESS_LEGACY_FUNCTIONS)
+	if (ret != 0 || intval >= ZIO_COMPRESS_FUNCTIONS)
 		return (SET_ERROR(EINVAL));
 
 	ret = nvlist_lookup_uint64(nvl, "mdn_checksum", &intval);
-	if (ret != 0 || intval >= ZIO_CHECKSUM_LEGACY_FUNCTIONS)
+	if (ret != 0 || intval >= ZIO_CHECKSUM_FUNCTIONS)
 		return (SET_ERROR(EINVAL));
 
 	ret = nvlist_lookup_uint64(nvl, "mdn_nlevels", &nlevels);
