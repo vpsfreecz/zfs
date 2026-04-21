@@ -220,6 +220,92 @@ struct znode {
 	ZNODE_OS_FIELDS;
 };
 
+static inline void
+zn_lock_cached_data_shared(znode_t *zp)
+{
+	filemap_invalidate_lock_shared(ZTOI(zp)->i_mapping);
+}
+
+static inline void
+zn_unlock_cached_data_shared(znode_t *zp)
+{
+	filemap_invalidate_unlock_shared(ZTOI(zp)->i_mapping);
+}
+
+static inline void
+zn_pagecache_isize_extended(znode_t *zp, uint64_t from, uint64_t to)
+{
+	struct inode *ip = ZTOI(zp);
+
+	if (!S_ISREG(ip->i_mode) || to <= from)
+		return;
+
+	i_size_write(ip, to);
+	pagecache_isize_extended(ip, from, to);
+}
+
+static inline boolean_t
+zn_writably_mapped(znode_t *zp)
+{
+	return (mapping_writably_mapped(ZTOI(zp)->i_mapping));
+}
+
+static inline void
+zn_lock_cached_data(znode_t *zp)
+{
+	filemap_invalidate_lock(ZTOI(zp)->i_mapping);
+}
+
+static inline void
+zn_unlock_cached_data(znode_t *zp)
+{
+	filemap_invalidate_unlock(ZTOI(zp)->i_mapping);
+}
+
+static inline void
+zn_lock_cached_data_pair(znode_t *za, znode_t *zb)
+{
+	struct address_space *ma = ZTOI(za)->i_mapping;
+	struct address_space *mb = ZTOI(zb)->i_mapping;
+
+	if (ma == mb) {
+		zn_lock_cached_data(za);
+	} else if (ma < mb) {
+		zn_lock_cached_data(za);
+		zn_lock_cached_data(zb);
+	} else {
+		zn_lock_cached_data(zb);
+		zn_lock_cached_data(za);
+	}
+}
+
+static inline void
+zn_unlock_cached_data_pair(znode_t *za, znode_t *zb)
+{
+	struct address_space *ma = ZTOI(za)->i_mapping;
+	struct address_space *mb = ZTOI(zb)->i_mapping;
+
+	if (ma == mb) {
+		zn_unlock_cached_data(za);
+	} else if (ma < mb) {
+		zn_unlock_cached_data(zb);
+		zn_unlock_cached_data(za);
+	} else {
+		zn_unlock_cached_data(za);
+		zn_unlock_cached_data(zb);
+	}
+}
+
+static inline int
+zn_sync_cached_data(znode_t *zp, uint64_t start, uint64_t end)
+{
+	if (start > end)
+		return (0);
+
+	return (filemap_write_and_wait_range(ZTOI(zp)->i_mapping,
+	    start, end));
+}
+
 /* Verifies the znode is valid. */
 static inline int
 zfs_verify_zp(znode_t *zp)
