@@ -1125,7 +1125,7 @@ zvol_os_update_volsize(zvol_state_t *zv, uint64_t volsize)
 static inline int
 zvol_getgeo_impl(struct gendisk *disk, struct hd_geometry *geo)
 {
-	zvol_state_t *zv = atomic_load_ptr(&disk->private_data);
+	zvol_state_t *zv = READ_ONCE(disk->private_data);
 	sector_t sectors;
 
 	ASSERT3P(zv, !=, NULL);

@@ -248,7 +248,8 @@ zfs_folio_revalidate(struct inode *ip, struct folio *folio,
 	ASSERT3U(io_len, ==, PAGE_SIZE);
 
 	if (mapping != NULL && (fmapping != mapping ||
-	    fmapping->host != ip || folio_index(folio) != index))
+	    fmapping->host != ip ||
+	    (folio_pos(folio) >> PAGE_SHIFT) != index))
 		return (B_FALSE);
 
 	i_size = i_size_read(ip);

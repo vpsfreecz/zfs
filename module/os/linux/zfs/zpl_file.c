@@ -401,7 +401,7 @@ zpl_mmap_prepare(struct vm_area_desc *desc)
 	int error;
 
 	error = zpl_mmap_common(desc->file, desc->pgoff, desc->start,
-	    desc->end, desc->vma_flags);
+	    desc->end, desc->vm_flags);
 	if (error)
 		return (error);
 
@@ -445,7 +445,7 @@ zpl_read_folio_common(struct folio *folio)
 	struct page *pp = &folio->page;
 	struct address_space *mapping = folio_mapping(folio);
 	struct inode *ip = mapping->host;
-	pgoff_t index = folio_index(folio);
+	pgoff_t index = folio_pos(folio) >> PAGE_SHIFT;
 	fstrans_cookie_t cookie;
 	int error;
 
@@ -633,7 +633,8 @@ zpl_write_cache_pages(struct address_space *mapping,
 			 * will clear the TOWRITE and DIRTY flags, and return
 			 * with the page unlocked.
 			 */
-			int ferr = zpl_putpage(&folio->page, wbc, data);
+			int ferr = zpl_writeback_page(&folio->page, wbc,
+			    data);
 			if (err == 0 && ferr != 0)
 				err = ferr;
 
