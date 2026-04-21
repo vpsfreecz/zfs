@@ -1532,11 +1532,16 @@ do_corrective_recv(struct receive_writer_arg *rwa, struct drr_write *drrw,
 		dsl_dataset_rele_flags(ds, DS_HOLD_FLAG_DECRYPT, FTAG);
 		dsl_pool_config_exit(dp, FTAG);
 
-		ASSERT0(no_crypt);
 		if (err != 0) {
 			abd_free(eabd);
 			return (err);
 		}
+		/*
+		 * Encrypted dnode rewrites can report no_crypt when no
+		 * encryptable bonus-buffer regions are in the block. In that
+		 * case zio_do_crypt_abd() still returns the authenticated copy
+		 * in eabd, which we want to rewrite.
+		 */
 		/* Swap in the newly encrypted data into the abd */
 		abd_free(abd);
 		abd = eabd;
@@ -1910,6 +1915,27 @@ receive_handle_existing_object(const struct receive_writer_arg *rwa,
 	return (0);
 }
 
+static boolean_t
+receive_raw_object_geometry_valid(const struct drr_object *drro)
+{
+	int epbs;
+	int needed = 1;
+	uint64_t span;
+
+	if (drro->drr_nlevels == 0 || drro->drr_nblkptr == 0)
+		return (B_FALSE);
+	if (drro->drr_indblkshift < DN_MIN_INDBLKSHIFT ||
+	    drro->drr_indblkshift > SPA_MAXBLOCKSHIFT)
+		return (B_FALSE);
+
+	epbs = drro->drr_indblkshift - SPA_BLKPTRSHIFT;
+	for (span = drro->drr_nblkptr; span <= drro->drr_maxblkid &&
+	    span >= drro->drr_nblkptr; span <<= epbs)
+		needed++;
+
+	return (drro->drr_nlevels >= needed);
+}
+
 noinline static int
 receive_object(struct receive_writer_arg *rwa, struct drr_object *drro,
     void *data)
@@ -1948,11 +1974,11 @@ receive_object(struct receive_writer_arg *rwa, struct drr_object *drro,
 		if (drro->drr_object < rwa->or_firstobj ||
 		    drro->drr_object >= rwa->or_firstobj + rwa->or_numslots ||
 		    drro->drr_raw_bonuslen < drro->drr_bonuslen ||
-		    drro->drr_indblkshift > SPA_MAXBLOCKSHIFT ||
 		    drro->drr_nlevels > DN_MAX_LEVELS ||
 		    drro->drr_nblkptr > DN_MAX_NBLKPTR ||
 		    DN_SLOTS_TO_BONUSLEN(dn_slots) <
-		    drro->drr_raw_bonuslen)
+		    drro->drr_raw_bonuslen ||
+		    !receive_raw_object_geometry_valid(drro))
 			return (SET_ERROR(EINVAL));
 	} else {
 		/*
@@ -2442,7 +2468,7 @@ receive_process_write_record(struct receive_writer_arg *rwa,
 		if (rwa->raw)
 			flags |= DMU_READ_NO_DECRYPT;
 
-		if (rwa->byteswap) {
+		if (rwa->byteswap && !rwa->raw) {
 			dmu_object_byteswap_t byteswap =
 			    DMU_OT_BYTESWAP(drrw->drr_type);
 			dmu_ot_byteswap[byteswap].ob_func(abd_to_buf(rrd->abd),
