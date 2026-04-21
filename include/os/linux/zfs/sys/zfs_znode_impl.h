@@ -80,7 +80,7 @@ extern "C" {
 #define	zn_rlimit_fsize(size)		(0)
 #define	zn_rlimit_fsize_uio(zp, uio)	(0)
 
-static inline void
+static inline int
 zfs_enter(zfsvfs_t *zfsvfs, const char *tag)
 {
 	ZFS_TEARDOWN_ENTER_READ(zfsvfs, tag);
