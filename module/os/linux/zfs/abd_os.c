@@ -65,6 +65,14 @@
 #include <linux/scatterlist.h>
 #include <linux/version.h>
 
+#ifndef nth_page
+/*
+ * Since 6.18 nth_page() no longer exists, and is no longer required to iterate
+ * within a single SG entry, so we replace it with a simple addition.
+ */
+#define	nth_page(p, n)	((p)+(n))
+#endif
+
 #if defined(MAX_ORDER)
 #define	ABD_MAX_ORDER	(MAX_ORDER)
 #elif defined(MAX_PAGE_ORDER)
@@ -1125,14 +1133,6 @@ abd_return_buf_copy(abd_t *abd, void *buf, size_t n)
 	(PageCompound(page) ? page_size(page) : PAGESIZE)
 #else
 #define	ABD_ITER_PAGE_SIZE(page)	(PAGESIZE)
-#endif
-
-#ifndef nth_page
-/*
- * Since 6.18 nth_page() no longer exists, and is no longer required to iterate
- * within a single SG entry, so we replace it with a simple addition.
- */
-#define	nth_page(p, n)	((p)+(n))
 #endif
 
 void

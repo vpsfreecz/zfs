@@ -960,7 +960,12 @@ zfs_replay_create(void *arg1, void *arg2, boolean_t byteswap)
 
 		break;
 	case TX_MKXATTR:
+#if defined(__linux__)
+		error = zfs_make_xattrdir(dzp, &xva.xva_vattr, &zp, kcred,
+		    zfs_init_idmap);
+#else
 		error = zfs_make_xattrdir(dzp, &xva.xva_vattr, &zp, kcred);
+#endif
 		break;
 	case TX_SYMLINK:
 		name = &lrc->lr_data[0];
