@@ -77,6 +77,9 @@ static int zfs_unlink_suspend_progress = 0;
 typedef struct zfs_freesp_log_arg {
 	zilog_t *zfla_zilog;
 	znode_t *zfla_zp;
+	boolean_t zfla_track_tail;
+	boolean_t zfla_tail_progress;
+	uint64_t zfla_tail_start;
 } zfs_freesp_log_arg_t;
 
 static void
@@ -85,7 +88,15 @@ zfs_log_free_chunk(void *arg, objset_t *os, uint64_t object,
 {
 	zfs_freesp_log_arg_t *zfla = arg;
 
-	ASSERT3P(zfla->zfla_zilog, !=, NULL);
+	if (zfla->zfla_track_tail) {
+		zfla->zfla_tail_progress = B_TRUE;
+		if (offset < zfla->zfla_tail_start)
+			zfla->zfla_tail_start = offset;
+	}
+
+	if (zfla->zfla_zilog == NULL)
+		return;
+
 	ASSERT3P(os, ==, ZTOZSB(zfla->zfla_zp)->z_os);
 	ASSERT3U(object, ==, zfla->zfla_zp->z_id);
 
@@ -1636,6 +1647,46 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len, zilog_t *zilog)
 	return (error);
 }
 
+static int
+zfs_trunc_commit_progress(znode_t *zp, uint64_t end, zilog_t *zilog)
+{
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	dmu_tx_t *tx;
+	sa_bulk_attr_t bulk[4];
+	uint64_t mtime[2], ctime[2];
+	int count = 0;
+	int error;
+
+	tx = dmu_tx_create(zfsvfs->z_os);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
+	zfs_sa_upgrade_txholds(tx, zp);
+	dmu_tx_mark_netfree(tx);
+	error = dmu_tx_assign(tx, DMU_TX_WAIT);
+	if (error != 0) {
+		dmu_tx_abort(tx);
+		return (error);
+	}
+
+	zp->z_size = end;
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_SIZE(zfsvfs),
+	    NULL, &zp->z_size, sizeof (zp->z_size));
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_MTIME(zfsvfs), NULL, mtime, 16);
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_CTIME(zfsvfs), NULL, ctime, 16);
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_FLAGS(zfsvfs),
+	    NULL, &zp->z_pflags, 8);
+
+	zfs_tstamp_update_setup(zp, CONTENT_MODIFIED, mtime, ctime);
+	if (end == 0)
+		zp->z_pflags &= ~ZFS_SPARSE;
+
+	VERIFY(sa_bulk_update(zp->z_sa_hdl, bulk, count, tx) == 0);
+	if (zilog != NULL)
+		zfs_log_truncate(zilog, tx, TX_TRUNCATE, zp, end, 0);
+	dmu_tx_commit(tx);
+
+	return (0);
+}
+
 /*
  * Truncate a file
  *
@@ -1651,7 +1702,8 @@ zfs_trunc(znode_t *zp, uint64_t end, zilog_t *zilog)
 	struct inode *ip = ZTOI(zp);
 	dmu_tx_t *tx;
 	zfs_locked_range_t *lr;
-	zfs_freesp_log_arg_t zfla = { .zfla_zilog = zilog, .zfla_zp = zp };
+	zfs_freesp_log_arg_t zfla = { .zfla_zilog = zilog, .zfla_zp = zp,
+	    .zfla_track_tail = B_TRUE, .zfla_tail_start = UINT64_MAX };
 	int error;
 	sa_bulk_attr_t bulk[2];
 	int count = 0;
@@ -1681,20 +1733,23 @@ zfs_trunc(znode_t *zp, uint64_t end, zilog_t *zilog)
 	 */
 	truncate_pagecache_range(ip, end, old_size - 1);
 
-	if (zilog != NULL) {
-		/*
-		 * Keep replay coverage aligned with committed chunked tail frees.
-		 * The later size-update transaction still records the full logical
-		 * truncate, but these per-chunk intents preserve partial progress if
-		 * we fail before reaching that final transaction.
-		 */
-		error = dmu_free_long_range_cb(zfsvfs->z_os, zp->z_id, end,
-		    DMU_OBJECT_END, zfs_log_free_chunk, &zfla);
-	} else {
-		error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, end,
-		    DMU_OBJECT_END);
-	}
+	/*
+	 * dmu_free_long_range() frees from the tail backwards.  If it returns an
+	 * error after committing earlier chunks, the callback above records the
+	 * lowest committed offset so we can safely shrink only to that boundary.
+	 */
+	error = dmu_free_long_range_cb(zfsvfs->z_os, zp->z_id, end,
+	    DMU_OBJECT_END, zfs_log_free_chunk, &zfla);
 	if (error) {
+		if (zfla.zfla_tail_progress) {
+			int serr = zfs_trunc_commit_progress(zp,
+			    zfla.zfla_tail_start, zilog);
+			zn_unlock_cached_data(zp);
+			zfs_rangelock_exit(lr);
+			if (serr == 0)
+				zfs_znode_update_vfs(zp);
+			return (serr != 0 ? serr : error);
+		}
 		zn_unlock_cached_data(zp);
 		zfs_rangelock_exit(lr);
 		return (error);
