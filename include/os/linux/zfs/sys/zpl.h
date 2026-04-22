@@ -32,6 +32,7 @@
 #include <linux/dcache_compat.h>
 #include <linux/exportfs.h>
 #include <linux/falloc.h>
+#include <linux/mm_compat.h>
 #include <linux/parser.h>
 #include <linux/vfs_compat.h>
 #include <linux/writeback.h>
@@ -181,5 +182,28 @@ extern int zpl_dedupe_file_range(struct file *src_file, loff_t src_off,
 #else
 #define	zpl_inode_set_mtime_to_ts(ip, ts)	(ip->i_mtime = ts)
 #endif
+
+/*
+ * Segment-only page-cache mutators may preserve whole-page validity that
+ * already existed, but they must not create it unless they cover the whole
+ * page.
+ */
+static inline boolean_t
+zpl_page_range_is_full(size_t off, size_t len)
+{
+	ASSERT3U(off + len, <=, PAGE_SIZE);
+	return (off == 0 && len == PAGE_SIZE);
+}
+
+static inline void
+zpl_page_range_write_done(struct page *pp, boolean_t was_uptodate,
+    size_t off, size_t len)
+{
+	ClearPageError(pp);
+	if (was_uptodate || zpl_page_range_is_full(off, len))
+		SetPageUptodate(pp);
+	else
+		ClearPageUptodate(pp);
+}
 
 #endif	/* _SYS_ZPL_H */

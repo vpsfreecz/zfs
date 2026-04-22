@@ -42,6 +42,25 @@
 #endif
 
 /*
+ * mapping->invalidate_lock was added in 5.15. Older kernels do not provide a
+ * generic page-cache invalidate barrier for filesystems, so keep the wrappers
+ * as no-ops there and use the real helpers where available.
+ */
+#ifndef HAVE_FILEMAP_INVALIDATE_LOCK
+static inline void
+filemap_invalidate_lock(struct address_space *mapping)
+{
+	(void) mapping;
+}
+
+static inline void
+filemap_invalidate_unlock(struct address_space *mapping)
+{
+	(void) mapping;
+}
+#endif
+
+/*
  * 6.12 removed PG_error, SetPageError and ClearPageError, with no direct
  * replacement, because page writeback errors are recorded elsewhere. Since we
  * only use the page cache to assist with mmap(), never directly backing it
