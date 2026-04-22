@@ -924,17 +924,29 @@ spa_keystore_unload_wkey(const char *dsname)
 	dsl_dir_t *dd = NULL;
 	dsl_pool_t *dp = NULL;
 	spa_t *spa = NULL;
+	txg_wait_flag_t wait_flags;
 
 	ret = spa_open(dsname, &spa, FTAG);
 	if (ret != 0)
 		return (ret);
 
+	wait_flags = spa_get_failmode(spa) == ZIO_FAILURE_MODE_CONTINUE ?
+	    TXG_WAIT_SUSPEND : 0;
+
 	/*
 	 * Wait for any outstanding txg IO to complete, releasing any
-	 * remaining references on the wkey.
+	 * remaining references on the wkey. If the pool suspends while
+	 * failmode=continue is in effect, abort instead of hanging forever.
 	 */
-	if (spa_mode(spa) != SPA_MODE_READ)
-		txg_wait_synced(spa->spa_dsl_pool, 0);
+	if (spa_mode(spa) != SPA_MODE_READ) {
+		ret = txg_wait_synced_flags(spa->spa_dsl_pool, 0, wait_flags);
+		if (ret != 0) {
+			ASSERT3U(ret, ==, ESHUTDOWN);
+			ret = SET_ERROR(EIO);
+			spa_close(spa, FTAG);
+			return (ret);
+		}
+	}
 
 	spa_close(spa, FTAG);
 
@@ -959,12 +971,11 @@ spa_keystore_unload_wkey(const char *dsname)
 	if (ret != 0)
 		goto error;
 
-	dsl_dir_rele(dd, FTAG);
-	dsl_pool_rele(dp, FTAG);
-
-	/* remove any zvols under this ds */
+	/* remove any zvols under this ds while the pool hold is still live */
 	zvol_remove_minors(dp->dp_spa, dsname, B_TRUE);
 
+	dsl_dir_rele(dd, FTAG);
+	dsl_pool_rele(dp, FTAG);
 	return (0);
 
 error:
