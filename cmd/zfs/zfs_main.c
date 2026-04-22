@@ -3032,6 +3032,7 @@ userspace_cb(void *arg, const char *domain, uid_t rid, uint64_t space,
 	size_t typelen;
 	size_t sizelen;
 	int typeidx, nameidx, sizeidx;
+	int error;
 	us_sort_info_t sortinfo = { sortcol, cb->cb_numname };
 	boolean_t smbentity = B_FALSE;
 
@@ -3194,7 +3195,17 @@ userspace_cb(void *arg, const char *domain, uid_t rid, uint64_t space,
 	if (sizeidx >= 0 && sizelen > cb->cb_width[sizeidx])
 		cb->cb_width[sizeidx] = sizelen;
 
-	if (nvlist_add_uint64(props, propname, space) != 0)
+	/*
+	 * We may have already seeded this property with a placeholder while
+	 * processing the paired accounting property.  For example, default
+	 * quotas populate "quota" during the earlier *used pass, and the real
+	 * explicit quota row arrives later.  Replace any existing placeholder
+	 * instead of treating the duplicate name as an allocation failure.
+	 */
+	if (nvlist_exists(props, propname))
+		(void) nvlist_remove_all(props, propname);
+	error = nvlist_add_uint64(props, propname, space);
+	if (error != 0)
 		nomem();
 
 	return (0);
