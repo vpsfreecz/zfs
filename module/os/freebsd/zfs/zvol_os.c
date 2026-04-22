@@ -103,6 +103,18 @@
 
 #include "zfs_namecheck.h"
 
+static void
+zvol_log_truncate_chunk(void *arg, objset_t *os, uint64_t object,
+    uint64_t offset, uint64_t length, dmu_tx_t *tx)
+{
+	zvol_state_t *zv = arg;
+
+	ASSERT3P(os, ==, zv->zv_objset);
+	ASSERT3U(object, ==, ZVOL_OBJ);
+
+	zvol_log_truncate(zv, tx, offset, length);
+}
+
 #define	ZVOL_DUMPSIZE		"dumpsize"
 
 #ifdef ZVOL_LOCK_DEBUG
@@ -642,6 +654,10 @@ zvol_strategy_impl(zv_request_t *zvr)
 		error = SET_ERROR(EIO);
 		goto resume;
 	}
+	if (bp->bio_cmd == BIO_DELETE && resid > volsize - off) {
+		error = SET_ERROR(EIO);
+		goto resume;
+	}
 
 	is_dumpified = B_FALSE;
 	commit = !doread && !is_dumpified &&
@@ -655,28 +671,20 @@ zvol_strategy_impl(zv_request_t *zvr)
 	    doread ? RL_READER : RL_WRITER);
 
 	if (bp->bio_cmd == BIO_DELETE) {
-		error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ,
-		    off, resid);
+		error = dmu_free_long_range_cb(zv->zv_objset, ZVOL_OBJ,
+		    off, resid, zvol_log_truncate_chunk, zv);
 		/*
-		 * Log the truncate only after the live free path returns, otherwise
-		 * a later zil_commit(..., ZVOL_OBJ) can flush a stale TX_TRUNCATE
-		 * for a delete that already failed.
+		 * dmu_free_long_range() can commit chunks before it returns an
+		 * error.  Queue each TX_TRUNCATE in the same transaction as its
+		 * corresponding free chunk so replay coverage follows committed
+		 * progress instead of a separate post-free logging transaction.
 		 *
 		 * On failure we cannot recover the exact chunked-free progress here,
 		 * but we also must not claim the whole BIO completed if the request
 		 * still returns an error.
 		 */
-		if (error == 0) {
-			dmu_tx_t *tx = dmu_tx_create(zv->zv_objset);
-			error = dmu_tx_assign(tx, DMU_TX_WAIT);
-			if (error != 0) {
-				dmu_tx_abort(tx);
-			} else {
-				zvol_log_truncate(zv, tx, off, bp->bio_length);
-				dmu_tx_commit(tx);
-				resid = 0;
-			}
-		}
+		if (error == 0)
+			resid = 0;
 		goto unlock;
 	}
 	while (resid != 0 && off < volsize) {
@@ -1132,7 +1140,8 @@ zvol_cdev_ioctl(struct cdev *dev, ulong_t cmd, caddr_t data,
 		length = ((off_t *)data)[1];
 		if ((offset % DEV_BSIZE) != 0 || (length % DEV_BSIZE) != 0 ||
 		    offset < 0 || offset >= zv->zv_volsize ||
-		    length <= 0) {
+		    length <= 0 ||
+		    (uint64_t)length > zv->zv_volsize - (uint64_t)offset) {
 			printf("%s: offset=%jd length=%jd\n", __func__, offset,
 			    length);
 			error = SET_ERROR(EINVAL);
@@ -1143,18 +1152,8 @@ zvol_cdev_ioctl(struct cdev *dev, ulong_t cmd, caddr_t data,
 		lr = zfs_rangelock_enter(&zv->zv_rangelock, offset, length,
 		    RL_WRITER);
 		sync = (zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS);
-		error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ,
-		    offset, length);
-		if (error == 0) {
-			dmu_tx_t *tx = dmu_tx_create(zv->zv_objset);
-			error = dmu_tx_assign(tx, DMU_TX_WAIT);
-			if (error != 0) {
-				dmu_tx_abort(tx);
-			} else {
-				zvol_log_truncate(zv, tx, offset, length);
-				dmu_tx_commit(tx);
-			}
-		}
+		error = dmu_free_long_range_cb(zv->zv_objset, ZVOL_OBJ,
+		    offset, length, zvol_log_truncate_chunk, zv);
 		zfs_rangelock_exit(lr);
 		if (error == 0 && sync)
 			error = zil_commit(zv->zv_zilog, ZVOL_OBJ);

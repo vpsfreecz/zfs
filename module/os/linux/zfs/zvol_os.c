@@ -50,6 +50,18 @@
 static void zvol_request_impl(zvol_state_t *zv, struct bio *bio,
     struct request *rq, boolean_t force_sync);
 
+static void
+zvol_log_truncate_chunk(void *arg, objset_t *os, uint64_t object,
+    uint64_t offset, uint64_t length, dmu_tx_t *tx)
+{
+	zvol_state_t *zv = arg;
+
+	ASSERT3P(os, ==, zv->zv_objset);
+	ASSERT3U(object, ==, ZVOL_OBJ);
+
+	zvol_log_truncate(zv, tx, offset, length);
+}
+
 static unsigned int zvol_major = ZVOL_MAJOR;
 static unsigned int zvol_request_sync = 0;
 static unsigned int zvol_prefetch_bytes = (128 * 1024);
@@ -383,10 +395,9 @@ zvol_discard(zv_request_t *zvr)
 	zvol_state_t *zv = zvr->zv;
 	uint64_t start = io_offset(bio, rq);
 	uint64_t size = io_size(bio, rq);
-	uint64_t end = start + size;
+	uint64_t end;
 	boolean_t sync;
 	int error = 0;
-	dmu_tx_t *tx;
 	struct request_queue *q = zv->zv_zso->zvo_queue;
 	struct gendisk *disk = zv->zv_zso->zvo_disk;
 	unsigned long start_time = 0;
@@ -412,6 +423,12 @@ zvol_discard(zv_request_t *zvr)
 			goto unlock;
 	}
 
+	if (size > UINT64_MAX - start) {
+		error = SET_ERROR(EIO);
+		goto unlock;
+	}
+	end = start + size;
+
 	if (end > zv->zv_volsize) {
 		error = SET_ERROR(EIO);
 		goto unlock;
@@ -433,17 +450,14 @@ zvol_discard(zv_request_t *zvr)
 	zfs_locked_range_t *lr = zfs_rangelock_enter(&zv->zv_rangelock,
 	    start, size, RL_WRITER);
 
-	error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ, start, size);
-	if (error == 0) {
-		tx = dmu_tx_create(zv->zv_objset);
-		error = dmu_tx_assign(tx, DMU_TX_WAIT);
-		if (error != 0) {
-			dmu_tx_abort(tx);
-		} else {
-			zvol_log_truncate(zv, tx, start, size);
-			dmu_tx_commit(tx);
-		}
-	}
+	/*
+	 * dmu_free_long_range() can commit chunks before it returns an error.
+	 * Queue each TX_TRUNCATE in the same transaction as its corresponding
+	 * free chunk so replay coverage tracks committed progress instead of
+	 * relying on a fragile post-free follow-on transaction.
+	 */
+	error = dmu_free_long_range_cb(zv->zv_objset, ZVOL_OBJ, start, size,
+	    zvol_log_truncate_chunk, zv);
 	zfs_rangelock_exit(lr);
 
 	if (error == 0 && sync)
