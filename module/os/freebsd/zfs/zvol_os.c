@@ -658,13 +658,14 @@ zvol_strategy_impl(zv_request_t *zvr)
 		error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ,
 		    off, resid);
 		/*
-		 * dmu_free_long_range() can commit chunks before it returns an
-		 * error, so report the whole range as consumed once the free has
-		 * been attempted.  Log the truncate only after the live free path
-		 * returns, otherwise a later zil_commit(..., ZVOL_OBJ) can flush a
-		 * stale TX_TRUNCATE for a delete that already failed.
+		 * Log the truncate only after the live free path returns, otherwise
+		 * a later zil_commit(..., ZVOL_OBJ) can flush a stale TX_TRUNCATE
+		 * for a delete that already failed.
+		 *
+		 * On failure we cannot recover the exact chunked-free progress here,
+		 * but we also must not claim the whole BIO completed if the request
+		 * still returns an error.
 		 */
-		resid = 0;
 		if (error == 0) {
 			dmu_tx_t *tx = dmu_tx_create(zv->zv_objset);
 			error = dmu_tx_assign(tx, DMU_TX_WAIT);
@@ -673,6 +674,7 @@ zvol_strategy_impl(zv_request_t *zvr)
 			} else {
 				zvol_log_truncate(zv, tx, off, bp->bio_length);
 				dmu_tx_commit(tx);
+				resid = 0;
 			}
 		}
 		goto unlock;
