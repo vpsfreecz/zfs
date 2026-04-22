@@ -1530,6 +1530,16 @@ zfs_trunc(znode_t *zp, uint64_t end)
 		return (0);
 	}
 
+#if __FreeBSD_version >= 1400032
+	/*
+	 * Drop cached pages in the soon-to-be-truncated tail before freeing
+	 * blocks.  dmu_free_long_range() can return after committed tail
+	 * progress, so leaving the old cache intact on an error can expose
+	 * stale bytes whose backing blocks are already gone.
+	 */
+	vnode_pager_purge_range(vp, end, zp->z_size);
+#endif
+
 	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, end,
 	    DMU_OBJECT_END);
 	if (error) {
