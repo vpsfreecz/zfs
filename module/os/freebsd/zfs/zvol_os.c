@@ -655,16 +655,25 @@ zvol_strategy_impl(zv_request_t *zvr)
 	    doread ? RL_READER : RL_WRITER);
 
 	if (bp->bio_cmd == BIO_DELETE) {
-		dmu_tx_t *tx = dmu_tx_create(zv->zv_objset);
-		error = dmu_tx_assign(tx, DMU_TX_WAIT);
-		if (error != 0) {
-			dmu_tx_abort(tx);
-		} else {
-			zvol_log_truncate(zv, tx, off, resid);
-			dmu_tx_commit(tx);
-			error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ,
-			    off, resid);
-			resid = 0;
+		error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ,
+		    off, resid);
+		/*
+		 * dmu_free_long_range() can commit chunks before it returns an
+		 * error, so report the whole range as consumed once the free has
+		 * been attempted.  Log the truncate only after the live free path
+		 * returns, otherwise a later zil_commit(..., ZVOL_OBJ) can flush a
+		 * stale TX_TRUNCATE for a delete that already failed.
+		 */
+		resid = 0;
+		if (error == 0) {
+			dmu_tx_t *tx = dmu_tx_create(zv->zv_objset);
+			error = dmu_tx_assign(tx, DMU_TX_WAIT);
+			if (error != 0) {
+				dmu_tx_abort(tx);
+			} else {
+				zvol_log_truncate(zv, tx, off, bp->bio_length);
+				dmu_tx_commit(tx);
+			}
 		}
 		goto unlock;
 	}
@@ -1131,17 +1140,18 @@ zvol_cdev_ioctl(struct cdev *dev, ulong_t cmd, caddr_t data,
 		zvol_ensure_zilog(zv);
 		lr = zfs_rangelock_enter(&zv->zv_rangelock, offset, length,
 		    RL_WRITER);
-		dmu_tx_t *tx = dmu_tx_create(zv->zv_objset);
-		error = dmu_tx_assign(tx, DMU_TX_WAIT);
-		if (error != 0) {
-			sync = FALSE;
-			dmu_tx_abort(tx);
-		} else {
-			sync = (zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS);
-			zvol_log_truncate(zv, tx, offset, length);
-			dmu_tx_commit(tx);
-			error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ,
-			    offset, length);
+		sync = (zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS);
+		error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ,
+		    offset, length);
+		if (error == 0) {
+			dmu_tx_t *tx = dmu_tx_create(zv->zv_objset);
+			error = dmu_tx_assign(tx, DMU_TX_WAIT);
+			if (error != 0) {
+				dmu_tx_abort(tx);
+			} else {
+				zvol_log_truncate(zv, tx, offset, length);
+				dmu_tx_commit(tx);
+			}
 		}
 		zfs_rangelock_exit(lr);
 		if (error == 0 && sync)
