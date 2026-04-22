@@ -752,9 +752,18 @@ zvol_clone_range(zvol_state_t *zv_src, uint64_t *inoffp, zvol_state_t *zv_dst,
 			 * fallback, or wait for the next TXG and check again.
 			 */
 			if (error == EAGAIN && zfs_bclone_wait_dirty) {
-				txg_wait_synced(dmu_objset_pool
-				    (zv_src->zv_objset), last_synced_txg + 1);
+				txg_wait_flag_t wait_flags =
+				    spa_get_failmode(
+				    dmu_objset_spa(zv_src->zv_objset)) ==
+				    ZIO_FAILURE_MODE_CONTINUE ?
+				    TXG_WAIT_SUSPEND : 0;
+				error = txg_wait_synced_flags(
+				    dmu_objset_pool(zv_src->zv_objset),
+				    last_synced_txg + 1, wait_flags);
+				if (error == 0)
 					continue;
+				ASSERT3U(error, ==, ESHUTDOWN);
+				error = SET_ERROR(EIO);
 			}
 			break;
 		}
