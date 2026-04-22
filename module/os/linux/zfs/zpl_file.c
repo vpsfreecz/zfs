@@ -59,6 +59,8 @@ static unsigned int zfs_fallocate_reserve_percent = 110;
 
 #define	ZPL_ZERO_RANGE_BUFSIZE	(1 << 20)
 
+static inline zidmap_t *zpl_file_idmap(struct file *filp);
+
 static int
 zpl_open(struct inode *ip, struct file *filp)
 {
@@ -845,8 +847,10 @@ zpl_zero_range(znode_t *zp, uint64_t offset, uint64_t len, uint64_t olen,
  * persistent space reservation is not possible due to COW, snapshots, etc.
  */
 static long
-zpl_fallocate_common(struct inode *ip, int mode, loff_t offset, loff_t len)
+zpl_fallocate_common(struct file *filp, int mode, loff_t offset, loff_t len)
 {
+	struct inode *ip = file_inode(filp);
+	zidmap_t *mnt_ns = zpl_file_idmap(filp);
 	cred_t *cr = CRED();
 	loff_t olen;
 	fstrans_cookie_t cookie;
@@ -877,7 +881,8 @@ zpl_fallocate_common(struct inode *ip, int mode, loff_t offset, loff_t len)
 		bf.l_len = len;
 		bf.l_pid = 0;
 
-		error = -zfs_space(ITOZ(ip), F_FREESP, &bf, O_RDWR, offset, cr);
+		error = -zfs_space_idmap(ITOZ(ip), F_FREESP, &bf,
+		    O_RDWR, offset, cr, mnt_ns);
 	} else if (mode & FALLOC_FL_ZERO_RANGE) {
 		error = zpl_zero_range(ITOZ(ip), offset, len, olen, mode, cr);
 	} else if ((mode & ~FALLOC_FL_KEEP_SIZE) == 0) {
@@ -900,8 +905,7 @@ out_unmark:
 static long
 zpl_fallocate(struct file *filp, int mode, loff_t offset, loff_t len)
 {
-	return zpl_fallocate_common(file_inode(filp),
-	    mode, offset, len);
+	return zpl_fallocate_common(filp, mode, offset, len);
 }
 
 static int

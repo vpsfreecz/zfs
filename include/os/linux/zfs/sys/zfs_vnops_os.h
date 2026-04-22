@@ -76,6 +76,8 @@ extern int zfs_readlink(struct inode *ip, zfs_uio_t *uio, cred_t *cr);
 extern int zfs_link(znode_t *tdzp, znode_t *szp,
     char *name, cred_t *cr, int flags);
 extern void zfs_inactive(struct inode *ip);
+extern int zfs_space_idmap(znode_t *zp, int cmd, flock64_t *bfp, int flag,
+    offset_t offset, cred_t *cr, zidmap_t *mnt_ns);
 extern int zfs_space(znode_t *zp, int cmd, flock64_t *bfp, int flag,
     offset_t offset, cred_t *cr);
 extern int zfs_fid(struct inode *ip, fid_t *fidp);
