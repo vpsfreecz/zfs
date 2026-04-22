@@ -1279,7 +1279,8 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 		dsflags |= DS_HOLD_FLAG_DECRYPT;
 	}
 
-	if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
+	if (drc->drc_begin_nvl != NULL && nvlist_lookup_uint64_array(
+	    drc->drc_begin_nvl,
 	    BEGINNV_REDACT_FROM_SNAPS, &stream_from_redact_snaps,
 	    &num_stream_from_redact_snaps) == 0 &&
 	    num_stream_from_redact_snaps >
