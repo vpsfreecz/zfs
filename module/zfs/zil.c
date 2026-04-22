@@ -4651,10 +4651,18 @@ zil_suspend(const char *osname, void **cookiep)
 	if (os->os_encrypted)
 		dsl_dataset_remove_key_mapping(dmu_objset_ds(os));
 
-	if (cookiep == NULL)
+	/*
+	 * Callers only keep the cookie on success. On failure we must drop the
+	 * temporary suspend hold ourselves or zil_suspend(fs, &cookie) leaves the
+	 * dataset suspended and long-held with no resume path back to the caller.
+	 */
+	if (error != 0 || cookiep == NULL) {
 		zil_resume(os);
-	else
+		if (cookiep != NULL)
+			*cookiep = NULL;
+	} else {
 		*cookiep = os;
+	}
 
 	return (error);
 }
