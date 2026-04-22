@@ -1640,12 +1640,18 @@ zfs_trunc(znode_t *zp, uint64_t end)
 
 	zn_lock_cached_data(zp);
 	old_size = zp->z_size;
-	truncate_setsize(ip, end);
+	/*
+	 * Invalidate the soon-to-be-truncated tail before freeing blocks, but
+	 * keep i_size at the old EOF until the size update commits.
+	 * dmu_free_long_range() can return after committed tail-free progress,
+	 * so shrinking first and then restoring old_size on error can re-expose
+	 * bytes whose backing blocks are already gone.
+	 */
+	truncate_pagecache_range(ip, end, old_size - 1);
 
 	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, end,
 	    DMU_OBJECT_END);
 	if (error) {
-		zn_pagecache_isize_extended(zp, end, old_size);
 		zn_unlock_cached_data(zp);
 		zfs_rangelock_exit(lr);
 		return (error);
@@ -1657,7 +1663,6 @@ zfs_trunc(znode_t *zp, uint64_t end)
 	error = dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (error) {
 		dmu_tx_abort(tx);
-		zn_pagecache_isize_extended(zp, end, old_size);
 		zn_unlock_cached_data(zp);
 		zfs_rangelock_exit(lr);
 		return (error);
@@ -1675,6 +1680,7 @@ zfs_trunc(znode_t *zp, uint64_t end)
 	VERIFY(sa_bulk_update(zp->z_sa_hdl, bulk, count, tx) == 0);
 
 	dmu_tx_commit(tx);
+	i_size_write(ip, end);
 	zn_unlock_cached_data(zp);
 	zfs_rangelock_exit(lr);
 
