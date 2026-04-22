@@ -1144,7 +1144,7 @@ zvol_cdev_ioctl(struct cdev *dev, ulong_t cmd, caddr_t data,
 			    offset, length);
 		}
 		zfs_rangelock_exit(lr);
-		if (sync)
+		if (error == 0 && sync)
 			error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
 		rw_exit(&zv->zv_suspend_lock);
 		break;
