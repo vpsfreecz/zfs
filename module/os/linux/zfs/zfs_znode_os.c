@@ -74,6 +74,25 @@ unsigned int zfs_object_mutex_size = ZFS_OBJ_MTX_SZ;
  */
 static int zfs_unlink_suspend_progress = 0;
 
+typedef struct zfs_freesp_log_arg {
+	zilog_t *zfla_zilog;
+	znode_t *zfla_zp;
+} zfs_freesp_log_arg_t;
+
+static void
+zfs_log_free_chunk(void *arg, objset_t *os, uint64_t object,
+    uint64_t offset, uint64_t length, dmu_tx_t *tx)
+{
+	zfs_freesp_log_arg_t *zfla = arg;
+
+	ASSERT3P(zfla->zfla_zilog, !=, NULL);
+	ASSERT3P(os, ==, ZTOZSB(zfla->zfla_zp)->z_os);
+	ASSERT3U(object, ==, zfla->zfla_zp->z_id);
+
+	zfs_log_truncate(zfla->zfla_zilog, tx, TX_TRUNCATE,
+	    zfla->zfla_zp, offset, length);
+}
+
 /*
  * This callback is invoked when acquiring a RL_WRITER or RL_APPEND lock on
  * z_rangelock. It will modify the offset and length of the lock to reflect
@@ -1574,10 +1593,11 @@ zfs_extend(znode_t *zp, uint64_t end)
  *	RETURN:	0 on success, error code on failure
  */
 static int
-zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
+zfs_free_range(znode_t *zp, uint64_t off, uint64_t len, zilog_t *zilog)
 {
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	zfs_locked_range_t *lr;
+	zfs_freesp_log_arg_t zfla = { .zfla_zilog = zilog, .zfla_zp = zp };
 	int error;
 
 	/*
@@ -1598,7 +1618,18 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 
 	zn_lock_cached_data(zp);
 	truncate_pagecache_range(ZTOI(zp), off, off + len - 1);
-	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, off, len);
+	if (zilog != NULL) {
+		/*
+		 * dmu_free_long_range() can commit earlier chunks before a later
+		 * chunk fails.  Log each committed free chunk in its own tx so ZIL
+		 * replay follows actual progress instead of relying only on the
+		 * follow-on zfs_freesp() TX_TRUNCATE record.
+		 */
+		error = dmu_free_long_range_cb(zfsvfs->z_os, zp->z_id, off,
+		    len, zfs_log_free_chunk, &zfla);
+	} else {
+		error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, off, len);
+	}
 	zn_unlock_cached_data(zp);
 	zfs_rangelock_exit(lr);
 
@@ -1614,12 +1645,13 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
  *	RETURN:	0 on success, error code on failure
  */
 static int
-zfs_trunc(znode_t *zp, uint64_t end)
+zfs_trunc(znode_t *zp, uint64_t end, zilog_t *zilog)
 {
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	struct inode *ip = ZTOI(zp);
 	dmu_tx_t *tx;
 	zfs_locked_range_t *lr;
+	zfs_freesp_log_arg_t zfla = { .zfla_zilog = zilog, .zfla_zp = zp };
 	int error;
 	sa_bulk_attr_t bulk[2];
 	int count = 0;
@@ -1649,8 +1681,19 @@ zfs_trunc(znode_t *zp, uint64_t end)
 	 */
 	truncate_pagecache_range(ip, end, old_size - 1);
 
-	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, end,
-	    DMU_OBJECT_END);
+	if (zilog != NULL) {
+		/*
+		 * Keep replay coverage aligned with committed chunked tail frees.
+		 * The later size-update transaction still records the full logical
+		 * truncate, but these per-chunk intents preserve partial progress if
+		 * we fail before reaching that final transaction.
+		 */
+		error = dmu_free_long_range_cb(zfsvfs->z_os, zp->z_id, end,
+		    DMU_OBJECT_END, zfs_log_free_chunk, &zfla);
+	} else {
+		error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, end,
+		    DMU_OBJECT_END);
+	}
 	if (error) {
 		zn_unlock_cached_data(zp);
 		zfs_rangelock_exit(lr);
@@ -1722,9 +1765,10 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	}
 
 	if (len == 0) {
-		error = zfs_trunc(zp, off);
+		error = zfs_trunc(zp, off, log ? zilog : NULL);
 	} else {
-		if ((error = zfs_free_range(zp, off, len)) == 0 &&
+		if ((error = zfs_free_range(zp, off, len,
+		    log ? zilog : NULL)) == 0 &&
 		    off + len > zp->z_size)
 			error = zfs_extend(zp, off+len);
 	}
