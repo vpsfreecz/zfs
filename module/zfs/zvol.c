@@ -278,11 +278,13 @@ zvol_check_volsize(uint64_t volsize, uint64_t blocksize)
  * Ensure the zap is flushed then inform the VFS of the capacity change.
  */
 static int
-zvol_update_volsize(uint64_t volsize, objset_t *os)
+zvol_update_volsize(uint64_t volsize, objset_t *os, boolean_t *size_changedp)
 {
 	dmu_tx_t *tx;
 	int error;
 	uint64_t txg;
+
+	*size_changedp = B_FALSE;
 
 	tx = dmu_tx_create(os);
 	dmu_tx_hold_zap(tx, ZVOL_ZAP_OBJ, TRUE, NULL);
@@ -300,9 +302,18 @@ zvol_update_volsize(uint64_t volsize, objset_t *os)
 
 	txg_wait_synced(dmu_objset_pool(os), txg);
 
-	if (error == 0)
+	if (error == 0) {
+		/*
+		 * The on-disk size property is already durable once the ZAP tx
+		 * above commits and syncs.  Tail frees happen afterwards and can
+		 * fail after the new size is live, so tell the caller when it must
+		 * still shrink the running device even if this function returns an
+		 * error from the later free pass.
+		 */
+		*size_changedp = B_TRUE;
 		error = dmu_free_long_range(os,
 		    ZVOL_OBJ, volsize, DMU_OBJECT_END);
+	}
 
 	return (error);
 }
@@ -318,6 +329,7 @@ zvol_set_volsize(const char *name, uint64_t volsize)
 	uint64_t readonly;
 	int error;
 	boolean_t owned = B_FALSE;
+	boolean_t size_changed = B_FALSE;
 
 	error = dsl_prop_get_integer(name,
 	    zfs_prop_to_name(ZFS_PROP_READONLY), &readonly, NULL);
@@ -353,8 +365,8 @@ zvol_set_volsize(const char *name, uint64_t volsize)
 	    (error = zvol_check_volsize(volsize, doi->doi_data_block_size)))
 		goto out;
 
-	error = zvol_update_volsize(volsize, os);
-	if (error == 0 && zv != NULL) {
+	error = zvol_update_volsize(volsize, os, &size_changed);
+	if (size_changed && zv != NULL) {
 		zv->zv_volsize = volsize;
 		zv->zv_changed = 1;
 	}
@@ -372,7 +384,7 @@ out:
 	if (zv != NULL)
 		mutex_exit(&zv->zv_state_lock);
 
-	if (error == 0 && zv != NULL)
+	if (size_changed && zv != NULL)
 		zvol_os_update_volsize(zv, volsize);
 
 	return (error);
