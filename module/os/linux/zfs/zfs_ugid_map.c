@@ -1,0 +1,243 @@
+// SPDX-License-Identifier: CDDL-1.0
+
+#include <sys/types.h>
+#include <sys/fs/zfs.h>
+#include <sys/dsl_prop.h>
+#include <sys/dsl_dataset.h>
+#include <sys/zap.h>
+#include <sys/dmu_objset.h>
+#include <sys/zfs_ugid_map.h>
+#include <linux/vfs_compat.h>
+
+struct zfs_ugid_map *
+zfs_create_ugid_map(objset_t *os, zfs_prop_t prop)
+{
+	char *value = kmem_alloc(ZAP_MAXVALUELEN, KM_SLEEP);
+	char source[ZFS_MAX_DATASET_NAME_LEN] =
+	    "Internal error - setpoint not determined";
+	int pos = 0, i = 0, error;
+	boolean_t config_held = dsl_pool_config_held(dmu_objset_pool(os));
+	struct zfs_ugid_map *ugid_map = NULL;
+	struct zfs_ugid_map_entry *entry;
+
+	/*
+	 * dsl_sync_task() callbacks run with dp_config_rwlock held as writer.
+	 * Re-entering as reader from this context can block in rrwlock and
+	 * deadlock txg_sync (e.g. userquota property reads).
+	 */
+	if (!config_held)
+		dsl_pool_config_enter(dmu_objset_pool(os), FTAG);
+
+	error = dsl_prop_get_ds(os->os_dsl_dataset, zfs_prop_to_name(prop), 1,
+	    ZAP_MAXVALUELEN, value, source);
+
+	if (!config_held)
+		dsl_pool_config_exit(dmu_objset_pool(os), FTAG);
+
+	if (error != 0)
+		goto out;
+
+	if (strcmp(value, "none") == 0)
+		goto out;
+
+	ugid_map = vmem_zalloc(sizeof (struct zfs_ugid_map), KM_SLEEP);
+	ugid_map->m_size = ZFS_UGID_MAP_SIZE;
+	ugid_map->m_entries = 0;
+	ugid_map->m_map = vmem_zalloc(
+	    sizeof (struct zfs_ugid_map_entry *) * ugid_map->m_size, KM_SLEEP);
+
+	while (value[pos] != '\0') {
+		unsigned long long ns_id, host_id, count;
+
+		error = sscanf(value + pos, "%llu:%llu:%llu%n",
+		    &ns_id, &host_id, &count, &i);
+		if (error != 3 || i <= 0 || count == 0)
+			goto fail;
+
+		if (ugid_map->m_entries >= ugid_map->m_size)
+			goto fail;
+		pos += i;
+
+		entry = vmem_zalloc(sizeof (struct zfs_ugid_map_entry),
+		    KM_SLEEP);
+		entry->e_ns_id = ns_id;
+		entry->e_host_id = host_id;
+		entry->e_count = count;
+
+		ugid_map->m_map[ugid_map->m_entries] = entry;
+		ugid_map->m_entries += 1;
+
+		if (value[pos] == ',')
+			pos += 1;
+		else if (value[pos] != '\0')
+			goto fail;
+	}
+
+	if (ugid_map->m_entries == 0)
+		goto fail;
+
+out:
+	kmem_free(value, ZAP_MAXVALUELEN);
+	return (ugid_map);
+
+fail:
+	if (ugid_map != NULL) {
+		zfs_free_ugid_map(ugid_map);
+		ugid_map = NULL;
+	}
+	goto out;
+}
+
+void
+zfs_free_ugid_map(struct zfs_ugid_map *ugid_map)
+{
+	int i;
+
+	if (ugid_map == NULL)
+		return;
+
+	for (i = 0; i < ugid_map->m_size; i++) {
+		vmem_free(ugid_map->m_map[i],
+		    sizeof (struct zfs_ugid_map_entry));
+	}
+
+	vmem_free(ugid_map->m_map,
+	    sizeof (struct zfs_ugid_map_entry *) * ugid_map->m_size);
+	vmem_free(ugid_map, sizeof (struct zfs_ugid_map));
+}
+
+uint64_t
+zfs_ugid_map_ns_to_host(struct zfs_ugid_map *ugid_map, uint64_t id)
+{
+	uint64_t res;
+	int i;
+	struct zfs_ugid_map_entry *entry;
+
+	if (ugid_map == NULL)
+		return (id);
+
+	/* Look for a matching mapping. */
+	for (i = 0; i < ugid_map->m_entries; i++) {
+		entry = ugid_map->m_map[i];
+
+		/* Check if we're already mapped into the entry. */
+		if (id >= entry->e_host_id &&
+		    id < (entry->e_host_id + entry->e_count)) {
+			return (id);
+		}
+
+		/* Check if we can map the entry. */
+		if (id >= entry->e_ns_id &&
+		    id < (entry->e_ns_id + entry->e_count)) {
+			res = entry->e_host_id + (id - entry->e_ns_id);
+			VERIFY3U(0, <=, res);
+			return (res);
+		}
+	}
+
+	/* ID not mapped, return nobody. */
+	return (65534);
+}
+
+uint64_t
+zfs_ugid_map_host_to_ns(struct zfs_ugid_map *ugid_map, uint64_t id)
+{
+	uint64_t res;
+	int i;
+	struct zfs_ugid_map_entry *entry;
+
+	if (ugid_map == NULL)
+		return (id);
+
+	/* Look for a matching mapping. */
+	for (i = 0; i < ugid_map->m_entries; i++) {
+		entry = ugid_map->m_map[i];
+
+		/* Check if we're already mapped into the entry. */
+		if (id >= entry->e_ns_id &&
+		    id < (entry->e_ns_id + entry->e_count)) {
+			return (id);
+		}
+
+		/* Check if we can map the entry. */
+		if (id >= entry->e_host_id &&
+		    id < (entry->e_host_id + entry->e_count)) {
+			res = (id - entry->e_host_id) + entry->e_ns_id;
+			VERIFY3U(0, <=, res);
+			return (res);
+		}
+	}
+
+	/* ID not mapped, return nobody. */
+	return (65534);
+}
+
+struct posix_acl *
+zfs_ugid_map_acl_from_xattr(struct zfs_ugid_map *uid_map,
+    struct zfs_ugid_map *gid_map, struct posix_acl *acl)
+{
+	struct posix_acl_entry *pa, *pe;
+
+	if (IS_ERR(acl))
+		return (acl);
+
+	if (uid_map == NULL && gid_map == NULL)
+		return (acl);
+
+	FOREACH_ACL_ENTRY(pa, acl, pe) {
+		switch (pa->e_tag) {
+		case ACL_USER:
+			pa->e_uid = SUID_TO_KUID(zfs_ugid_map_ns_to_host(
+			    uid_map, KUID_TO_SUID(pa->e_uid)));
+			break;
+		case ACL_GROUP:
+			pa->e_gid = SGID_TO_KGID(zfs_ugid_map_ns_to_host(
+			    gid_map, KGID_TO_SGID(pa->e_gid)));
+			break;
+		default:
+			continue;
+		}
+	}
+
+	return (acl);
+}
+
+int
+zfs_ugid_map_acl_to_xattr(struct zfs_ugid_map *uid_map,
+    struct zfs_ugid_map *gid_map, struct posix_acl *acl, void *value, int size)
+{
+	struct posix_acl *acl_map;
+	struct posix_acl_entry *pa, *pe;
+	int ret;
+
+	if (uid_map == NULL && gid_map == NULL)
+		return (posix_acl_to_xattr(kcred->user_ns, acl, value, size));
+
+	acl_map = posix_acl_clone(acl, GFP_KERNEL);
+	if (acl_map == NULL)
+		return (-ENOMEM);
+	if (IS_ERR(acl_map))
+		return (PTR_ERR(acl_map));
+
+	/* Map the entries. */
+	FOREACH_ACL_ENTRY(pa, acl_map, pe) {
+		switch (pa->e_tag) {
+		case ACL_USER:
+			pa->e_uid = SUID_TO_KUID(zfs_ugid_map_host_to_ns(
+			    uid_map, KUID_TO_SUID(pa->e_uid)));
+			break;
+		case ACL_GROUP:
+			pa->e_gid = SGID_TO_KGID(zfs_ugid_map_host_to_ns(
+			    gid_map, KGID_TO_SGID(pa->e_gid)));
+			break;
+		default:
+			continue;
+		}
+	}
+
+	/* Make the xattr with mapped entries. */
+	ret = posix_acl_to_xattr(kcred->user_ns, acl_map, value, size);
+	zpl_posix_acl_release(acl_map);
+
+	return (ret);
+}
