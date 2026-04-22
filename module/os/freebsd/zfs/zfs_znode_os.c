@@ -1699,6 +1699,7 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	dmu_tx_t *tx;
 	zfsvfs_t *zfsvfs = zp->z_zfsvfs;
 	zilog_t *zilog = zfsvfs->z_log;
+	zilog_t *chunklog_zilog = NULL;
 	uint64_t mode;
 	uint64_t mtime[2], ctime[2];
 	sa_bulk_attr_t bulk[3];
@@ -1717,11 +1718,20 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 			return (error);
 	}
 
+	/*
+	 * Keep per-chunk TX_TRUNCATE logging for live operations only.
+	 * During ZIL replay the final zfs_freesp() metadata/log tx is what
+	 * must advance the replay sequence; letting each chunk do that would
+	 * mark a replay record complete before the full truncate finished.
+	 */
+	if (log && !zfsvfs->z_replay)
+		chunklog_zilog = zilog;
+
 	if (len == 0) {
-		error = zfs_trunc(zp, off, log ? zilog : NULL);
+		error = zfs_trunc(zp, off, chunklog_zilog);
 	} else {
 		if ((error = zfs_free_range(zp, off, len,
-		    log ? zilog : NULL)) == 0 &&
+		    chunklog_zilog)) == 0 &&
 		    off + len > zp->z_size)
 			error = zfs_extend(zp, off+len);
 	}
