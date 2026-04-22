@@ -1470,12 +1470,20 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 	if (off + len > zp->z_size)
 		len = zp->z_size - off;
 
+#if __FreeBSD_version >= 1400032
+	/*
+	 * Drop cached pages in the punched range before freeing blocks.
+	 * dmu_free_long_range() can return after committed tail progress, so
+	 * purging only on success can leave stale cached data for blocks that
+	 * were already freed.
+	 */
+	vnode_pager_purge_range(ZTOV(zp), off, off + len);
+#endif
+
 	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, off, len);
 
 	if (error == 0) {
-#if __FreeBSD_version >= 1400032
-		vnode_pager_purge_range(ZTOV(zp), off, off + len);
-#else
+#if __FreeBSD_version < 1400032
 		/*
 		 * Before __FreeBSD_version 1400032 we cannot free block in the
 		 * middle of a file, but only at the end of a file, so this code
