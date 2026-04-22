@@ -77,6 +77,7 @@ static int zfs_unlink_suspend_progress = 0;
 typedef struct zfs_freesp_log_arg {
 	zilog_t *zfla_zilog;
 	znode_t *zfla_zp;
+	boolean_t zfla_progress;
 	boolean_t zfla_track_tail;
 	boolean_t zfla_tail_progress;
 	uint64_t zfla_tail_start;
@@ -87,6 +88,7 @@ zfs_log_free_chunk(void *arg, objset_t *os, uint64_t object,
     uint64_t offset, uint64_t length, dmu_tx_t *tx)
 {
 	zfs_freesp_log_arg_t *zfla = arg;
+	zfla->zfla_progress = B_TRUE;
 
 	if (zfla->zfla_track_tail) {
 		zfla->zfla_tail_progress = B_TRUE;
@@ -102,6 +104,37 @@ zfs_log_free_chunk(void *arg, objset_t *os, uint64_t object,
 
 	zfs_log_truncate(zfla->zfla_zilog, tx, TX_TRUNCATE,
 	    zfla->zfla_zp, offset, length);
+}
+
+static int
+zfs_freesp_commit_progress(znode_t *zp)
+{
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	dmu_tx_t *tx;
+	sa_bulk_attr_t bulk[3];
+	uint64_t mtime[2], ctime[2];
+	int count = 0;
+	int error;
+
+	tx = dmu_tx_create(zfsvfs->z_os);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
+	zfs_sa_upgrade_txholds(tx, zp);
+	error = dmu_tx_assign(tx, DMU_TX_WAIT);
+	if (error != 0) {
+		dmu_tx_abort(tx);
+		return (error);
+	}
+
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_MTIME(zfsvfs), NULL, mtime, 16);
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_CTIME(zfsvfs), NULL, ctime, 16);
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_FLAGS(zfsvfs),
+	    NULL, &zp->z_pflags, 8);
+	zfs_tstamp_update_setup(zp, CONTENT_MODIFIED, mtime, ctime);
+	VERIFY(sa_bulk_update(zp->z_sa_hdl, bulk, count, tx) == 0);
+	dmu_tx_commit(tx);
+
+	zfs_znode_update_vfs(zp);
+	return (0);
 }
 
 /*
@@ -1638,6 +1671,12 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len, zilog_t *zilog)
 		 */
 		error = dmu_free_long_range_cb(zfsvfs->z_os, zp->z_id, off,
 		    len, zfs_log_free_chunk, &zfla);
+		if (error != 0 && zfla.zfla_progress) {
+			int serr = zfs_freesp_commit_progress(zp);
+			zn_unlock_cached_data(zp);
+			zfs_rangelock_exit(lr);
+			return (serr != 0 ? serr : error);
+		}
 	} else {
 		error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, off, len);
 	}
