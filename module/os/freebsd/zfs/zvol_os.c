@@ -103,16 +103,23 @@
 
 #include "zfs_namecheck.h"
 
+typedef struct zvol_log_truncate_arg {
+	zvol_state_t *zlta_zv;
+	boolean_t zlta_logged;
+} zvol_log_truncate_arg_t;
+
 static void
 zvol_log_truncate_chunk(void *arg, objset_t *os, uint64_t object,
     uint64_t offset, uint64_t length, dmu_tx_t *tx)
 {
-	zvol_state_t *zv = arg;
+	zvol_log_truncate_arg_t *zlta = arg;
+	zvol_state_t *zv = zlta->zlta_zv;
 
 	ASSERT3P(os, ==, zv->zv_objset);
 	ASSERT3U(object, ==, ZVOL_OBJ);
 
 	zvol_log_truncate(zv, tx, offset, length);
+	zlta->zlta_logged = B_TRUE;
 }
 
 #define	ZVOL_DUMPSIZE		"dumpsize"
@@ -603,12 +610,15 @@ zvol_strategy_impl(zv_request_t *zvr)
 	objset_t *os;
 	zfs_locked_range_t *lr;
 	int error = 0;
+	int log_error;
 	boolean_t doread = B_FALSE;
 	boolean_t is_dumpified;
 	boolean_t commit;
+	zvol_log_truncate_arg_t zlta;
 
 	bp = zvr->bio;
 	zv = zvr->zv;
+	zlta = (zvol_log_truncate_arg_t){ .zlta_zv = zv };
 	if (zv == NULL) {
 		error = SET_ERROR(ENXIO);
 		goto out;
@@ -672,7 +682,7 @@ zvol_strategy_impl(zv_request_t *zvr)
 
 	if (bp->bio_cmd == BIO_DELETE) {
 		error = dmu_free_long_range_cb(zv->zv_objset, ZVOL_OBJ,
-		    off, resid, zvol_log_truncate_chunk, zv);
+		    off, resid, zvol_log_truncate_chunk, &zlta);
 		/*
 		 * dmu_free_long_range() can commit chunks before it returns an
 		 * error.  Queue each TX_TRUNCATE in the same transaction as its
@@ -739,9 +749,24 @@ unlock:
 		break;
 	}
 
-	if (error == 0 && commit) {
+	/*
+	 * Sync writes can expose a completed prefix via bio_completed, and sync
+	 * deletes now log each committed free chunk inline.  Once either kind of
+	 * progress has been reported or logged, we must still commit it even when a
+	 * later chunk fails, otherwise a crash can lose work that already escaped
+	 * the request loop.
+	 */
+	if (commit) {
+		if (bp->bio_cmd == BIO_WRITE && bp->bio_completed != 0) {
 commit:
-		error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+			log_error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+			if (log_error != 0)
+				error = log_error;
+		} else if (bp->bio_cmd == BIO_DELETE && zlta.zlta_logged) {
+			log_error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+			if (error == 0)
+				error = log_error;
+		}
 	}
 resume:
 	rw_exit(&zv->zv_suspend_lock);
@@ -1152,11 +1177,15 @@ zvol_cdev_ioctl(struct cdev *dev, ulong_t cmd, caddr_t data,
 		lr = zfs_rangelock_enter(&zv->zv_rangelock, offset, length,
 		    RL_WRITER);
 		sync = (zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS);
+		zvol_log_truncate_arg_t zlta = { .zlta_zv = zv };
 		error = dmu_free_long_range_cb(zv->zv_objset, ZVOL_OBJ,
-		    offset, length, zvol_log_truncate_chunk, zv);
+		    offset, length, zvol_log_truncate_chunk, &zlta);
 		zfs_rangelock_exit(lr);
-		if (error == 0 && sync)
-			error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+		if (sync && zlta.zlta_logged) {
+			int log_error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
+			if (error == 0)
+				error = log_error;
+		}
 		rw_exit(&zv->zv_suspend_lock);
 		break;
 	case DIOCGSTRIPESIZE:
