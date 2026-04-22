@@ -279,6 +279,16 @@ compatible_redact_snaps(uint64_t *origin_snaps, uint64_t origin_num_snaps,
 }
 
 static boolean_t
+same_redact_snaps(uint64_t *first_snaps, uint64_t first_num_snaps,
+    uint64_t *second_snaps, uint64_t second_num_snaps)
+{
+	return (compatible_redact_snaps(first_snaps, first_num_snaps,
+	    second_snaps, second_num_snaps) &&
+	    compatible_redact_snaps(second_snaps, second_num_snaps,
+	    first_snaps, first_num_snaps));
+}
+
+static boolean_t
 redact_check(dmu_recv_begin_arg_t *drba, dsl_dataset_t *origin)
 {
 	uint64_t *origin_snaps;
@@ -379,6 +389,46 @@ recv_resume_feature_enabled(dsl_dataset_t *ds, const char *resume_field,
 	if (error == ENOENT) {
 		*enabled = B_FALSE;
 		return (0);
+	}
+
+	return (error);
+}
+
+static int
+recv_resume_uint64_array(dsl_dataset_t *ds, const char *resume_field,
+    boolean_t *exists, uint64_t **valsp, uint64_t *countp)
+{
+	objset_t *mos = ds->ds_dir->dd_pool->dp_meta_objset;
+	uint64_t int_size, count;
+	int error;
+
+	error = zap_length(mos, ds->ds_object, resume_field, &int_size, &count);
+	if (error == ENOENT) {
+		*exists = B_FALSE;
+		*valsp = NULL;
+		*countp = 0;
+		return (0);
+	}
+	if (error != 0)
+		return (error);
+	if (int_size != sizeof (uint64_t))
+		return (SET_ERROR(EINVAL));
+
+	*exists = B_TRUE;
+	*countp = count;
+	if (count == 0) {
+		*valsp = NULL;
+		return (0);
+	}
+
+	*valsp = kmem_alloc(int_size * count, KM_SLEEP);
+	error = zap_lookup(mos, ds->ds_object, resume_field, int_size, count,
+	    *valsp);
+	if (error != 0) {
+		kmem_free(*valsp, int_size * count);
+		*valsp = NULL;
+		*countp = 0;
+		*exists = B_FALSE;
 	}
 
 	return (error);
@@ -1147,6 +1197,9 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 	ds_hold_flags_t dsflags = DS_HOLD_FLAG_NONE;
 	dsl_dataset_t *ds;
 	const char *tofs = drc->drc_tofs;
+	uint64_t *saved_book_redact_snaps = NULL;
+	uint64_t num_saved_book_redact_snaps = 0;
+	boolean_t saved_book_redact_snaps_exists = B_FALSE;
 
 	/* already checked */
 	ASSERT3U(drrb->drr_magic, ==, DMU_BACKUP_MAGIC);
@@ -1253,6 +1306,34 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 		return (error);
 	}
 
+	error = recv_resume_uint64_array(ds,
+	    DS_FIELD_RESUME_REDACT_BOOKMARK_SNAPS,
+	    &saved_book_redact_snaps_exists, &saved_book_redact_snaps,
+	    &num_saved_book_redact_snaps);
+	if (error != 0) {
+		dsl_dataset_rele_flags(ds, dsflags, FTAG);
+		return (error);
+	}
+
+	if (saved_book_redact_snaps_exists) {
+		uint_t num_stream_from_redact_snaps;
+		uint64_t *stream_from_redact_snaps;
+
+		if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
+		    BEGINNV_REDACT_FROM_SNAPS, &stream_from_redact_snaps,
+		    &num_stream_from_redact_snaps) != 0 ||
+		    !same_redact_snaps(saved_book_redact_snaps,
+		    num_saved_book_redact_snaps, stream_from_redact_snaps,
+		    num_stream_from_redact_snaps)) {
+			error = SET_ERROR(EINVAL);
+			goto out;
+		}
+	} else if (nvlist_exists(drc->drc_begin_nvl,
+	    BEGINNV_REDACT_FROM_SNAPS)) {
+		error = SET_ERROR(EINVAL);
+		goto out;
+	}
+
 	if (ds->ds_prev != NULL && drrb->drr_fromguid != 0)
 		drc->drc_fromsnapobj = ds->ds_prev->ds_object;
 
@@ -1271,34 +1352,33 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 		if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
 		    BEGINNV_REDACT_SNAPS, &stream_redact_snaps,
 		    &num_stream_redact_snaps) != 0) {
-			dsl_dataset_rele_flags(ds, dsflags, FTAG);
-			return (SET_ERROR(EINVAL));
+			error = SET_ERROR(EINVAL);
+			goto out;
 		}
 
 		if (!dsl_dataset_get_uint64_array_feature(ds,
 		    SPA_FEATURE_REDACTED_DATASETS, &num_ds_redact_snaps,
 		    &ds_redact_snaps)) {
-			dsl_dataset_rele_flags(ds, dsflags, FTAG);
-			return (SET_ERROR(EINVAL));
+			error = SET_ERROR(EINVAL);
+			goto out;
 		}
 
-		for (int i = 0; i < num_ds_redact_snaps; i++) {
-			if (!redact_snaps_contains(ds_redact_snaps,
-			    num_ds_redact_snaps, stream_redact_snaps[i])) {
-				dsl_dataset_rele_flags(ds, dsflags, FTAG);
-				return (SET_ERROR(EINVAL));
-			}
+		if (!same_redact_snaps(ds_redact_snaps, num_ds_redact_snaps,
+		    stream_redact_snaps, num_stream_redact_snaps)) {
+			error = SET_ERROR(EINVAL);
+			goto out;
 		}
 	}
 
 	error = recv_check_large_blocks(ds, drc->drc_featureflags);
-	if (error != 0) {
-		dsl_dataset_rele_flags(ds, dsflags, FTAG);
-		return (error);
+out:
+	if (saved_book_redact_snaps != NULL) {
+		kmem_free(saved_book_redact_snaps,
+		    sizeof (*saved_book_redact_snaps) *
+		    num_saved_book_redact_snaps);
 	}
-
 	dsl_dataset_rele_flags(ds, dsflags, FTAG);
-	return (0);
+	return (error);
 }
 
 static void
