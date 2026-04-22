@@ -708,24 +708,45 @@ recv_begin_check_existing_impl(dmu_recv_begin_arg_t *drba, dsl_dataset_t *ds,
  * explicitly check.
  */
 static int
-recv_redact_bookmark_resume_array_check(dmu_recv_cookie_t *drc)
+recv_redact_array_fits_zap(nvlist_t *nvl, const char *field,
+    boolean_t required)
 {
-	uint64_t *stream_from_redact_snaps;
-	uint_t num_stream_from_redact_snaps;
+	uint64_t *redact_snaps;
+	uint_t num_redact_snaps;
+	int error;
+
+	error = nvlist_lookup_uint64_array(nvl, field, &redact_snaps,
+	    &num_redact_snaps);
+	if (error != 0)
+		return (required ? SET_ERROR(EINVAL) : 0);
+	if (num_redact_snaps > ZAP_MAXVALUELEN / sizeof (*redact_snaps))
+		return (SET_ERROR(E2BIG));
+
+	return (0);
+}
+
+static int
+recv_redact_begin_zap_array_check(dmu_recv_cookie_t *drc)
+{
+	int error;
 
 	/*
-	 * Resumable receive state stores redaction-bookmark snaps in a single
-	 * ZAP value, so reject streams whose BEGINNV_REDACT_FROM_SNAPS array
-	 * cannot fit there instead of letting begin_sync hit VERIFY0(zap_add()).
+	 * Redacted receive state persists these begin-NVL arrays in single ZAP
+	 * values, either in per-dataset resume state or in the per-dataset
+	 * redacted-dataset feature.  Reject oversized or missing arrays before
+	 * begin_sync hits VERIFYs while trying to write them.
 	 */
-	if (drc->drc_begin_nvl != NULL &&
-	    nvlist_lookup_uint64_array(drc->drc_begin_nvl,
-	    BEGINNV_REDACT_FROM_SNAPS, &stream_from_redact_snaps,
-	    &num_stream_from_redact_snaps) == 0 &&
-	    num_stream_from_redact_snaps >
-	    ZAP_MAXVALUELEN / sizeof (*stream_from_redact_snaps)) {
-		return (SET_ERROR(E2BIG));
+	if (drc->drc_resumable ||
+	    (drc->drc_featureflags & DMU_BACKUP_FEATURE_RESUMING)) {
+		error = recv_redact_array_fits_zap(drc->drc_begin_nvl,
+		    BEGINNV_REDACT_FROM_SNAPS, B_FALSE);
+		if (error != 0)
+			return (error);
 	}
+
+	if (drc->drc_featureflags & DMU_BACKUP_FEATURE_REDACTED)
+		return (recv_redact_array_fits_zap(drc->drc_begin_nvl,
+		    BEGINNV_REDACT_SNAPS, B_TRUE));
 
 	return (0);
 }
@@ -817,12 +838,9 @@ dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
 	if (error != 0)
 		return (error);
 
-	if (drba->drba_cookie->drc_resumable) {
-		error = recv_redact_bookmark_resume_array_check(
-		    drba->drba_cookie);
-		if (error != 0)
-			return (error);
-	}
+	error = recv_redact_begin_zap_array_check(drba->drba_cookie);
+	if (error != 0)
+		return (error);
 
 	/* Resumable receives require extensible datasets */
 	if (drba->drba_cookie->drc_resumable &&
@@ -1309,7 +1327,7 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 		dsflags |= DS_HOLD_FLAG_DECRYPT;
 	}
 
-	error = recv_redact_bookmark_resume_array_check(drc);
+	error = recv_redact_begin_zap_array_check(drc);
 	if (error != 0)
 		return (error);
 
