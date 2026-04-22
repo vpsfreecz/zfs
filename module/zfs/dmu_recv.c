@@ -400,6 +400,7 @@ recv_resume_uint64_array(dsl_dataset_t *ds, const char *resume_field,
 {
 	objset_t *mos = ds->ds_dir->dd_pool->dp_meta_objset;
 	uint64_t int_size, count;
+	size_t alloc_size;
 	int error;
 
 	error = zap_length(mos, ds->ds_object, resume_field, &int_size, &count);
@@ -413,6 +414,8 @@ recv_resume_uint64_array(dsl_dataset_t *ds, const char *resume_field,
 		return (error);
 	if (int_size != sizeof (uint64_t))
 		return (SET_ERROR(EINVAL));
+	if (count > ZAP_MAXVALUELEN / int_size)
+		return (SET_ERROR(EINVAL));
 
 	*exists = B_TRUE;
 	*countp = count;
@@ -421,11 +424,12 @@ recv_resume_uint64_array(dsl_dataset_t *ds, const char *resume_field,
 		return (0);
 	}
 
-	*valsp = kmem_alloc(int_size * count, KM_SLEEP);
+	alloc_size = int_size * count;
+	*valsp = kmem_alloc(alloc_size, KM_SLEEP);
 	error = zap_lookup(mos, ds->ds_object, resume_field, int_size, count,
 	    *valsp);
 	if (error != 0) {
-		kmem_free(*valsp, int_size * count);
+		kmem_free(*valsp, alloc_size);
 		*valsp = NULL;
 		*countp = 0;
 		*exists = B_FALSE;
@@ -1128,6 +1132,8 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 		if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
 		    BEGINNV_REDACT_FROM_SNAPS, &redact_snaps,
 		    &numredactsnaps) == 0) {
+			ASSERT3U(numredactsnaps, <=,
+			    ZAP_MAXVALUELEN / sizeof (*redact_snaps));
 			VERIFY0(zap_add(mos, dsobj,
 			    DS_FIELD_RESUME_REDACT_BOOKMARK_SNAPS,
 			    sizeof (*redact_snaps), numredactsnaps,
@@ -1238,6 +1244,8 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 	uint64_t *saved_book_redact_snaps = NULL;
 	uint64_t num_saved_book_redact_snaps = 0;
 	boolean_t saved_book_redact_snaps_exists = B_FALSE;
+	uint64_t *stream_from_redact_snaps;
+	uint_t num_stream_from_redact_snaps;
 
 	/* already checked */
 	ASSERT3U(drrb->drr_magic, ==, DMU_BACKUP_MAGIC);
@@ -1269,6 +1277,14 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 			return (SET_ERROR(ZFS_ERR_SPILL_BLOCK_FLAG_MISSING));
 	} else {
 		dsflags |= DS_HOLD_FLAG_DECRYPT;
+	}
+
+	if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
+	    BEGINNV_REDACT_FROM_SNAPS, &stream_from_redact_snaps,
+	    &num_stream_from_redact_snaps) == 0 &&
+	    num_stream_from_redact_snaps >
+	    ZAP_MAXVALUELEN / sizeof (*stream_from_redact_snaps)) {
+		return (SET_ERROR(E2BIG));
 	}
 
 	boolean_t recvexist = B_TRUE;
@@ -1354,9 +1370,6 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 	}
 
 	if (saved_book_redact_snaps_exists) {
-		uint_t num_stream_from_redact_snaps;
-		uint64_t *stream_from_redact_snaps;
-
 		if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
 		    BEGINNV_REDACT_FROM_SNAPS, &stream_from_redact_snaps,
 		    &num_stream_from_redact_snaps) != 0 ||
