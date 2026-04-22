@@ -279,11 +279,31 @@ zvol_check_volsize(uint64_t volsize, uint64_t blocksize)
  * Ensure the zap is flushed then inform the VFS of the capacity change.
  */
 static int
-zvol_update_volsize(uint64_t volsize, objset_t *os)
+zvol_update_volsize(uint64_t volsize, objset_t *os, boolean_t *size_changedp)
 {
 	dmu_tx_t *tx;
 	int error;
+	uint64_t old_volsize;
 	uint64_t txg;
+
+	*size_changedp = B_FALSE;
+	error = zap_lookup(os, ZVOL_ZAP_OBJ, "size", 8, 1, &old_volsize);
+	if (error != 0)
+		return (error);
+
+	/*
+	 * Keep any newly exposed range zeroed before publishing a larger size.
+	 * A previous shrink can return after partial tail-free progress,
+	 * leaving hidden blocks beyond the current durable volsize. Clearing
+	 * the growth range while it is still inaccessible prevents later
+	 * expansions from re-exposing stale data.
+	 */
+	if (volsize > old_volsize) {
+		error = dmu_free_long_range(os, ZVOL_OBJ, old_volsize,
+		    volsize - old_volsize);
+		if (error != 0)
+			return (error);
+	}
 
 	tx = dmu_tx_create(os);
 	dmu_tx_hold_zap(tx, ZVOL_ZAP_OBJ, TRUE, NULL);
@@ -301,9 +321,20 @@ zvol_update_volsize(uint64_t volsize, objset_t *os)
 
 	txg_wait_synced(dmu_objset_pool(os), txg);
 
-	if (error == 0)
-		error = dmu_free_long_range(os,
-		    ZVOL_OBJ, volsize, DMU_OBJECT_END);
+	if (error == 0) {
+		*size_changedp = B_TRUE;
+
+		/*
+		 * ZAP size is durable after commit/sync. Tail frees happen
+		 * afterwards and can fail after the new size is live, so tell
+		 * the caller when it must still shrink the running device even
+		 * if the later free pass returns an error.
+		 */
+		if (volsize < old_volsize) {
+			error = dmu_free_long_range(os,
+			    ZVOL_OBJ, volsize, DMU_OBJECT_END);
+		}
+	}
 
 	return (error);
 }
@@ -319,6 +350,7 @@ zvol_set_volsize(const char *name, uint64_t volsize)
 	uint64_t readonly;
 	int error;
 	boolean_t owned = B_FALSE;
+	boolean_t size_changed = B_FALSE;
 
 	error = dsl_prop_get_integer(name,
 	    zfs_prop_to_name(ZFS_PROP_READONLY), &readonly, NULL);
@@ -354,8 +386,8 @@ zvol_set_volsize(const char *name, uint64_t volsize)
 	    (error = zvol_check_volsize(volsize, doi->doi_data_block_size)))
 		goto out;
 
-	error = zvol_update_volsize(volsize, os);
-	if (error == 0 && zv != NULL) {
+	error = zvol_update_volsize(volsize, os, &size_changed);
+	if (size_changed && zv != NULL) {
 		zv->zv_volsize = volsize;
 		zv->zv_changed = 1;
 	}
@@ -373,7 +405,7 @@ out:
 	if (zv != NULL)
 		mutex_exit(&zv->zv_state_lock);
 
-	if (error == 0 && zv != NULL)
+	if (size_changed && zv != NULL)
 		zvol_os_update_volsize(zv, volsize);
 
 	return (error);
