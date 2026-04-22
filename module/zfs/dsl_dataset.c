@@ -422,7 +422,11 @@ load_zfeature(objset_t *mos, dsl_dataset_t *ds, spa_feature_t f)
 			err = 0;
 			break;
 		}
-		ASSERT3U(int_size, ==, sizeof (uint64_t));
+		if (int_size != sizeof (uint64_t) ||
+		    num_int > ZAP_MAXVALUELEN / int_size) {
+			err = SET_ERROR(EINVAL);
+			break;
+		}
 		data = kmem_alloc(int_size * num_int, KM_SLEEP);
 		VERIFY0(zap_lookup(mos, ds->ds_object,
 		    spa_feature_table[f].fi_guid, int_size, num_int, data));
