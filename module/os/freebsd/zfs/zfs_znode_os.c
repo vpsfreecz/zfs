@@ -1510,11 +1510,11 @@ zfs_extend(znode_t *zp, uint64_t end)
  *	RETURN:	0 on success, error code on failure
  */
 static int
-zfs_free_range(znode_t *zp, uint64_t off, uint64_t len, zilog_t *zilog)
+zfs_free_range(znode_t *zp, uint64_t off, uint64_t len,
+    zfs_freesp_log_arg_t *zfla)
 {
 	zfsvfs_t *zfsvfs = zp->z_zfsvfs;
 	zfs_locked_range_t *lr;
-	zfs_freesp_log_arg_t zfla = { .zfla_zilog = zilog, .zfla_zp = zp };
 	int error;
 
 	/*
@@ -1543,16 +1543,18 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len, zilog_t *zilog)
 	vnode_pager_purge_range(ZTOV(zp), off, off + len);
 #endif
 
-	if (zilog != NULL) {
+	if (zfla != NULL) {
 		/*
 		 * dmu_free_long_range() can commit earlier chunks before a later
 		 * chunk fails.  Log each committed free chunk in its own tx so ZIL
 		 * replay follows actual progress instead of relying only on the
-		 * follow-on zfs_freesp() TX_TRUNCATE record.
+		 * follow-on zfs_freesp() TX_TRUNCATE record.  During replay the
+		 * callback still tracks committed progress even though per-chunk ZIL
+		 * logging is suppressed.
 		 */
 		error = dmu_free_long_range_cb(zfsvfs->z_os, zp->z_id, off,
-		    len, zfs_log_free_chunk, &zfla);
-		if (error != 0 && zfla.zfla_progress) {
+		    len, zfs_log_free_chunk, zfla);
+		if (error != 0 && zfla->zfla_progress) {
 			int serr = zfs_freesp_commit_progress(zp);
 			zfs_rangelock_exit(lr);
 			return (serr != 0 ? serr : error);
@@ -1737,6 +1739,7 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	zfsvfs_t *zfsvfs = zp->z_zfsvfs;
 	zilog_t *zilog = zfsvfs->z_log;
 	zilog_t *chunklog_zilog = NULL;
+	zfs_freesp_log_arg_t zfla = { .zfla_zp = zp };
 	uint64_t mode;
 	uint64_t mtime[2], ctime[2];
 	sa_bulk_attr_t bulk[3];
@@ -1772,12 +1775,13 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	 */
 	if (log && !zfsvfs->z_replay)
 		chunklog_zilog = zilog;
+	zfla.zfla_zilog = chunklog_zilog;
 
 	if (len == 0) {
 		error = zfs_trunc(zp, off, chunklog_zilog);
 	} else {
 		if ((error = zfs_free_range(zp, off, len,
-		    chunklog_zilog)) == 0 &&
+		    log ? &zfla : NULL)) == 0 &&
 		    off + len > zp->z_size)
 			error = zfs_extend(zp, off+len);
 	}
