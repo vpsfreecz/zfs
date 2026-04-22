@@ -1252,15 +1252,20 @@ zvol_resume(zvol_state_t *zv)
 
 	rw_exit(&zv->zv_suspend_lock);
 	/*
-	 * We need this because we don't hold zvol_state_lock while releasing
-	 * zv_suspend_lock. zvol_remove_minors_impl thus cannot check
-	 * zv_suspend_lock to determine it is safe to free because rwlock is
-	 * not inherent atomic.
+	 * We need this because we don't hold zv_state_lock while releasing
+	 * zv_suspend_lock. zvol_remove_minors_impl() therefore waits on the
+	 * synthetic suspend reference instead of the rwlock itself.
+	 *
+	 * Drop the reference and wake removal waiters while holding
+	 * zv_state_lock. Otherwise zvol_remove_minors_common() can observe a
+	 * nonzero suspend_ref, decide to sleep, and miss a lockless wakeup from
+	 * the final zvol_resume() that clears it.
 	 */
+	mutex_enter(&zv->zv_state_lock);
 	atomic_dec(&zv->zv_suspend_ref);
-
 	if (zv->zv_flags & ZVOL_REMOVING)
 		cv_broadcast(&zv->zv_removing_cv);
+	mutex_exit(&zv->zv_state_lock);
 
 	return (error);
 }
