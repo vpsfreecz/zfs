@@ -1706,6 +1706,15 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	int count = 0;
 	int error;
 
+	/*
+	 * Replay validates signed free/truncate ranges before calling back in to
+	 * zfs_freesp().  Live callers should reject the same negative/overflowed
+	 * ranges instead of letting them wrap through the uint64_t interface.
+	 */
+	if (off > MAXOFFSET_T || len > MAXOFFSET_T ||
+	    (len != 0 && off > MAXOFFSET_T - len))
+		return (SET_ERROR(EINVAL));
+
 	if ((error = sa_lookup(zp->z_sa_hdl, SA_ZPL_MODE(zfsvfs), &mode,
 	    sizeof (mode))) != 0)
 		return (error);
