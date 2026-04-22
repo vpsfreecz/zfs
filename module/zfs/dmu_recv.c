@@ -434,6 +434,32 @@ recv_resume_uint64_array(dsl_dataset_t *ds, const char *resume_field,
 	return (error);
 }
 
+static void
+recv_resume_zap_remove(objset_t *mos, uint64_t dsobj, const char *resume_field,
+    dmu_tx_t *tx)
+{
+	int error = zap_remove(mos, dsobj, resume_field, tx);
+
+	ASSERT(error == 0 || error == ENOENT);
+}
+
+static void
+recv_resume_state_clear(objset_t *mos, uint64_t dsobj, dmu_tx_t *tx)
+{
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_FROMGUID, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_TOGUID, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_TONAME, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_OBJECT, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_OFFSET, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_BYTES, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_LARGEBLOCK, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_EMBEDOK, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_COMPRESSOK, tx);
+	recv_resume_zap_remove(mos, dsobj, DS_FIELD_RESUME_RAWOK, tx);
+	recv_resume_zap_remove(mos, dsobj,
+	    DS_FIELD_RESUME_REDACT_BOOKMARK_SNAPS, tx);
+}
+
 static int
 recv_check_resume_feature_contract(dsl_dataset_t *ds, uint64_t featureflags)
 {
@@ -1052,6 +1078,18 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 
 	if (drc->drc_resumable) {
 		dsl_dataset_zapify(newds, tx);
+
+		/*
+		 * Start each resumable receive from a clean on-disk resume
+		 * state.  Successful receives remove the required cursor
+		 * fields, but older buggy resumable receives could leave
+		 * optional feature markers behind.  If we keep those stale
+		 * booleans, a later interrupted receive on the same dataset
+		 * can inherit the wrong feature contract and fail resume
+		 * validation even when the resumed stream is correct.
+		 */
+		recv_resume_state_clear(mos, dsobj, tx);
+
 		if (drrb->drr_fromguid != 0) {
 			VERIFY0(zap_add(mos, dsobj, DS_FIELD_RESUME_FROMGUID,
 			    8, 1, &drrb->drr_fromguid, tx));
@@ -4217,20 +4255,8 @@ dmu_recv_end_sync(void *arg, dmu_tx_t *tx)
 		dmu_buf_will_dirty(ds->ds_dbuf, tx);
 		dsl_dataset_phys(ds)->ds_flags &= ~DS_FLAG_INCONSISTENT;
 		if (dsl_dataset_has_resume_receive_state(ds)) {
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_FROMGUID, tx);
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_OBJECT, tx);
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_OFFSET, tx);
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_BYTES, tx);
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_TOGUID, tx);
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_TONAME, tx);
-			(void) zap_remove(dp->dp_meta_objset, ds->ds_object,
-			    DS_FIELD_RESUME_REDACT_BOOKMARK_SNAPS, tx);
+			recv_resume_state_clear(dp->dp_meta_objset, ds->ds_object,
+			    tx);
 		}
 		newsnapobj =
 		    dsl_dataset_phys(drc->drc_ds)->ds_prev_snap_obj;
