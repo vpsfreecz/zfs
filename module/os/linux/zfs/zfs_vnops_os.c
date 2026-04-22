@@ -276,6 +276,8 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 
 		struct page *pp = find_lock_page(mp, start >> PAGE_SHIFT);
 		if (pp) {
+			boolean_t was_uptodate = PageUptodate(pp);
+
 			if (mapping_writably_mapped(mp))
 				flush_dcache_page(pp);
 
@@ -288,8 +290,8 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 				SetPageError(pp);
 				ClearPageUptodate(pp);
 			} else {
-				ClearPageError(pp);
-				SetPageUptodate(pp);
+				zpl_page_range_write_done(pp,
+				    was_uptodate, off, nbytes);
 
 				if (mapping_writably_mapped(mp))
 					flush_dcache_page(pp);
