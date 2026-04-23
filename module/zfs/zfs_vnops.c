@@ -974,6 +974,7 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 			dflags |= DMU_DIRECTIO;
 
 		ssize_t tx_bytes;
+		dmu_flags_t chunk_dflags = dflags;
 #if defined(__linux__)
 		boolean_t direct_chunk = B_FALSE;
 #endif
@@ -984,12 +985,14 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 			boolean_t restore_direct;
 
 			direct_chunk = zfs_direct_chunk_begin(zp, uio, nbytes);
+			if (!direct_chunk)
+				chunk_dflags &= ~DMU_DIRECTIO;
 			restore_direct = direct_requested && !direct_chunk;
 #endif
 			tx_bytes = zfs_uio_resid(uio);
 			zfs_uio_fault_disable(uio, B_TRUE);
 			error = dmu_write_uio_dbuf(sa_get_db(zp->z_sa_hdl),
-			    uio, nbytes, tx, dflags);
+			    uio, nbytes, tx, chunk_dflags);
 			zfs_uio_fault_disable(uio, B_FALSE);
 #if defined(__linux__)
 			zfs_direct_chunk_end(zp, uio, direct_chunk,
