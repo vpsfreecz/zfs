@@ -1781,14 +1781,15 @@ zfs_replay_clone_range(void *arg1, void *arg2, boolean_t byteswap)
 	int error;
 
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr));
-	ASSERT3U(lr->lr_common.lrc_reclen, >=, offsetof(lr_clone_range_t,
-	    lr_bps[lr->lr_nbps]));
 
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
 
 	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
 		return (SET_ERROR(EINVAL));
+
+	ASSERT3U(lr->lr_common.lrc_reclen, >=, offsetof(lr_clone_range_t,
+	    lr_bps[lr->lr_nbps]));
 
 	if (byteswap) {
 		byteswap_uint64_array(lr->lr_bps,
