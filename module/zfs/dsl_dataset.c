@@ -662,8 +662,13 @@ dsl_dataset_hold_obj(dsl_pool_t *dp, uint64_t dsobj, const void *tag,
 				    ZFEATURE_FLAG_PER_DATASET))
 					continue;
 				err = load_zfeature(mos, ds, f);
+				if (err != 0)
+					break;
 			}
 		}
+
+		if (err != 0)
+			goto after_dsl_bookmark_fini;
 
 		if (!ds->ds_is_snapshot) {
 			ds->ds_snapname[0] = '\0';
