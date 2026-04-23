@@ -1587,7 +1587,6 @@ zfs_replay_setsaxattr(void *arg1, void *arg2, boolean_t byteswap)
 	int error = 0;
 
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr));
-	ASSERT3U(lr->lr_common.lrc_reclen, >, sizeof (*lr) + lr->lr_size);
 
 	ASSERT(spa_feature_is_active(zfsvfs->z_os->os_spa,
 	    SPA_FEATURE_ZILSAXATTR));
@@ -1596,6 +1595,8 @@ zfs_replay_setsaxattr(void *arg1, void *arg2, boolean_t byteswap)
 
 	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
 		return (SET_ERROR(EINVAL));
+
+	ASSERT3U(lr->lr_common.lrc_reclen, >, sizeof (*lr) + lr->lr_size);
 
 	error = zfs_replay_zget_ooo(zfsvfs, lr->lr_foid, &zp);
 	if (error != 0 || zp == NULL)
@@ -1671,14 +1672,15 @@ zfs_replay_acl_v0(void *arg1, void *arg2, boolean_t byteswap)
 	int error;
 
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr));
-	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr) +
-	    sizeof (ace_t) * lr->lr_aclcnt);
 
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
 
 	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
 		return (SET_ERROR(EINVAL));
+
+	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr) +
+	    sizeof (ace_t) * lr->lr_aclcnt);
 
 	if (byteswap)
 		zfs_oldace_byteswap(ace, lr->lr_aclcnt);
@@ -1725,13 +1727,14 @@ zfs_replay_acl(void *arg1, void *arg2, boolean_t byteswap)
 	int error;
 
 	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr));
-	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr) + lr->lr_acl_bytes);
 
 	if (byteswap)
 		byteswap_uint64_array(lr, sizeof (*lr));
 
 	if (!zfs_replay_variable_record_valid(&lr->lr_common, byteswap))
 		return (SET_ERROR(EINVAL));
+
+	ASSERT3U(lr->lr_common.lrc_reclen, >=, sizeof (*lr) + lr->lr_acl_bytes);
 
 	if (byteswap) {
 		zfs_ace_byteswap(ace, lr->lr_acl_bytes, B_FALSE);
