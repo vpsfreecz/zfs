@@ -310,7 +310,8 @@ redact_check(dmu_recv_begin_arg_t *drba, dsl_dataset_t *origin)
 	VERIFY(dsl_dataset_get_uint64_array_feature(origin,
 	    SPA_FEATURE_REDACTED_DATASETS, &origin_num_snaps, &origin_snaps));
 
-	if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
+	if (drc->drc_begin_nvl != NULL &&
+	    nvlist_lookup_uint64_array(drc->drc_begin_nvl,
 	    BEGINNV_REDACT_FROM_SNAPS, &redact_snaps, &numredactsnaps) ==
 	    0) {
 		/*
@@ -708,12 +709,34 @@ recv_begin_check_existing_impl(dmu_recv_begin_arg_t *drba, dsl_dataset_t *ds,
  * explicitly check.
  */
 static int
+recv_begin_payload_check(dmu_recv_cookie_t *drc)
+{
+	/*
+	 * Raw streams, resumed streams, and redacted streams always carry a
+	 * BEGIN payload nvlist.  Plain receives may not.  Reject crafted empty
+	 * payloads up front instead of letting later nvlist lookups dereference
+	 * drc_begin_nvl == NULL.
+	 */
+	if (drc->drc_begin_nvl == NULL &&
+	    (drc->drc_featureflags & (DMU_BACKUP_FEATURE_RAW |
+	    DMU_BACKUP_FEATURE_RESUMING |
+	    DMU_BACKUP_FEATURE_REDACTED)) != 0) {
+		return (SET_ERROR(EINVAL));
+	}
+
+	return (0);
+}
+
+static int
 recv_redact_array_fits_zap(nvlist_t *nvl, const char *field,
     boolean_t required)
 {
 	uint64_t *redact_snaps;
 	uint_t num_redact_snaps;
 	int error;
+
+	if (nvl == NULL)
+		return (required ? SET_ERROR(EINVAL) : 0);
 
 	error = nvlist_lookup_uint64_array(nvl, field, &redact_snaps,
 	    &num_redact_snaps);
@@ -835,6 +858,10 @@ dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
 		return (SET_ERROR(EINVAL));
 
 	error = recv_begin_check_feature_flags_impl(featureflags, dp->dp_spa);
+	if (error != 0)
+		return (error);
+
+	error = recv_begin_payload_check(drba->drba_cookie);
 	if (error != 0)
 		return (error);
 
@@ -1177,7 +1204,8 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 
 		uint64_t *redact_snaps;
 		uint_t numredactsnaps;
-		if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
+		if (drc->drc_begin_nvl != NULL &&
+		    nvlist_lookup_uint64_array(drc->drc_begin_nvl,
 		    BEGINNV_REDACT_FROM_SNAPS, &redact_snaps,
 		    &numredactsnaps) == 0) {
 			ASSERT3U(numredactsnaps, <=,
@@ -1326,6 +1354,10 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 	} else {
 		dsflags |= DS_HOLD_FLAG_DECRYPT;
 	}
+
+	error = recv_begin_payload_check(drc);
+	if (error != 0)
+		return (error);
 
 	error = recv_redact_begin_zap_array_check(drc);
 	if (error != 0)
