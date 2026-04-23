@@ -282,9 +282,27 @@ zvol_update_volsize(uint64_t volsize, objset_t *os, boolean_t *size_changedp)
 {
 	dmu_tx_t *tx;
 	int error;
+	uint64_t old_volsize;
 	uint64_t txg;
 
 	*size_changedp = B_FALSE;
+	error = zap_lookup(os, ZVOL_ZAP_OBJ, "size", 8, 1, &old_volsize);
+	if (error != 0)
+		return (error);
+
+	/*
+	 * Keep any newly exposed range zeroed before publishing a larger size.
+	 * A previous shrink can return after partial tail-free progress, leaving
+	 * hidden blocks beyond the current durable volsize.  Clearing the growth
+	 * range while it is still inaccessible prevents later expansions from
+	 * re-exposing stale data.
+	 */
+	if (volsize > old_volsize) {
+		error = dmu_free_long_range(os, ZVOL_OBJ, old_volsize,
+		    volsize - old_volsize);
+		if (error != 0)
+			return (error);
+	}
 
 	tx = dmu_tx_create(os);
 	dmu_tx_hold_zap(tx, ZVOL_ZAP_OBJ, TRUE, NULL);
@@ -303,6 +321,8 @@ zvol_update_volsize(uint64_t volsize, objset_t *os, boolean_t *size_changedp)
 	txg_wait_synced(dmu_objset_pool(os), txg);
 
 	if (error == 0) {
+		*size_changedp = B_TRUE;
+
 		/*
 		 * The on-disk size property is already durable once the ZAP tx
 		 * above commits and syncs.  Tail frees happen afterwards and can
@@ -310,9 +330,10 @@ zvol_update_volsize(uint64_t volsize, objset_t *os, boolean_t *size_changedp)
 		 * still shrink the running device even if this function returns an
 		 * error from the later free pass.
 		 */
-		*size_changedp = B_TRUE;
-		error = dmu_free_long_range(os,
-		    ZVOL_OBJ, volsize, DMU_OBJECT_END);
+		if (volsize < old_volsize) {
+			error = dmu_free_long_range(os,
+			    ZVOL_OBJ, volsize, DMU_OBJECT_END);
+		}
 	}
 
 	return (error);
