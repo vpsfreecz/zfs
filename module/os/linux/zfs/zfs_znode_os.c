@@ -137,16 +137,19 @@ zfs_freesp_commit_progress(znode_t *zp)
 	return (0);
 }
 
-static int
-zfs_freesp_commit_sync_progress(znode_t *zp, zilog_t *zilog)
+static boolean_t
+zfs_freesp_sync_required(znode_t *zp)
 {
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 
-	if (zilog == NULL)
-		return (0);
+	return (zp->z_sync_cnt != 0 ||
+	    zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS);
+}
 
-	if (zp->z_sync_cnt == 0 &&
-	    zfsvfs->z_os->os_sync != ZFS_SYNC_ALWAYS)
+static int
+zfs_freesp_commit_sync_progress(znode_t *zp, zilog_t *zilog)
+{
+	if (zilog == NULL || !zfs_freesp_sync_required(zp))
 		return (0);
 
 	return (zil_commit(zilog, zp->z_id));
@@ -1863,6 +1866,7 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	zilog_t *zilog = zfsvfs->z_log;
 	zilog_t *chunklog_zilog = NULL;
+	zilog_t *progress_zilog = NULL;
 	zfs_freesp_log_arg_t zfla = { .zfla_zp = zp };
 	uint64_t mode;
 	uint64_t mtime[2], ctime[2];
@@ -1870,6 +1874,7 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	int count = 0;
 	int error;
 	boolean_t sync_progress = B_FALSE;
+	boolean_t sync_required = zfs_freesp_sync_required(zp);
 
 	/*
 	 * Replay validates signed free/truncate ranges before calling back in to
@@ -1899,10 +1904,22 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	 */
 	if (log && !zfsvfs->z_replay)
 		chunklog_zilog = zilog;
+	/*
+	 * ATTR_SIZE paths call zfs_freesp() with log == FALSE because successful
+	 * truncates are logged by their enclosing setattr transaction.  If a sync
+	 * truncate hits a chunked-free error after committing some tail progress,
+	 * that outer TX_SETATTR never materializes.  Keep a progress-only zilog
+	 * handle so zfs_trunc_commit_progress() can still log and commit the exact
+	 * size we made durable before returning the error.
+	 */
+	if (len == 0 && !log && !zfsvfs->z_replay && sync_required)
+		progress_zilog = zilog;
 	zfla.zfla_zilog = chunklog_zilog;
 
 	if (len == 0) {
-		error = zfs_trunc(zp, off, chunklog_zilog, &sync_progress);
+		error = zfs_trunc(zp, off,
+		    chunklog_zilog != NULL ? chunklog_zilog : progress_zilog,
+		    &sync_progress);
 	} else {
 		if ((error = zfs_free_range(zp, off, len,
 		    log ? &zfla : NULL)) == 0 &&
@@ -1917,7 +1934,8 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	 * free helper.
 	 */
 	if (error != 0 && sync_progress) {
-		int syncerr = zfs_freesp_commit_sync_progress(zp, chunklog_zilog);
+		int syncerr = zfs_freesp_commit_sync_progress(zp,
+		    chunklog_zilog != NULL ? chunklog_zilog : progress_zilog);
 
 		if (syncerr != 0)
 			return (syncerr);
