@@ -310,7 +310,8 @@ redact_check(dmu_recv_begin_arg_t *drba, dsl_dataset_t *origin)
 	VERIFY(dsl_dataset_get_uint64_array_feature(origin,
 	    SPA_FEATURE_REDACTED_DATASETS, &origin_num_snaps, &origin_snaps));
 
-	if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
+	if (drc->drc_begin_nvl != NULL &&
+	    nvlist_lookup_uint64_array(drc->drc_begin_nvl,
 	    BEGINNV_REDACT_FROM_SNAPS, &redact_snaps, &numredactsnaps) ==
 	    0) {
 		/*
@@ -715,6 +716,9 @@ recv_redact_array_fits_zap(nvlist_t *nvl, const char *field,
 	uint_t num_redact_snaps;
 	int error;
 
+	if (nvl == NULL)
+		return (required ? SET_ERROR(EINVAL) : 0);
+
 	error = nvlist_lookup_uint64_array(nvl, field, &redact_snaps,
 	    &num_redact_snaps);
 	if (error != 0)
@@ -723,6 +727,23 @@ recv_redact_array_fits_zap(nvlist_t *nvl, const char *field,
 		return (SET_ERROR(E2BIG));
 
 	return (0);
+}
+
+static boolean_t
+recv_begin_nvl_required(dmu_recv_cookie_t *drc)
+{
+	return ((drc->drc_featureflags & (DMU_BACKUP_FEATURE_RAW |
+	    DMU_BACKUP_FEATURE_RESUMING |
+	    DMU_BACKUP_FEATURE_REDACTED)) != 0);
+}
+
+static int
+recv_require_begin_nvl(dmu_recv_cookie_t *drc)
+{
+	if (drc->drc_begin_nvl != NULL || !recv_begin_nvl_required(drc))
+		return (0);
+
+	return (SET_ERROR(EINVAL));
 }
 
 static int
@@ -835,6 +856,10 @@ dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
 		return (SET_ERROR(EINVAL));
 
 	error = recv_begin_check_feature_flags_impl(featureflags, dp->dp_spa);
+	if (error != 0)
+		return (error);
+
+	error = recv_require_begin_nvl(drba->drba_cookie);
 	if (error != 0)
 		return (error);
 
@@ -1177,7 +1202,8 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 
 		uint64_t *redact_snaps;
 		uint_t numredactsnaps;
-		if (nvlist_lookup_uint64_array(drc->drc_begin_nvl,
+		if (drc->drc_begin_nvl != NULL &&
+		    nvlist_lookup_uint64_array(drc->drc_begin_nvl,
 		    BEGINNV_REDACT_FROM_SNAPS, &redact_snaps,
 		    &numredactsnaps) == 0) {
 			ASSERT3U(numredactsnaps, <=,
@@ -1396,6 +1422,12 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 	if (drrb->drr_fromguid != val) {
 		dsl_dataset_rele_flags(ds, dsflags, FTAG);
 		return (SET_ERROR(EINVAL));
+	}
+
+	error = recv_require_begin_nvl(drc);
+	if (error != 0) {
+		dsl_dataset_rele_flags(ds, dsflags, FTAG);
+		return (error);
 	}
 
 	error = recv_check_resume_feature_contract(ds, drc->drc_featureflags);
@@ -3870,7 +3902,8 @@ resume_check(dmu_recv_cookie_t *drc, nvlist_t *begin_nvl)
 	uint64_t dsobj = dmu_objset_id(drc->drc_os);
 	uint64_t resume_obj, resume_off;
 
-	if (nvlist_lookup_uint64(begin_nvl,
+	if (begin_nvl == NULL ||
+	    nvlist_lookup_uint64(begin_nvl,
 	    "resume_object", &resume_obj) != 0 ||
 	    nvlist_lookup_uint64(begin_nvl,
 	    "resume_offset", &resume_off) != 0) {
@@ -3924,6 +3957,10 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 	ASSERT(dsl_dataset_phys(drc->drc_ds)->ds_flags & DS_FLAG_INCONSISTENT);
 	ASSERT0(drc->drc_os->os_encrypted &&
 	    (drc->drc_featureflags & DMU_BACKUP_FEATURE_EMBED_DATA));
+
+	err = recv_require_begin_nvl(drc);
+	if (err != 0)
+		goto out;
 
 	/* handle DSL encryption key payload */
 	if (drc->drc_featureflags & DMU_BACKUP_FEATURE_RAW) {
