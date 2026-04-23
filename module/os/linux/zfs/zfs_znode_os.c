@@ -137,6 +137,21 @@ zfs_freesp_commit_progress(znode_t *zp)
 	return (0);
 }
 
+static int
+zfs_freesp_commit_sync_progress(znode_t *zp, zilog_t *zilog)
+{
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+
+	if (zilog == NULL)
+		return (0);
+
+	if (zp->z_sync_cnt == 0 &&
+	    zfsvfs->z_os->os_sync != ZFS_SYNC_ALWAYS)
+		return (0);
+
+	return (zil_commit(zilog, zp->z_id));
+}
+
 /*
  * This callback is invoked when acquiring a RL_WRITER or RL_APPEND lock on
  * z_rangelock. It will modify the offset and length of the lock to reflect
@@ -1737,7 +1752,7 @@ zfs_trunc_commit_progress(znode_t *zp, uint64_t end, zilog_t *zilog)
  *	RETURN:	0 on success, error code on failure
  */
 static int
-zfs_trunc(znode_t *zp, uint64_t end, zilog_t *zilog)
+zfs_trunc(znode_t *zp, uint64_t end, zilog_t *zilog, boolean_t *progressp)
 {
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	struct inode *ip = ZTOI(zp);
@@ -1759,6 +1774,7 @@ zfs_trunc(znode_t *zp, uint64_t end, zilog_t *zilog)
 	 * Nothing to do if file already at desired length.
 	 */
 	if (end >= zp->z_size) {
+		*progressp = B_FALSE;
 		zfs_rangelock_exit(lr);
 		return (0);
 	}
@@ -1787,14 +1803,17 @@ zfs_trunc(znode_t *zp, uint64_t end, zilog_t *zilog)
 			    zfla.zfla_tail_start, zilog);
 			zn_unlock_cached_data(zp);
 			zfs_rangelock_exit(lr);
+			*progressp = (serr == 0);
 			if (serr == 0)
 				zfs_znode_update_vfs(zp);
 			return (serr != 0 ? serr : error);
 		}
+		*progressp = B_FALSE;
 		zn_unlock_cached_data(zp);
 		zfs_rangelock_exit(lr);
 		return (error);
 	}
+	*progressp = B_FALSE;
 	tx = dmu_tx_create(zfsvfs->z_os);
 	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
 	zfs_sa_upgrade_txholds(tx, zp);
@@ -1850,6 +1869,7 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	sa_bulk_attr_t bulk[3];
 	int count = 0;
 	int error;
+	boolean_t sync_progress = B_FALSE;
 
 	/*
 	 * Replay validates signed free/truncate ranges before calling back in to
@@ -1882,12 +1902,25 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	zfla.zfla_zilog = chunklog_zilog;
 
 	if (len == 0) {
-		error = zfs_trunc(zp, off, chunklog_zilog);
+		error = zfs_trunc(zp, off, chunklog_zilog, &sync_progress);
 	} else {
 		if ((error = zfs_free_range(zp, off, len,
 		    log ? &zfla : NULL)) == 0 &&
 		    off + len > zp->z_size)
 			error = zfs_extend(zp, off+len);
+		sync_progress = zfla.zfla_progress;
+	}
+	/*
+	 * Once a sync file or sync-always dataset has queued TX_TRUNCATE records
+	 * for committed partial progress, force them out before reporting a later
+	 * error.  Otherwise a crash can lose frees that already escaped the long-
+	 * free helper.
+	 */
+	if (error != 0 && sync_progress) {
+		int syncerr = zfs_freesp_commit_sync_progress(zp, chunklog_zilog);
+
+		if (syncerr != 0)
+			return (syncerr);
 	}
 	if (error || !log)
 		goto out;
