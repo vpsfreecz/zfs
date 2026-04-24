@@ -257,6 +257,14 @@ zfs_folio_page_for_index(struct folio *folio, pgoff_t index)
 }
 
 static boolean_t
+zfs_folio_matches_mapping_index(struct folio *folio,
+    struct address_space *mapping, pgoff_t index)
+{
+	return (folio_mapping(folio) == mapping &&
+	    zfs_folio_contains_index(folio, index));
+}
+
+static boolean_t
 zfs_folio_revalidate(struct inode *ip, struct folio *folio,
     struct address_space *mapping, pgoff_t index, u_offset_t *io_offp,
     size_t *io_lenp)
@@ -417,6 +425,14 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 			size_t folio_off;
 			void *pb;
 
+			if (unlikely(!zfs_folio_matches_mapping_index(folio,
+			    mp, index))) {
+				unlock_page(pp);
+				put_page(pp);
+				pp = NULL;
+				goto mapped_range_fallback;
+			}
+
 			fpp = zfs_folio_page_for_index(folio, index);
 			ASSERT3S(start, >=, fpos);
 			folio_off = (size_t)(start - fpos) + off;
@@ -453,7 +469,10 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 			unlock_page(pp);
 			mark_page_accessed(fpp);
 			put_page(pp);
-		} else {
+		}
+
+	mapped_range_fallback:
+		if (pp == NULL) {
 			error = dmu_read(zfsvfs->z_os, zp->z_id, start + off,
 			    nbytes, dst, flags);
 		}
@@ -493,6 +512,15 @@ update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 			boolean_t was_uptodate = folio_test_uptodate(folio);
 			size_t folio_len = folio_size(folio);
 			size_t folio_off;
+
+			if (unlikely(!zfs_folio_matches_mapping_index(folio,
+			    mp, index))) {
+				unlock_page(pp);
+				put_page(pp);
+				len -= nbytes;
+				off = 0;
+				continue;
+			}
 
 			fpp = zfs_folio_page_for_index(folio, index);
 			ASSERT3S(start, >=, fpos);
@@ -594,6 +622,14 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 			loff_t fpos = folio_pos(folio);
 			size_t folio_off;
 
+			if (unlikely(!zfs_folio_matches_mapping_index(folio,
+			    mp, index))) {
+				unlock_page(pp);
+				put_page(pp);
+				pp = NULL;
+				goto mappedread_fallback;
+			}
+
 			fpp = zfs_folio_page_for_index(folio, index);
 			ASSERT3S(start, >=, fpos);
 			folio_off = (size_t)(start - fpos) + off;
@@ -625,7 +661,10 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 
 			mark_page_accessed(fpp);
 			put_page(pp);
-		} else {
+		}
+
+	mappedread_fallback:
+		if (pp == NULL) {
 			error = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl),
 			    uio, bytes, DMU_READ_PREFETCH);
 		}
