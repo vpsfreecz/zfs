@@ -43,7 +43,7 @@ struct folio {
 };
 
 #define	page_folio(p)		((struct folio *)(p))
-#define	folio_page(f, n)	nth_page(&(f)->page, (n))
+#define	folio_page(f, n)	(&(f)->page)
 #define	folio_mapping(f)	page_mapping(&(f)->page)
 #define	folio_pos(f)		page_offset(&(f)->page)
 #define	folio_size(f)		PAGE_SIZE
