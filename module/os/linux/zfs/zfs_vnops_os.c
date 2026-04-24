@@ -4027,7 +4027,7 @@ zfs_folio_clean_writeback_skip(struct folio *folio)
 	struct page *pp = &folio->page;
 
 	ASSERT(PageLocked(pp));
-	ASSERT(!PageWriteback(pp));
+	ASSERT(!folio_test_writeback(folio));
 
 	(void) folio_clear_dirty_for_io(folio);
 	folio_start_writeback(folio);

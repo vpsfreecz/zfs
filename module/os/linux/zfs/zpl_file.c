@@ -552,14 +552,15 @@ zpl_writeback_folio_common(struct folio *folio,
 static int
 zpl_writeback_page(struct page *pp, struct writeback_control *wbc, void *data)
 {
+	struct folio *folio = page_folio(pp);
 	zpl_writeback_data_t *zdata = data;
 
 	ASSERT(PageLocked(pp));
-	ASSERT(!PageWriteback(pp));
+	ASSERT(!folio_test_writeback(folio));
 
 	zdata->counted = B_FALSE;
-	return (zpl_writeback_folio_common(page_folio(pp), wbc,
-	    zdata->for_sync, &zdata->counted));
+	return (zpl_writeback_folio_common(folio, wbc, zdata->for_sync,
+	    &zdata->counted));
 }
 
 #if defined(HAVE_WRITE_CACHE_PAGES)
@@ -659,7 +660,7 @@ zpl_write_cache_pages(struct address_space *mapping,
 
 			folio_lock(folio);
 
-			if (folio->mapping != mapping ||
+			if (folio_mapping(folio) != mapping ||
 			    !folio_test_dirty(folio)) {
 				folio_unlock(folio);
 				continue;
