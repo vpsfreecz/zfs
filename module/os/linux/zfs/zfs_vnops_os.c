@@ -4167,6 +4167,12 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	switch (zfs_folio_writeback_revalidate(ip, zp, folio,
 	    mapping, &pgoff, &pglen)) {
 	case ZFS_PUTFOLIO_RELOCK_ABORT:
+		if (redirtied) {
+			if (folio_test_dirty(folio) &&
+			    !folio_test_writeback(folio))
+				zfs_folio_clean_writeback_skip(folio);
+			wbc->pages_skipped -= folio_nr_pages(folio);
+		}
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 		zfs_exit(zfsvfs, FTAG);
@@ -4217,6 +4223,8 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 
 	/* Clear the dirty flag while the required locks are held. */
 	if (!folio_clear_dirty_for_io(folio)) {
+		if (redirtied)
+			wbc->pages_skipped -= folio_nr_pages(folio);
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 		zfs_exit(zfsvfs, FTAG);
