@@ -529,6 +529,11 @@ zpl_writeback_folio_common(struct folio *folio,
 	fstrans_cookie_t cookie;
 	int ret;
 
+	if (mapping == NULL) {
+		folio_unlock(folio);
+		return (0);
+	}
+
 	cookie = spl_fstrans_mark();
 	ret = zfs_putfolio(mapping->host, folio, wbc, for_sync);
 	spl_fstrans_unmark(cookie);
@@ -780,12 +785,20 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 static int
 zpl_writepage(struct page *pp, struct writeback_control *wbc)
 {
-	if (ITOZSB(pp->mapping->host)->z_os->os_sync == ZFS_SYNC_ALWAYS)
+	struct folio *folio = page_folio(pp);
+	struct address_space *mapping = folio_mapping(folio);
+
+	if (mapping == NULL) {
+		folio_unlock(folio);
+		return (0);
+	}
+
+	if (ITOZSB(mapping->host)->z_os->os_sync == ZFS_SYNC_ALWAYS)
 		wbc->sync_mode = WB_SYNC_ALL;
 
 	boolean_t for_sync = (wbc->sync_mode == WB_SYNC_ALL);
 
-	return (zpl_writeback_page(pp, wbc, &for_sync));
+	return (zpl_writeback_page(&folio->page, wbc, &for_sync));
 }
 #endif
 static int
