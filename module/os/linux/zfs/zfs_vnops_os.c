@@ -4551,6 +4551,7 @@ zfs_getfolio(struct inode *ip, struct folio *folio,
 	u_offset_t io_off;
 	size_t io_len;
 
+	retry:
 	if (unlikely(!zfs_folio_revalidate(ip, folio, mapping, index, &io_off,
 	    &io_len))) {
 		unlock_page(pp);
@@ -4575,6 +4576,9 @@ zfs_getfolio(struct inode *ip, struct folio *folio,
 	zfs_locked_range_t *lr = zfs_rangelock_tryenter(&zp->z_rangelock,
 	    io_off, io_len, RL_READER);
 	if (lr == NULL) {
+		u_offset_t locked_off = io_off;
+		size_t locked_len = io_len;
+
 		/*
 		 * It is important to drop the page lock before grabbing the
 		 * rangelock to avoid another deadlock between here and
@@ -4583,8 +4587,8 @@ zfs_getfolio(struct inode *ip, struct folio *folio,
 		 */
 		get_page(pp);
 		unlock_page(pp);
-		lr = zfs_rangelock_enter(&zp->z_rangelock, io_off,
-		    io_len, RL_READER);
+		lr = zfs_rangelock_enter(&zp->z_rangelock, locked_off,
+		    locked_len, RL_READER);
 		lock_page(pp);
 		if (unlikely(!zfs_folio_revalidate(ip, folio, mapping,
 		    index, &io_off, &io_len))) {
@@ -4595,6 +4599,17 @@ zfs_getfolio(struct inode *ip, struct folio *folio,
 			return (AOP_TRUNCATED_PAGE);
 		}
 		put_page(pp);
+
+		/*
+		 * The folio may have grown from a partial-EOF read while the
+		 * page lock was dropped.  The new fill range must still be
+		 * covered by the range lock that protects dmu_read().
+		 */
+		if (io_off != locked_off || io_len > locked_len) {
+			zfs_rangelock_exit(lr);
+			zfs_exit(zfsvfs, FTAG);
+			goto retry;
+		}
 	}
 	error = zfs_fill_folio_range(ip, folio, io_off, io_len);
 	zfs_rangelock_exit(lr);
