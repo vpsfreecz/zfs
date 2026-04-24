@@ -3960,26 +3960,20 @@ zfs_folio_writeback_done(struct folio *folio, int err)
 	if (err != 0) {
 		struct address_space *mapping = page_mapping(pp);
 
-		/*
-		 * Linux reports page writeback failures on a later fsync() via
-		 * the mapping's wb_err cursor. Record the failure before we
-		 * re-dirty the page for retry.
-		 */
-		if (mapping != NULL)
+		if (mapping != NULL) {
+			/* Report writeback failure before retrying. */
 			mapping_set_error(mapping, err < 0 ? err : -err);
 
-		/*
-		 * Writeback failed. Re-dirty the cache unit. It was undirtied
-		 * before the IO was issued (in zfs_putfolio() or
-		 * write_cache_pages()). The kernel only considers writeback for
-		 * dirty pages; if we don't do this, it is eligible for eviction
-		 * without being written out, which we definitely don't want.
-		 */
+			/*
+			 * Retry failed writeback by re-dirtying mapped folios.
+			 * Truncated folios have no mapping to dirty.
+			 */
 #ifdef HAVE_VFS_FILEMAP_DIRTY_FOLIO
-		filemap_dirty_folio(mapping, folio);
+			filemap_dirty_folio(mapping, folio);
 #else
-		__set_page_dirty_nobuffers(pp);
+			__set_page_dirty_nobuffers(pp);
 #endif
+		}
 	}
 
 	ClearPageError(pp);
