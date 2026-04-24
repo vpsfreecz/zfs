@@ -586,6 +586,15 @@ zpl_wbc_advance(struct address_space *mapping, struct folio *folio)
 	mapping->writeback_index = folio->index + folio_nr_pages(folio);
 }
 
+static inline unsigned int
+zpl_wbc_tag(struct writeback_control *wbc)
+{
+	if (wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages)
+		return (PAGECACHE_TAG_TOWRITE);
+
+	return (PAGECACHE_TAG_DIRTY);
+}
+
 static inline int
 zpl_write_cache_pages(struct address_space *mapping,
     struct writeback_control *wbc, void *data)
@@ -593,6 +602,7 @@ zpl_write_cache_pages(struct address_space *mapping,
 	pgoff_t start = wbc->range_cyclic ? mapping->writeback_index :
 	    wbc->range_start >> PAGE_SHIFT;
 	pgoff_t end = zpl_wbc_end(wbc);
+	unsigned int tag = zpl_wbc_tag(wbc);
 	struct folio_batch fbatch;
 	int err = 0;
 	boolean_t done = B_FALSE;
@@ -601,15 +611,15 @@ zpl_write_cache_pages(struct address_space *mapping,
 	folio_batch_init(&fbatch);
 
 	/*
-	 * Tag dirty cache units, then write the tagged folios ourselves.  This
-	 * keeps dirty/writeback preparation under the same ZFS-owned contract
-	 * as zfs_putfolio(), instead of layering write_cache_pages()
-	 * preparation on top of ZFS' private relock and redirty sequence.
+	 * Match writeback_iter(): data-integrity or explicitly tagged writeback
+	 * snapshots dirty folios to TOWRITE to avoid livelock, while background
+	 * writeback scans DIRTY directly.
 	 */
-	tag_pages_for_writeback(mapping, start, end);
+	if (tag == PAGECACHE_TAG_TOWRITE)
+		tag_pages_for_writeback(mapping, start, end);
 
 	while (!done && (nfolios = filemap_get_folios_tag(mapping, &start, end,
-	    PAGECACHE_TAG_TOWRITE, &fbatch)) != 0) {
+	    tag, &fbatch)) != 0) {
 		struct folio *folio;
 
 		while ((folio = folio_batch_next(&fbatch)) != NULL) {
