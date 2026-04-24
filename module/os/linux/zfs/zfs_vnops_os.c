@@ -4195,10 +4195,11 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	}
 
 	/*
-	 * Counterpart for redirty_page_for_writepage() above.  This page
-	 * was in fact not skipped and should not be counted as if it were.
+	 * Counterpart for redirty_page_for_writepage() above.  This
+	 * folio was in fact not skipped and should not be counted as
+	 * if it were.
 	 */
-	wbc->pages_skipped--;
+	wbc->pages_skipped -= folio_nr_pages(folio);
 	set_page_writeback(pp);
 	unlock_page(pp);
 
