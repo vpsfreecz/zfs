@@ -641,6 +641,11 @@ zpl_write_cache_pages(struct address_space *mapping,
 
 				while (folio_test_writeback(folio))
 					zpl_folio_wait_writeback(folio);
+
+				if (!folio_test_dirty(folio)) {
+					folio_unlock(folio);
+					continue;
+				}
 			}
 
 			ferr = zpl_writeback_page(&folio->page, wbc, data);
