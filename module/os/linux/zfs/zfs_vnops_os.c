@@ -4265,15 +4265,13 @@ range_retry:
 	switch (zfs_folio_writeback_revalidate(ip, zp, folio,
 	    mapping, &pgoff, &pglen)) {
 	case ZFS_PUTFOLIO_RELOCK_ABORT:
-		if (skip_accounted) {
-			if (folio_test_dirty(folio) &&
-			    !folio_test_writeback(folio)) {
-				zfs_folio_clean_writeback_skip(folio);
-				if (countedp != NULL)
-					*countedp = B_TRUE;
-			}
+		/*
+		 * The folio was cleaned by somebody else or detached from this
+		 * mapping while the page lock was dropped.  Do not clear dirty
+		 * state or count a dirty folio that now belongs elsewhere.
+		 */
+		if (skip_accounted)
 			wbc->pages_skipped -= folio_nr_pages(folio);
-		}
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 		zfs_exit(zfsvfs, FTAG);
