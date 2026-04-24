@@ -519,8 +519,12 @@ zpl_readahead(struct readahead_control *ractl)
 #else
 	struct page *page;
 
-	while ((page = readahead_page(ractl)) != NULL) {
+	while (readahead_count(ractl) != 0) {
 		int ret;
+
+		page = readahead_page(ractl);
+		if (page == NULL)
+			break;
 
 		ret = zpl_readpage_filler(NULL, page);
 		put_page(page);
