@@ -589,6 +589,12 @@ zpl_folio_wait_writeback(struct folio *folio)
 }
 
 static inline pgoff_t
+zpl_folio_index(struct folio *folio)
+{
+	return ((pgoff_t)(folio_pos(folio) >> PAGE_SHIFT));
+}
+
+static inline pgoff_t
 zpl_wbc_end(struct writeback_control *wbc)
 {
 	if (wbc->range_cyclic)
@@ -600,7 +606,8 @@ zpl_wbc_end(struct writeback_control *wbc)
 static inline void
 zpl_wbc_advance(struct address_space *mapping, struct folio *folio)
 {
-	mapping->writeback_index = folio->index + folio_nr_pages(folio);
+	mapping->writeback_index = zpl_folio_index(folio) +
+	    folio_nr_pages(folio);
 }
 
 static inline unsigned int

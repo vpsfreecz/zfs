@@ -236,10 +236,18 @@ zfs_close(struct inode *ip, int flag, cred_t *cr)
 static int zfs_fill_folio(struct inode *ip, struct folio *folio,
     struct address_space *mapping, pgoff_t index);
 
+static pgoff_t
+zfs_folio_index(struct folio *folio)
+{
+	return ((pgoff_t)(folio_pos(folio) >> PAGE_SHIFT));
+}
+
 static boolean_t
 zfs_folio_contains_index(struct folio *folio, pgoff_t index)
 {
-	return (index - folio->index < folio_nr_pages(folio));
+	pgoff_t fidx = zfs_folio_index(folio);
+
+	return (index - fidx < folio_nr_pages(folio));
 }
 
 static boolean_t
