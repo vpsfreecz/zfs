@@ -4193,9 +4193,7 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 		*countedp = B_FALSE;
 
 	if ((err = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0) {
-		if (zfs_folio_account_relock_skip(wbc, folio) &&
-		    countedp != NULL)
-			*countedp = B_TRUE;
+		(void) zfs_folio_account_relock_skip(wbc, folio);
 		unlock_page(pp);
 		return (err);
 	}
@@ -4319,8 +4317,6 @@ range_retry:
 	 */
 	if (zfs_owner_overblockquota(zp)) {
 		mapping_set_error(mapping, -EDQUOT);
-		if (countedp != NULL)
-			*countedp = B_TRUE;
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 		zfs_exit(zfsvfs, FTAG);
