@@ -4027,20 +4027,31 @@ zfs_folio_writeback_done(struct folio *folio, int err)
 	if (err != 0) {
 		struct address_space *mapping = folio_mapping(folio);
 
-		if (mapping != NULL) {
-			/* Report writeback failure before retrying. */
+		/* Report writeback failure before waking waiters. */
+		if (mapping != NULL)
 			mapping_set_error(mapping, err < 0 ? err : -err);
 
-			/*
-			 * Retry failed writeback by re-dirtying mapped folios.
-			 * Truncated folios have no mapping to dirty.
-			 */
+		/*
+		 * filemap_dirty_folio() must exclude truncation. Holding
+		 * the writeback bit excludes folio reuse while we take a
+		 * reference.  Truncate can hold the folio lock while waiting
+		 * for writeback, so end writeback before taking that lock.
+		 */
+		get_page(pp);
+		ClearPageError(pp);
+		folio_end_writeback(folio);
+
+		lock_page(pp);
+		if (mapping != NULL && folio_mapping(folio) == mapping) {
 #ifdef HAVE_VFS_FILEMAP_DIRTY_FOLIO
 			filemap_dirty_folio(mapping, folio);
 #else
 			__set_page_dirty_nobuffers(pp);
 #endif
 		}
+		unlock_page(pp);
+		put_page(pp);
+		return;
 	}
 
 	ClearPageError(pp);
@@ -4369,8 +4380,8 @@ range_retry:
 	err = dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (err != 0) {
 		dmu_tx_abort(tx);
-		zfs_folio_writeback_done(folio, err);
 		zfs_rangelock_exit(lr);
+		zfs_folio_writeback_done(folio, err);
 		zfs_exit(zfsvfs, FTAG);
 
 		/*
