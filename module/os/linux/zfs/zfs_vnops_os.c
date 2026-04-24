@@ -4288,12 +4288,8 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	}
 
 	if (!zfs_folio_writeback_span(ip, zp, folio, &pgoff, &pglen)) {
-		zfs_folio_clean_writeback_skip(folio);
-		if (countedp != NULL)
-			*countedp = B_TRUE;
-		unlock_page(pp);
-		zfs_exit(zfsvfs, FTAG);
-		return (0);
+		pgoff = folio_pos(folio);
+		pglen = 0;
 	}
 
 	/*
@@ -4331,7 +4327,7 @@ range_retry:
 		skip_accounted = zfs_folio_account_relock_skip(wbc, folio);
 	relock_account = B_TRUE;
 	locked_off = pgoff;
-	locked_len = pglen;
+	locked_len = folio_size(folio);
 	unlock_page(pp);
 
 	lr = zfs_rangelock_enter(&zp->z_rangelock, locked_off, locked_len,
@@ -4392,9 +4388,9 @@ range_retry:
 	}
 
 	/*
-	 * File growth while the page lock was dropped can extend a partial-EOF
-	 * folio beyond the range lock just acquired.  Retry with the wider span
-	 * before clearing dirty data or copying from the folio.
+	 * The range lock covers the whole folio because clearing dirty state
+	 * covers the whole folio.  Keep this check as a guard against any
+	 * unexpected revalidation span change before copying from the folio.
 	 */
 	if (pgoff != locked_off || pglen > locked_len) {
 		zfs_rangelock_exit(lr);
@@ -4758,7 +4754,7 @@ zfs_getfolio(struct inode *ip, struct folio *folio,
 	 * zfs_fill_folio_range() calls dmu_read().
 	 */
 	u_offset_t locked_off = io_off;
-	size_t locked_len = io_len;
+	size_t locked_len = folio_size(folio);
 	boolean_t dropped_page_lock = B_FALSE;
 	zfs_locked_range_t *lr = zfs_rangelock_tryenter(&zp->z_rangelock,
 	    locked_off, locked_len, RL_READER);
@@ -4792,10 +4788,9 @@ zfs_getfolio(struct inode *ip, struct folio *folio,
 		put_page(pp);
 
 	/*
-	 * A writer can extend a partial-EOF folio after the initial validation
-	 * but before this reader lock is acquired.  The new fill range must be
-	 * covered by the range lock that protects dmu_read(), whether or
-	 * not the page lock had to be dropped to acquire it.
+	 * The range lock covers the whole folio because successful fill can
+	 * zero and mark the whole folio uptodate.  Keep this check as a guard
+	 * against any unexpected revalidation span change before dmu_read().
 	 */
 	if (io_off != locked_off || io_len > locked_len) {
 		zfs_rangelock_exit(lr);
