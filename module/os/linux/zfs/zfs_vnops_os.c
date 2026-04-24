@@ -373,7 +373,7 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 			 * where the page will be unlocked and not up to date.
 			 * In this case we must try and fill the page.
 			 */
-			if (unlikely(!PageUptodate(&folio->page))) {
+			if (unlikely(!folio_test_uptodate(folio))) {
 				error = zfs_fill_folio(ip, folio);
 				if (error) {
 					unlock_page(pp);
@@ -383,8 +383,8 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 				}
 			}
 
-			ASSERT(PageUptodate(&folio->page) ||
-			    PageDirty(&folio->page));
+			ASSERT(folio_test_uptodate(folio) ||
+			    folio_test_dirty(folio));
 
 			if (zn_writably_mapped(zp))
 				flush_dcache_page(pp);
@@ -434,7 +434,7 @@ update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 		if (pp) {
 			struct folio *folio = page_folio(pp);
 			loff_t fpos = folio_pos(folio);
-			boolean_t was_uptodate = PageUptodate(&folio->page);
+			boolean_t was_uptodate = folio_test_uptodate(folio);
 			size_t folio_len = folio_size(folio);
 			size_t folio_off;
 
@@ -452,7 +452,7 @@ update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 
 			if (error) {
 				SetPageError(&folio->page);
-				ClearPageUptodate(&folio->page);
+				folio_clear_uptodate(folio);
 			} else {
 				zpl_folio_range_write_done(folio,
 				    was_uptodate, folio_off, nbytes);
@@ -538,7 +538,7 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 			 * where the page will be unlocked and not up to date.
 			 * In this case we must try and fill the page.
 			 */
-			if (unlikely(!PageUptodate(&folio->page))) {
+			if (unlikely(!folio_test_uptodate(folio))) {
 				error = zfs_fill_folio(ip, folio);
 				if (error) {
 					unlock_page(pp);
@@ -547,8 +547,8 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 				}
 			}
 
-			ASSERT(PageUptodate(&folio->page) ||
-			    PageDirty(&folio->page));
+			ASSERT(folio_test_uptodate(folio) ||
+			    folio_test_dirty(folio));
 
 			unlock_page(pp);
 
@@ -4521,10 +4521,10 @@ zfs_fill_folio_range(struct inode *ip, struct folio *folio, u_offset_t io_off,
 			error = SET_ERROR(EIO);
 
 		SetPageError(pp);
-		ClearPageUptodate(pp);
+		folio_clear_uptodate(folio);
 	} else {
 		ClearPageError(pp);
-		SetPageUptodate(pp);
+		folio_mark_uptodate(folio);
 	}
 
 	return (error);
@@ -4535,11 +4535,10 @@ zfs_fill_folio(struct inode *ip, struct folio *folio)
 {
 	u_offset_t io_off;
 	size_t io_len;
-	struct page *pp = &folio->page;
 
 	if (unlikely(!zfs_folio_revalidate(ip, folio, NULL, 0, &io_off,
 	    &io_len))) {
-		ClearPageUptodate(pp);
+		folio_clear_uptodate(folio);
 		return (SET_ERROR(EIO));
 	}
 

@@ -226,13 +226,11 @@ static inline void
 zpl_folio_range_write_done(struct folio *folio, boolean_t was_uptodate,
     size_t off, size_t len)
 {
-	struct page *pp = &folio->page;
-
-	ClearPageError(pp);
+	ClearPageError(&folio->page);
 	if (was_uptodate || zpl_folio_range_is_full(folio, off, len))
-		SetPageUptodate(pp);
+		folio_mark_uptodate(folio);
 	else
-		ClearPageUptodate(pp);
+		folio_clear_uptodate(folio);
 }
 
 #endif	/* _SYS_ZPL_H */
