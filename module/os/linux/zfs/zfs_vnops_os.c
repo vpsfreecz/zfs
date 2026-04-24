@@ -4018,6 +4018,21 @@ top:
 	return (error);
 }
 
+static inline boolean_t
+zfs_folio_redirty_for_retry(struct folio *folio,
+    struct address_space *mapping)
+{
+	if (mapping == NULL || folio_mapping(folio) != mapping)
+		return (B_FALSE);
+
+#ifdef HAVE_VFS_FILEMAP_DIRTY_FOLIO
+	(void) filemap_dirty_folio(mapping, folio);
+#else
+	__set_page_dirty_nobuffers(zpl_folio_head_page(folio));
+#endif
+	return (B_TRUE);
+}
+
 /* Finish page-cache folio writeback through a common helper. */
 static inline void
 zfs_folio_writeback_done(struct folio *folio, int err)
@@ -4026,30 +4041,33 @@ zfs_folio_writeback_done(struct folio *folio, int err)
 
 	if (err != 0) {
 		struct address_space *mapping = folio_mapping(folio);
+		boolean_t redirtied = B_FALSE;
 
 		/* Report writeback failure before waking waiters. */
 		if (mapping != NULL)
 			mapping_set_error(mapping, err < 0 ? err : -err);
 
 		/*
-		 * filemap_dirty_folio() must exclude truncation. Holding
-		 * the writeback bit excludes folio reuse while we take a
-		 * reference.  Truncate can hold the folio lock while waiting
-		 * for writeback, so end writeback before taking that lock.
+		 * filemap_dirty_folio() must exclude truncation.  Try to
+		 * re-dirty under the folio lock before ending writeback so
+		 * synchronous waiters see the retry state immediately.  If
+		 * truncate already holds the lock while waiting on writeback,
+		 * fall back to ending writeback before taking the folio lock.
 		 */
 		get_page(pp);
+		if (trylock_page(pp)) {
+			redirtied = zfs_folio_redirty_for_retry(folio, mapping);
+			unlock_page(pp);
+		}
+
 		ClearPageError(pp);
 		folio_end_writeback(folio);
 
-		lock_page(pp);
-		if (mapping != NULL && folio_mapping(folio) == mapping) {
-#ifdef HAVE_VFS_FILEMAP_DIRTY_FOLIO
-			filemap_dirty_folio(mapping, folio);
-#else
-			__set_page_dirty_nobuffers(pp);
-#endif
+		if (!redirtied) {
+			lock_page(pp);
+			(void) zfs_folio_redirty_for_retry(folio, mapping);
+			unlock_page(pp);
 		}
-		unlock_page(pp);
 		put_page(pp);
 		return;
 	}
