@@ -30,7 +30,14 @@
 #include <linux/pagemap.h>
 
 #ifndef HAVE_PAGEMAP_READAHEAD_PAGE
-#define	readahead_page(ractl) (&(__readahead_folio(ractl)->page))
+static inline struct page *
+zfs_readahead_page(struct readahead_control *ractl)
+{
+	struct folio *folio = __readahead_folio(ractl);
+
+	return (folio != NULL ? &folio->page : NULL);
+}
+#define	readahead_page(ractl) zfs_readahead_page(ractl)
 #endif
 
 #endif
