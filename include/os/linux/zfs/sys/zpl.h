@@ -33,6 +33,7 @@
 #include <linux/exportfs.h>
 #include <linux/falloc.h>
 #include <linux/mm_compat.h>
+#include <linux/pagemap_compat.h>
 #include <linux/parser.h>
 #include <linux/vfs_compat.h>
 #include <linux/writeback.h>
