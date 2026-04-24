@@ -43,6 +43,7 @@
 #include <sys/zfs_znode.h>
 #include <sys/zfs_vfsops.h>
 #include <sys/zfs_vnops.h>
+#include <sys/zpl.h>
 #include <sys/zfs_project.h>
 #include <linux/pagemap_compat.h>
 #include <linux/mm_compat.h>
