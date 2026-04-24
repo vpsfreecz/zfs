@@ -27,6 +27,7 @@
 #ifndef _ZFS_PAGEMAP_COMPAT_H
 #define	_ZFS_PAGEMAP_COMPAT_H
 
+#include <linux/mm_compat.h>
 #include <linux/pagemap.h>
 
 #ifndef HAVE_PAGEMAP_READAHEAD_PAGE
