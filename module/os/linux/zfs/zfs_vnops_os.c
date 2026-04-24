@@ -3981,13 +3981,25 @@ zfs_folio_writeback_done(struct folio *folio, int err)
 }
 
 static inline boolean_t
-zfs_folio_redirty_for_relock(struct writeback_control *wbc,
+zfs_folio_account_relock_skip(struct writeback_control *wbc,
     struct folio *folio)
 {
-	if (folio_mapping(folio) == NULL || folio_test_dirty(folio))
+	if (folio_mapping(folio) == NULL)
 		return (B_FALSE);
 
-	redirty_page_for_writepage(wbc, &folio->page);
+	/*
+	 * Legacy write_cache_pages() callers clear the dirty bit before
+	 * calling ->writepage(); owned folio iteration reaches this point
+	 * with the folio still dirty.  Account the temporary relock deferral
+	 * in both cases, but only re-dirty when Linux already cleared the
+	 * folio for writeback.
+	 */
+	if (folio_test_dirty(folio)) {
+		wbc->pages_skipped += folio_nr_pages(folio);
+		return (B_TRUE);
+	}
+
+	(void) folio_redirty_for_writepage(wbc, folio);
 	return (B_TRUE);
 }
 
@@ -4119,12 +4131,12 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	zfs_locked_range_t *lr;
 	loff_t locked_off;
 	size_t locked_len;
-	boolean_t redirtied = B_FALSE;
+	boolean_t skip_accounted = B_FALSE;
 
 	ASSERT(PageLocked(pp));
 
 	if ((err = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0) {
-		(void) zfs_folio_redirty_for_relock(wbc, folio);
+		(void) zfs_folio_account_relock_skip(wbc, folio);
 		unlock_page(pp);
 		return (err);
 	}
@@ -4162,8 +4174,8 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	mapping = folio_mapping(folio);
 
 range_retry:
-	if (!redirtied)
-		redirtied = zfs_folio_redirty_for_relock(wbc, folio);
+	if (!skip_accounted)
+		skip_accounted = zfs_folio_account_relock_skip(wbc, folio);
 	locked_off = pgoff;
 	locked_len = pglen;
 	unlock_page(pp);
@@ -4175,7 +4187,7 @@ range_retry:
 	switch (zfs_folio_writeback_revalidate(ip, zp, folio,
 	    mapping, &pgoff, &pglen)) {
 	case ZFS_PUTFOLIO_RELOCK_ABORT:
-		if (redirtied) {
+		if (skip_accounted) {
 			if (folio_test_dirty(folio) &&
 			    !folio_test_writeback(folio))
 				zfs_folio_clean_writeback_skip(folio);
@@ -4188,7 +4200,7 @@ range_retry:
 
 	case ZFS_PUTFOLIO_RELOCK_CLEAN:
 		zfs_folio_clean_writeback_skip(folio);
-		if (redirtied)
+		if (skip_accounted)
 			wbc->pages_skipped -= folio_nr_pages(folio);
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
@@ -4196,6 +4208,8 @@ range_retry:
 		return (0);
 
 	case ZFS_PUTFOLIO_RELOCK_WAIT_WRITEBACK:
+		if (skip_accounted)
+			wbc->pages_skipped -= folio_nr_pages(folio);
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 
@@ -4241,7 +4255,7 @@ range_retry:
 
 	/* Clear the dirty flag while the required locks are held. */
 	if (!folio_clear_dirty_for_io(folio)) {
-		if (redirtied)
+		if (skip_accounted)
 			wbc->pages_skipped -= folio_nr_pages(folio);
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
@@ -4250,10 +4264,10 @@ range_retry:
 	}
 
 	/*
-	 * Counterpart for zfs_folio_redirty_for_relock() above.  The folio
+	 * Counterpart for zfs_folio_account_relock_skip() above.  The folio
 	 * was in fact not skipped and should not be counted as if it were.
 	 */
-	if (redirtied)
+	if (skip_accounted)
 		wbc->pages_skipped -= folio_nr_pages(folio);
 	folio_start_writeback(folio);
 	unlock_page(pp);
