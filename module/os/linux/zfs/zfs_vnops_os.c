@@ -4142,6 +4142,7 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	loff_t locked_off;
 	size_t locked_len;
 	boolean_t skip_accounted = B_FALSE;
+	boolean_t relock_account = B_TRUE;
 
 	ASSERT(PageLocked(pp));
 	if (countedp != NULL)
@@ -4190,8 +4191,9 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	mapping = folio_mapping(folio);
 
 range_retry:
-	if (!skip_accounted)
+	if (!skip_accounted && relock_account)
 		skip_accounted = zfs_folio_account_relock_skip(wbc, folio);
+	relock_account = B_TRUE;
 	locked_off = pgoff;
 	locked_len = pglen;
 	unlock_page(pp);
@@ -4247,7 +4249,9 @@ range_retry:
 #else
 			wait_on_page_bit(pp, PG_writeback);
 #endif
+
 		lock_page(pp);
+		relock_account = B_FALSE;
 		goto range_retry;
 
 	default:
