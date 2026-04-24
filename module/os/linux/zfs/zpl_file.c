@@ -506,6 +506,17 @@ zpl_readpages(struct file *filp, struct address_space *mapping,
 static void
 zpl_readahead(struct readahead_control *ractl)
 {
+#ifdef HAVE_PAGEMAP_READAHEAD_FOLIO
+	struct folio *folio;
+
+	while ((folio = readahead_folio(ractl)) != NULL) {
+		int ret;
+
+		ret = zpl_read_folio_common(folio);
+		if (ret)
+			break;
+	}
+#else
 	struct page *page;
 
 	while ((page = readahead_page(ractl)) != NULL) {
@@ -516,6 +527,7 @@ zpl_readahead(struct readahead_control *ractl)
 		if (ret)
 			break;
 	}
+#endif
 }
 #endif
 
