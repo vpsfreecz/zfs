@@ -1,4 +1,30 @@
 dnl #
+dnl # Linux 5.18 added readahead_folio().  Large-folio capable kernels
+dnl # should drive ->readahead() by folio rather than by page so the
+dnl # filesystem consumes each prepared cache unit exactly once.
+dnl #
+AC_DEFUN([ZFS_AC_KERNEL_SRC_PAGEMAP_READAHEAD_FOLIO], [
+	ZFS_LINUX_TEST_SRC([pagemap_has_readahead_folio], [
+		#include <linux/pagemap.h>
+	], [
+		struct folio *folio __attribute__ ((unused)) = NULL;
+		struct readahead_control *ractl __attribute__ ((unused)) = NULL;
+		folio = readahead_folio(ractl);
+	])
+])
+
+AC_DEFUN([ZFS_AC_KERNEL_PAGEMAP_READAHEAD_FOLIO], [
+	AC_MSG_CHECKING([whether readahead_folio() exists])
+	ZFS_LINUX_TEST_RESULT([pagemap_has_readahead_folio], [
+		AC_MSG_RESULT([yes])
+		AC_DEFINE(HAVE_PAGEMAP_READAHEAD_FOLIO, 1,
+			[readahead_folio() exists])
+	],[
+		AC_MSG_RESULT([no])
+	])
+])
+
+dnl #
 dnl # Linux 6.16 removed readahead_page
 dnl #
 AC_DEFUN([ZFS_AC_KERNEL_SRC_PAGEMAP_READAHEAD_PAGE], [
