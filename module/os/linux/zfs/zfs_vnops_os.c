@@ -4116,6 +4116,9 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	sa_bulk_attr_t	bulk[3];
 	int		cnt = 0;
 	struct address_space *mapping;
+	zfs_locked_range_t *lr;
+	loff_t locked_off;
+	size_t locked_len;
 	boolean_t redirtied = B_FALSE;
 
 	ASSERT(PageLocked(pp));
@@ -4157,11 +4160,16 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	 * the page state has changed it must be handled accordingly.
 	 */
 	mapping = folio_mapping(folio);
-	redirtied = zfs_folio_redirty_for_relock(wbc, folio);
+
+range_retry:
+	if (!redirtied)
+		redirtied = zfs_folio_redirty_for_relock(wbc, folio);
+	locked_off = pgoff;
+	locked_len = pglen;
 	unlock_page(pp);
 
-	zfs_locked_range_t *lr = zfs_rangelock_enter(&zp->z_rangelock,
-	    pgoff, pglen, RL_WRITER);
+	lr = zfs_rangelock_enter(&zp->z_rangelock, locked_off, locked_len,
+	    RL_WRITER);
 	lock_page(pp);
 
 	switch (zfs_folio_writeback_revalidate(ip, zp, folio,
@@ -4205,6 +4213,16 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 
 	default:
 		break;
+	}
+
+	/*
+	 * File growth while the page lock was dropped can extend a partial-EOF
+	 * folio beyond the range lock just acquired.  Retry with the wider span
+	 * before clearing dirty data or copying from the folio.
+	 */
+	if (pgoff != locked_off || pglen > locked_len) {
+		zfs_rangelock_exit(lr);
+		goto range_retry;
 	}
 
 	/*
