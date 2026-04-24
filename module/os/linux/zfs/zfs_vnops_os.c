@@ -4680,11 +4680,13 @@ zfs_getfolio(struct inode *ip, struct folio *folio,
 	 * dmu_read_impl() for db->db_data during the mempcy operation when
 	 * zfs_fill_folio_range() calls dmu_read().
 	 */
+	u_offset_t locked_off = io_off;
+	size_t locked_len = io_len;
+	boolean_t dropped_page_lock = B_FALSE;
 	zfs_locked_range_t *lr = zfs_rangelock_tryenter(&zp->z_rangelock,
-	    io_off, io_len, RL_READER);
+	    locked_off, locked_len, RL_READER);
 	if (lr == NULL) {
-		u_offset_t locked_off = io_off;
-		size_t locked_len = io_len;
+		dropped_page_lock = B_TRUE;
 
 		/*
 		 * It is important to drop the page lock before grabbing the
@@ -4697,26 +4699,31 @@ zfs_getfolio(struct inode *ip, struct folio *folio,
 		lr = zfs_rangelock_enter(&zp->z_rangelock, locked_off,
 		    locked_len, RL_READER);
 		lock_page(pp);
-		if (unlikely(!zfs_folio_revalidate(ip, folio, mapping,
-		    index, &io_off, &io_len))) {
-			unlock_page(pp);
+	}
+
+	if (unlikely(!zfs_folio_revalidate(ip, folio, mapping, index,
+	    &io_off, &io_len))) {
+		unlock_page(pp);
+		if (dropped_page_lock)
 			put_page(pp);
-			zfs_rangelock_exit(lr);
-			zfs_exit(zfsvfs, FTAG);
-			return (AOP_TRUNCATED_PAGE);
-		}
+		zfs_rangelock_exit(lr);
+		zfs_exit(zfsvfs, FTAG);
+		return (AOP_TRUNCATED_PAGE);
+	}
+
+	if (dropped_page_lock)
 		put_page(pp);
 
-		/*
-		 * The folio may have grown from a partial-EOF read while the
-		 * page lock was dropped.  The new fill range must still be
-		 * covered by the range lock that protects dmu_read().
-		 */
-		if (io_off != locked_off || io_len > locked_len) {
-			zfs_rangelock_exit(lr);
-			zfs_exit(zfsvfs, FTAG);
-			goto retry;
-		}
+	/*
+	 * A writer can extend a partial-EOF folio after the initial validation
+	 * but before this reader lock is acquired.  The new fill range must be
+	 * covered by the range lock that protects dmu_read(), whether or
+	 * not the page lock had to be dropped to acquire it.
+	 */
+	if (io_off != locked_off || io_len > locked_len) {
+		zfs_rangelock_exit(lr);
+		zfs_exit(zfsvfs, FTAG);
+		goto retry;
 	}
 	error = zfs_fill_folio_range(ip, folio, io_off, io_len);
 	zfs_rangelock_exit(lr);
