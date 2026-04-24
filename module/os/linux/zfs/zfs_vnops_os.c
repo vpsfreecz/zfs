@@ -233,9 +233,6 @@ zfs_close(struct inode *ip, int flag, cred_t *cr)
 
 #if defined(_KERNEL)
 
-static int zfs_fill_folio(struct inode *ip, struct folio *folio,
-    struct address_space *mapping, pgoff_t index);
-
 static pgoff_t
 zfs_folio_index(struct folio *folio)
 {
@@ -353,6 +350,34 @@ zfs_zero_folio_range(struct folio *folio, size_t off, size_t len)
 	}
 }
 
+static int
+zfs_fill_mapped_folio_range(struct inode *ip, struct folio *folio,
+    u_offset_t file_off, size_t folio_off, size_t len, int flags)
+{
+	struct page *pp = &folio->page;
+	znode_t *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ITOZSB(ip);
+	boolean_t was_uptodate = folio_test_uptodate(folio);
+	int error;
+
+	ASSERT3U(folio_off + len, <=, folio_size(folio));
+
+	error = zfs_read_folio_range(zfsvfs->z_os, zp->z_id, file_off,
+	    folio, folio_off, len, flags);
+	if (error != 0) {
+		/* convert checksum errors into IO errors */
+		if (error == ECKSUM)
+			error = SET_ERROR(EIO);
+
+		SetPageError(pp);
+		folio_clear_uptodate(folio);
+	} else {
+		zpl_folio_range_write_done(folio, was_uptodate, folio_off, len);
+	}
+
+	return (error);
+}
+
 /*
  * Snapshot the current Linux file view into a kernel buffer.  Existing page
  * cache pages win over the DMU view, and each page-sized slice is serialized
@@ -377,16 +402,24 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 		pp = find_lock_page(mp, start >> PAGE_SHIFT);
 		if (pp != NULL) {
 			struct folio *folio = page_folio(pp);
+			loff_t fpos = folio_pos(folio);
+			size_t folio_off;
 			void *pb;
+
+			ASSERT3S(start, >=, fpos);
+			folio_off = (size_t)(start - fpos) + off;
+			ASSERT3U(folio_off + nbytes, <=, folio_size(folio));
 
 			/*
 			 * If filemap_fault() retries there exists a window
 			 * where the page will be unlocked and not up to date.
-			 * In this case we must try and fill the page.
+			 * Fill only this page-sized slice.  The caller's range
+			 * lock covers this slice, not necessarily the whole
+			 * folio.
 			 */
 			if (unlikely(!folio_test_uptodate(folio))) {
-				error = zfs_fill_folio(ip, folio, mp,
-				    start >> PAGE_SHIFT);
+				error = zfs_fill_mapped_folio_range(ip, folio,
+				    start + off, folio_off, nbytes, flags);
 				if (error) {
 					unlock_page(pp);
 					put_page(pp);
@@ -394,9 +427,6 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 					return (error);
 				}
 			}
-
-			ASSERT(folio_test_uptodate(folio) ||
-			    folio_test_dirty(folio));
 
 			if (zn_writably_mapped(zp))
 				flush_dcache_page(pp);
@@ -544,24 +574,30 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 		struct page *pp = find_lock_page(mp, start >> PAGE_SHIFT);
 		if (pp) {
 			struct folio *folio = page_folio(pp);
+			loff_t fpos = folio_pos(folio);
+			size_t folio_off;
+
+			ASSERT3S(start, >=, fpos);
+			folio_off = (size_t)(start - fpos) + off;
+			ASSERT3U(folio_off + bytes, <=, folio_size(folio));
 
 			/*
 			 * If filemap_fault() retries there exists a window
 			 * where the page will be unlocked and not up to date.
-			 * In this case we must try and fill the page.
+			 * Fill only this page-sized slice; zfs_read() holds a
+			 * range lock for the requested bytes, not necessarily
+			 * for the whole folio.
 			 */
 			if (unlikely(!folio_test_uptodate(folio))) {
-				error = zfs_fill_folio(ip, folio, mp,
-				    start >> PAGE_SHIFT);
+				error = zfs_fill_mapped_folio_range(ip, folio,
+				    start + off, folio_off, bytes,
+				    DMU_READ_PREFETCH);
 				if (error) {
 					unlock_page(pp);
 					put_page(pp);
 					return (error);
 				}
 			}
-
-			ASSERT(folio_test_uptodate(folio) ||
-			    folio_test_dirty(folio));
 
 			unlock_page(pp);
 
@@ -4583,22 +4619,6 @@ zfs_fill_folio_range(struct inode *ip, struct folio *folio, u_offset_t io_off,
 	}
 
 	return (error);
-}
-
-static int
-zfs_fill_folio(struct inode *ip, struct folio *folio,
-    struct address_space *mapping, pgoff_t index)
-{
-	u_offset_t io_off;
-	size_t io_len;
-
-	if (unlikely(!zfs_folio_revalidate(ip, folio, mapping, index,
-	    &io_off, &io_len))) {
-		folio_clear_uptodate(folio);
-		return (SET_ERROR(EIO));
-	}
-
-	return (zfs_fill_folio_range(ip, folio, io_off, io_len));
 }
 
 /*
