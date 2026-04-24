@@ -4199,7 +4199,7 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	mapping = folio_mapping(folio);
 
 range_retry:
-	if (!skip_accounted && relock_account)
+	if (!skip_accounted && (relock_account || folio_test_dirty(folio)))
 		skip_accounted = zfs_folio_account_relock_skip(wbc, folio);
 	relock_account = B_TRUE;
 	locked_off = pgoff;
