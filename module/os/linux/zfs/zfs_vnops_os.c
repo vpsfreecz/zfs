@@ -247,6 +247,15 @@ zfs_folio_contains_index(struct folio *folio, pgoff_t index)
 	return (index - fidx < folio_nr_pages(folio));
 }
 
+static struct page *
+zfs_folio_page_for_index(struct folio *folio, pgoff_t index)
+{
+	pgoff_t fidx = zfs_folio_index(folio);
+
+	ASSERT(zfs_folio_contains_index(folio, index));
+	return (folio_page(folio, index - fidx));
+}
+
 static boolean_t
 zfs_folio_revalidate(struct inode *ip, struct folio *folio,
     struct address_space *mapping, pgoff_t index, u_offset_t *io_offp,
@@ -396,16 +405,19 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 
 	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
 		uint64_t nbytes = MIN(PAGE_SIZE - off, len);
+		pgoff_t index = start >> PAGE_SHIFT;
 		struct page *pp;
 
 		zn_lock_cached_data(zp);
-		pp = find_lock_page(mp, start >> PAGE_SHIFT);
+		pp = find_lock_page(mp, index);
 		if (pp != NULL) {
 			struct folio *folio = page_folio(pp);
+			struct page *fpp;
 			loff_t fpos = folio_pos(folio);
 			size_t folio_off;
 			void *pb;
 
+			fpp = zfs_folio_page_for_index(folio, index);
 			ASSERT3S(start, >=, fpos);
 			folio_off = (size_t)(start - fpos) + off;
 			ASSERT3U(folio_off + nbytes, <=, folio_size(folio));
@@ -429,17 +441,17 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 			}
 
 			if (zn_writably_mapped(zp))
-				flush_dcache_page(pp);
+				flush_dcache_page(fpp);
 
-			pb = kmap(pp);
+			pb = kmap(fpp);
 			memcpy(dst, pb + off, nbytes);
-			kunmap(pp);
+			kunmap(fpp);
 
 			if (zn_writably_mapped(zp))
-				flush_dcache_page(pp);
+				flush_dcache_page(fpp);
 
 			unlock_page(pp);
-			mark_page_accessed(pp);
+			mark_page_accessed(fpp);
 			put_page(pp);
 		} else {
 			error = dmu_read(zfsvfs->z_os, zp->z_id, start + off,
@@ -471,26 +483,29 @@ update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 
 	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
 		uint64_t nbytes = MIN(PAGE_SIZE - off, len);
+		pgoff_t index = start >> PAGE_SHIFT;
 
-		struct page *pp = find_lock_page(mp, start >> PAGE_SHIFT);
+		struct page *pp = find_lock_page(mp, index);
 		if (pp) {
 			struct folio *folio = page_folio(pp);
+			struct page *fpp;
 			loff_t fpos = folio_pos(folio);
 			boolean_t was_uptodate = folio_test_uptodate(folio);
 			size_t folio_len = folio_size(folio);
 			size_t folio_off;
 
+			fpp = zfs_folio_page_for_index(folio, index);
 			ASSERT3S(start, >=, fpos);
 			folio_off = (size_t)(start - fpos) + off;
 			ASSERT3U(folio_off + nbytes, <=, folio_len);
 
 			if (zn_writably_mapped(zp))
-				flush_dcache_page(pp);
+				flush_dcache_page(fpp);
 
-			void *pb = kmap(pp);
+			void *pb = kmap(fpp);
 			int error = dmu_read(os, zp->z_id, start + off,
 			    nbytes, pb + off, DMU_READ_PREFETCH);
-			kunmap(pp);
+			kunmap(fpp);
 
 			if (error) {
 				SetPageError(&folio->page);
@@ -500,9 +515,9 @@ update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 				    was_uptodate, folio_off, nbytes);
 
 				if (zn_writably_mapped(zp))
-					flush_dcache_page(pp);
+					flush_dcache_page(fpp);
 
-				mark_page_accessed(pp);
+				mark_page_accessed(fpp);
 			}
 
 			unlock_page(pp);
@@ -570,13 +585,16 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 
 	for (start &= PAGE_MASK; len > 0; start += PAGE_SIZE) {
 		uint64_t bytes = MIN(PAGE_SIZE - off, len);
+		pgoff_t index = start >> PAGE_SHIFT;
 
-		struct page *pp = find_lock_page(mp, start >> PAGE_SHIFT);
+		struct page *pp = find_lock_page(mp, index);
 		if (pp) {
 			struct folio *folio = page_folio(pp);
+			struct page *fpp;
 			loff_t fpos = folio_pos(folio);
 			size_t folio_off;
 
+			fpp = zfs_folio_page_for_index(folio, index);
 			ASSERT3S(start, >=, fpos);
 			folio_off = (size_t)(start - fpos) + off;
 			ASSERT3U(folio_off + bytes, <=, folio_size(folio));
@@ -601,11 +619,11 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 
 			unlock_page(pp);
 
-			void *pb = kmap(pp);
+			void *pb = kmap(fpp);
 			error = zfs_uiomove(pb + off, bytes, UIO_READ, uio);
-			kunmap(pp);
+			kunmap(fpp);
 
-			mark_page_accessed(pp);
+			mark_page_accessed(fpp);
 			put_page(pp);
 		} else {
 			error = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl),
