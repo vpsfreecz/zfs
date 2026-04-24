@@ -4098,10 +4098,14 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	int		cnt = 0;
 	struct address_space *mapping;
 
-	if ((err = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
-		return (err);
-
 	ASSERT(PageLocked(pp));
+
+	if ((err = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0) {
+		if (folio_mapping(folio) != NULL && !folio_test_dirty(folio))
+			redirty_page_for_writepage(wbc, pp);
+		unlock_page(pp);
+		return (err);
+	}
 
 	if (!zfs_folio_writeback_span(ip, zp, folio, &pgoff, &pglen)) {
 		unlock_page(pp);
