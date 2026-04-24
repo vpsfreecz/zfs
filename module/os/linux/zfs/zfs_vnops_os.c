@@ -73,11 +73,6 @@
 #include <sys/sa_impl.h>
 #include <linux/mm_compat.h>
 
-#ifndef nth_page
-/* Linux 6.18 removed nth_page(); compound folio subpages are contiguous. */
-#define	nth_page(p, n)	((p) + (n))
-#endif
-
 /*
  * Programming rules.
  *
@@ -280,7 +275,7 @@ zfs_read_folio_range(objset_t *os, uint64_t object, u_offset_t file_off,
 		size_t page_index = cur >> PAGE_SHIFT;
 		size_t page_off = cur & (PAGE_SIZE - 1);
 		size_t nbytes = MIN(len - copied, PAGE_SIZE - page_off);
-		struct page *pp = nth_page(&folio->page, page_index);
+		struct page *pp = folio_page(folio, page_index);
 		void *va = kmap(pp);
 		int error;
 
@@ -309,7 +304,7 @@ zfs_write_folio_range(objset_t *os, uint64_t object, u_offset_t file_off,
 		size_t page_index = cur >> PAGE_SHIFT;
 		size_t page_off = cur & (PAGE_SIZE - 1);
 		size_t nbytes = MIN(len - copied, PAGE_SIZE - page_off);
-		struct page *pp = nth_page(&folio->page, page_index);
+		struct page *pp = folio_page(folio, page_index);
 		void *va = kmap(pp);
 
 		dmu_write(os, object, file_off + copied, nbytes,
@@ -332,7 +327,7 @@ zfs_zero_folio_range(struct folio *folio, size_t off, size_t len)
 		size_t page_index = cur >> PAGE_SHIFT;
 		size_t page_off = cur & (PAGE_SIZE - 1);
 		size_t nbytes = MIN(len - cleared, PAGE_SIZE - page_off);
-		struct page *pp = nth_page(&folio->page, page_index);
+		struct page *pp = folio_page(folio, page_index);
 		void *va = kmap(pp);
 
 		memset((char *)va + page_off, 0, nbytes);
