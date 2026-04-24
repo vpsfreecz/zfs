@@ -4008,6 +4008,7 @@ zfs_folio_account_relock_skip(struct writeback_control *wbc,
 	(void) folio_redirty_for_writepage(wbc, folio);
 #else
 	(void) redirty_page_for_writepage(wbc, &folio->page);
+	wbc->pages_skipped += folio_nr_pages(folio) - 1;
 #endif
 	return (B_TRUE);
 }
