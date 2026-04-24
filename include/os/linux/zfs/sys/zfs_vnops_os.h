@@ -84,7 +84,8 @@ extern int zfs_fid(struct inode *ip, fid_t *fidp);
 extern int zfs_getfolio(struct inode *ip, struct folio *folio,
     struct address_space *mapping, pgoff_t index);
 extern int zfs_putfolio(struct inode *ip, struct folio *folio,
-    struct writeback_control *wbc, boolean_t for_sync);
+    struct writeback_control *wbc, boolean_t for_sync,
+    boolean_t *countedp);
 extern int zfs_dirty_inode(struct inode *ip, int flags);
 extern int zfs_map(struct inode *ip, offset_t off, caddr_t *addrp,
     size_t len, unsigned long vm_flags);

@@ -4029,6 +4029,7 @@ zfs_folio_writeback_span(struct inode *ip, znode_t *zp, struct folio *folio,
 	loff_t eof = i_size_read(ip);
 	loff_t foff = folio_pos(folio);
 	size_t fsize = folio_size(folio);
+	uint64_t remaining;
 	size_t flen;
 
 	if (eof > zp->z_size)
@@ -4037,9 +4038,8 @@ zfs_folio_writeback_span(struct inode *ip, znode_t *zp, struct folio *folio,
 	if (foff >= eof)
 		return (B_FALSE);
 
-	flen = MIN(fsize, P2ROUNDUP(eof, fsize) - foff);
-	if (foff + flen > eof)
-		flen = eof - foff;
+	remaining = eof - foff;
+	flen = MIN((uint64_t)fsize, remaining);
 
 	*foffp = foff;
 	*flenp = flen;
@@ -4113,7 +4113,7 @@ zfs_putfolio_commit_cb(void *arg, int err)
  */
 int
 zfs_putfolio(struct inode *ip, struct folio *folio,
-    struct writeback_control *wbc, boolean_t for_sync)
+    struct writeback_control *wbc, boolean_t for_sync, boolean_t *countedp)
 {
 	struct page *pp = &folio->page;
 	znode_t		*zp = ITOZ(ip);
@@ -4133,15 +4133,21 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	boolean_t skip_accounted = B_FALSE;
 
 	ASSERT(PageLocked(pp));
+	if (countedp != NULL)
+		*countedp = B_FALSE;
 
 	if ((err = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0) {
-		(void) zfs_folio_account_relock_skip(wbc, folio);
+		if (zfs_folio_account_relock_skip(wbc, folio) &&
+		    countedp != NULL)
+			*countedp = B_TRUE;
 		unlock_page(pp);
 		return (err);
 	}
 
 	if (!zfs_folio_writeback_span(ip, zp, folio, &pgoff, &pglen)) {
 		zfs_folio_clean_writeback_skip(folio);
+		if (countedp != NULL)
+			*countedp = B_TRUE;
 		unlock_page(pp);
 		zfs_exit(zfsvfs, FTAG);
 		return (0);
@@ -4188,8 +4194,11 @@ range_retry:
 	case ZFS_PUTFOLIO_RELOCK_ABORT:
 		if (skip_accounted) {
 			if (folio_test_dirty(folio) &&
-			    !folio_test_writeback(folio))
+			    !folio_test_writeback(folio)) {
 				zfs_folio_clean_writeback_skip(folio);
+				if (countedp != NULL)
+					*countedp = B_TRUE;
+			}
 			wbc->pages_skipped -= folio_nr_pages(folio);
 		}
 		unlock_page(pp);
@@ -4199,6 +4208,8 @@ range_retry:
 
 	case ZFS_PUTFOLIO_RELOCK_CLEAN:
 		zfs_folio_clean_writeback_skip(folio);
+		if (countedp != NULL)
+			*countedp = B_TRUE;
 		if (skip_accounted)
 			wbc->pages_skipped -= folio_nr_pages(folio);
 		unlock_page(pp);
@@ -4207,22 +4218,26 @@ range_retry:
 		return (0);
 
 	case ZFS_PUTFOLIO_RELOCK_WAIT_WRITEBACK:
-		if (skip_accounted)
+		if (skip_accounted) {
 			wbc->pages_skipped -= folio_nr_pages(folio);
+			skip_accounted = B_FALSE;
+		}
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 
-		if (wbc->sync_mode != WB_SYNC_NONE) {
-			if (folio_test_writeback(folio))
-#ifdef HAVE_PAGEMAP_FOLIO_WAIT_BIT
-				folio_wait_bit(folio, PG_writeback);
-#else
-				wait_on_page_bit(pp, PG_writeback);
-#endif
+		if (wbc->sync_mode == WB_SYNC_NONE) {
+			zfs_exit(zfsvfs, FTAG);
+			return (0);
 		}
 
-		zfs_exit(zfsvfs, FTAG);
-		return (0);
+		if (folio_test_writeback(folio))
+#ifdef HAVE_PAGEMAP_FOLIO_WAIT_BIT
+			folio_wait_bit(folio, PG_writeback);
+#else
+			wait_on_page_bit(pp, PG_writeback);
+#endif
+		lock_page(pp);
+		goto range_retry;
 
 	default:
 		break;
@@ -4245,6 +4260,8 @@ range_retry:
 	 */
 	if (zfs_owner_overblockquota(zp)) {
 		mapping_set_error(mapping, -EDQUOT);
+		if (countedp != NULL)
+			*countedp = B_TRUE;
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 		zfs_exit(zfsvfs, FTAG);
@@ -4268,6 +4285,8 @@ range_retry:
 	 */
 	if (skip_accounted)
 		wbc->pages_skipped -= folio_nr_pages(folio);
+	if (countedp != NULL)
+		*countedp = B_TRUE;
 	folio_start_writeback(folio);
 	unlock_page(pp);
 
