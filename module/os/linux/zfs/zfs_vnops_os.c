@@ -233,7 +233,14 @@ zfs_close(struct inode *ip, int flag, cred_t *cr)
 
 #if defined(_KERNEL)
 
-static int zfs_fill_folio(struct inode *ip, struct folio *folio);
+static int zfs_fill_folio(struct inode *ip, struct folio *folio,
+    struct address_space *mapping, pgoff_t index);
+
+static boolean_t
+zfs_folio_contains_index(struct folio *folio, pgoff_t index)
+{
+	return (index - folio->index < folio_nr_pages(folio));
+}
 
 static boolean_t
 zfs_folio_revalidate(struct inode *ip, struct folio *folio,
@@ -246,7 +253,8 @@ zfs_folio_revalidate(struct inode *ip, struct folio *folio,
 	size_t io_len = folio_size(folio);
 
 	if (mapping != NULL && (fmapping != mapping ||
-	    fmapping->host != ip || (folio_pos(folio) >> PAGE_SHIFT) != index))
+	    fmapping->host != ip ||
+	    !zfs_folio_contains_index(folio, index)))
 		return (B_FALSE);
 
 	i_size = i_size_read(ip);
@@ -369,7 +377,8 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 			 * In this case we must try and fill the page.
 			 */
 			if (unlikely(!folio_test_uptodate(folio))) {
-				error = zfs_fill_folio(ip, folio);
+				error = zfs_fill_folio(ip, folio, mp,
+				    start >> PAGE_SHIFT);
 				if (error) {
 					unlock_page(pp);
 					put_page(pp);
@@ -534,7 +543,8 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 			 * In this case we must try and fill the page.
 			 */
 			if (unlikely(!folio_test_uptodate(folio))) {
-				error = zfs_fill_folio(ip, folio);
+				error = zfs_fill_folio(ip, folio, mp,
+				    start >> PAGE_SHIFT);
 				if (error) {
 					unlock_page(pp);
 					put_page(pp);
@@ -4563,13 +4573,14 @@ zfs_fill_folio_range(struct inode *ip, struct folio *folio, u_offset_t io_off,
 }
 
 static int
-zfs_fill_folio(struct inode *ip, struct folio *folio)
+zfs_fill_folio(struct inode *ip, struct folio *folio,
+    struct address_space *mapping, pgoff_t index)
 {
 	u_offset_t io_off;
 	size_t io_len;
 
-	if (unlikely(!zfs_folio_revalidate(ip, folio, NULL, 0, &io_off,
-	    &io_len))) {
+	if (unlikely(!zfs_folio_revalidate(ip, folio, mapping, index,
+	    &io_off, &io_len))) {
 		folio_clear_uptodate(folio);
 		return (SET_ERROR(EIO));
 	}
