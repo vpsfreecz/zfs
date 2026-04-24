@@ -214,6 +214,18 @@ zpl_folio_head_page(struct folio *folio)
 	return (folio_page(folio, 0));
 }
 
+static inline void
+zpl_folio_wait_writeback(struct folio *folio)
+{
+#ifdef HAVE_PAGEMAP_FOLIO_WAIT_WRITEBACK
+	folio_wait_writeback(folio);
+#elif defined(HAVE_PAGEMAP_FOLIO_WAIT_BIT)
+	folio_wait_bit(folio, PG_writeback);
+#else
+	wait_on_page_bit(zpl_folio_head_page(folio), PG_writeback);
+#endif
+}
+
 /*
  * Segment-only page-cache mutators may preserve existing validity for the
  * whole cache unit, but they must not create it unless they cover the whole

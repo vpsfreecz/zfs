@@ -593,16 +593,6 @@ zpl_writeback_folio(struct folio *folio, struct writeback_control *wbc,
 #endif
 
 #if defined(HAVE_FILEMAP_GET_FOLIOS_TAG)
-static inline void
-zpl_folio_wait_writeback(struct folio *folio)
-{
-#ifdef HAVE_PAGEMAP_FOLIO_WAIT_BIT
-	folio_wait_bit(folio, PG_writeback);
-#else
-	wait_on_page_bit(zpl_folio_head_page(folio), PG_writeback);
-#endif
-}
-
 static inline pgoff_t
 zpl_folio_index(struct folio *folio)
 {

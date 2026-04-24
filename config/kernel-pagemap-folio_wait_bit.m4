@@ -1,9 +1,30 @@
 dnl #
 dnl # Linux 5.16 no longer allows directly calling wait_on_page_bit, and
-dnl # instead requires you to call folio-specific functions. In this case,
-dnl # wait_on_page_bit(pg, PG_writeback) becomes
-dnl # folio_wait_bit(pg, PG_writeback)
+dnl # instead requires folio-specific wait helpers.  Prefer the dedicated
+dnl # folio_wait_writeback() helper when available and keep folio_wait_bit()
+dnl # only as the compatibility fallback.
 dnl #
+AC_DEFUN([ZFS_AC_KERNEL_SRC_PAGEMAP_FOLIO_WAIT_WRITEBACK], [
+	ZFS_LINUX_TEST_SRC([pagemap_has_folio_wait_writeback], [
+		#include <linux/pagemap.h>
+	],[
+		static struct folio *f = NULL;
+
+		folio_wait_writeback(f);
+	])
+])
+
+AC_DEFUN([ZFS_AC_KERNEL_PAGEMAP_FOLIO_WAIT_WRITEBACK], [
+	AC_MSG_CHECKING([whether folio_wait_writeback() exists])
+	ZFS_LINUX_TEST_RESULT([pagemap_has_folio_wait_writeback], [
+		AC_MSG_RESULT([yes])
+		AC_DEFINE(HAVE_PAGEMAP_FOLIO_WAIT_WRITEBACK, 1,
+			[folio_wait_writeback() exists])
+	],[
+		AC_MSG_RESULT([no])
+	])
+])
+
 AC_DEFUN([ZFS_AC_KERNEL_SRC_PAGEMAP_FOLIO_WAIT_BIT], [
 	ZFS_LINUX_TEST_SRC([pagemap_has_folio_wait_bit], [
 		#include <linux/pagemap.h>

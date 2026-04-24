@@ -4381,11 +4381,7 @@ range_retry:
 		}
 
 		if (folio_test_writeback(folio))
-#ifdef HAVE_PAGEMAP_FOLIO_WAIT_BIT
-			folio_wait_bit(folio, PG_writeback);
-#else
-			wait_on_page_bit(pp, PG_writeback);
-#endif
+			zpl_folio_wait_writeback(folio);
 
 		lock_page(pp);
 		relock_account = B_FALSE;
