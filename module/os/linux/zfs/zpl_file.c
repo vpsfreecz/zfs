@@ -734,7 +734,7 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 	zfsvfs_t	*zfsvfs = ITOZSB(mapping->host);
 	enum writeback_sync_modes sync_mode;
 	int first_pass_error;
-	int result;
+	int result = 0;
 
 	if ((result = zpl_enter(zfsvfs, FTAG)) != 0)
 		return (result);
