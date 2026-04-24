@@ -543,6 +543,9 @@ zpl_writeback_folio_common(struct folio *folio,
 	ret = zfs_putfolio(mapping->host, folio, wbc, for_sync, countedp);
 	spl_fstrans_unmark(cookie);
 
+	if (ret > 0)
+		ret = -ret;
+
 	return (ret);
 }
 
