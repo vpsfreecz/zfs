@@ -3958,7 +3958,7 @@ zfs_folio_writeback_done(struct folio *folio, int err)
 	struct page *pp = &folio->page;
 
 	if (err != 0) {
-		struct address_space *mapping = page_mapping(pp);
+		struct address_space *mapping = folio_mapping(folio);
 
 		if (mapping != NULL) {
 			/* Report writeback failure before retrying. */
@@ -3977,7 +3977,31 @@ zfs_folio_writeback_done(struct folio *folio, int err)
 	}
 
 	ClearPageError(pp);
-	end_page_writeback(pp);
+	folio_end_writeback(folio);
+}
+
+static inline boolean_t
+zfs_folio_redirty_for_relock(struct writeback_control *wbc,
+    struct folio *folio)
+{
+	if (folio_mapping(folio) == NULL || folio_test_dirty(folio))
+		return (B_FALSE);
+
+	redirty_page_for_writepage(wbc, &folio->page);
+	return (B_TRUE);
+}
+
+static inline void
+zfs_folio_clean_writeback_skip(struct folio *folio)
+{
+	struct page *pp = &folio->page;
+
+	ASSERT(PageLocked(pp));
+	ASSERT(!PageWriteback(pp));
+
+	(void) folio_clear_dirty_for_io(folio);
+	folio_start_writeback(folio);
+	folio_end_writeback(folio);
 }
 
 typedef enum zfs_putfolio_relock_state {
@@ -4020,11 +4044,11 @@ zfs_folio_writeback_revalidate(struct inode *ip, znode_t *zp,
 	    !folio_test_dirty(folio)))
 		return (ZFS_PUTFOLIO_RELOCK_ABORT);
 
-	if (!zfs_folio_writeback_span(ip, zp, folio, foffp, flenp))
-		return (ZFS_PUTFOLIO_RELOCK_CLEAN);
-
 	if (folio_test_writeback(folio))
 		return (ZFS_PUTFOLIO_RELOCK_WAIT_WRITEBACK);
+
+	if (!zfs_folio_writeback_span(ip, zp, folio, foffp, flenp))
+		return (ZFS_PUTFOLIO_RELOCK_CLEAN);
 
 	return (ZFS_PUTFOLIO_RELOCK_WRITE);
 }
@@ -4092,18 +4116,18 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	sa_bulk_attr_t	bulk[3];
 	int		cnt = 0;
 	struct address_space *mapping;
+	boolean_t redirtied = B_FALSE;
 
 	ASSERT(PageLocked(pp));
 
 	if ((err = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0) {
-		if (folio_mapping(folio) != NULL && !folio_test_dirty(folio))
-			redirty_page_for_writepage(wbc, pp);
+		(void) zfs_folio_redirty_for_relock(wbc, folio);
 		unlock_page(pp);
 		return (err);
 	}
 
 	if (!zfs_folio_writeback_span(ip, zp, folio, &pgoff, &pglen)) {
-		(void) clear_page_dirty_for_io(pp);
+		zfs_folio_clean_writeback_skip(folio);
 		unlock_page(pp);
 		zfs_exit(zfsvfs, FTAG);
 		return (0);
@@ -4133,7 +4157,7 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	 * the page state has changed it must be handled accordingly.
 	 */
 	mapping = folio_mapping(folio);
-	redirty_page_for_writepage(wbc, pp);
+	redirtied = zfs_folio_redirty_for_relock(wbc, folio);
 	unlock_page(pp);
 
 	zfs_locked_range_t *lr = zfs_rangelock_enter(&zp->z_rangelock,
@@ -4149,8 +4173,9 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 		return (0);
 
 	case ZFS_PUTFOLIO_RELOCK_CLEAN:
-		(void) clear_page_dirty_for_io(pp);
-		wbc->pages_skipped -= folio_nr_pages(folio);
+		zfs_folio_clean_writeback_skip(folio);
+		if (redirtied)
+			wbc->pages_skipped -= folio_nr_pages(folio);
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 		zfs_exit(zfsvfs, FTAG);
@@ -4190,8 +4215,8 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 		return (for_sync ? EDQUOT : 0);
 	}
 
-	/* Clear the dirty flag the required locks are held */
-	if (!clear_page_dirty_for_io(pp)) {
+	/* Clear the dirty flag while the required locks are held. */
+	if (!folio_clear_dirty_for_io(folio)) {
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 		zfs_exit(zfsvfs, FTAG);
@@ -4199,12 +4224,12 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	}
 
 	/*
-	 * Counterpart for redirty_page_for_writepage() above.  This
-	 * folio was in fact not skipped and should not be counted as
-	 * if it were.
+	 * Counterpart for zfs_folio_redirty_for_relock() above.  The folio
+	 * was in fact not skipped and should not be counted as if it were.
 	 */
-	wbc->pages_skipped -= folio_nr_pages(folio);
-	set_page_writeback(pp);
+	if (redirtied)
+		wbc->pages_skipped -= folio_nr_pages(folio);
+	folio_start_writeback(folio);
 	unlock_page(pp);
 
 	tx = dmu_tx_create(zfsvfs->z_os);
