@@ -244,7 +244,7 @@ zfs_folio_contains_index(struct folio *folio, pgoff_t index)
 {
 	pgoff_t fidx = zfs_folio_index(folio);
 
-	return (index - fidx < folio_nr_pages(folio));
+	return (index >= fidx && index - fidx < folio_nr_pages(folio));
 }
 
 static struct page *
