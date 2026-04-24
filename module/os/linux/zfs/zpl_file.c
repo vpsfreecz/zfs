@@ -571,14 +571,31 @@ zpl_folio_wait_writeback(struct folio *folio)
 #endif
 }
 
+static inline pgoff_t
+zpl_wbc_end(struct writeback_control *wbc)
+{
+	if (wbc->range_cyclic)
+		return ((pgoff_t)-1);
+
+	return (wbc->range_end >> PAGE_SHIFT);
+}
+
+static inline void
+zpl_wbc_advance(struct address_space *mapping, struct folio *folio)
+{
+	mapping->writeback_index = folio->index + folio_nr_pages(folio);
+}
+
 static inline int
 zpl_write_cache_pages(struct address_space *mapping,
     struct writeback_control *wbc, void *data)
 {
-	pgoff_t start = wbc->range_start >> PAGE_SHIFT;
-	pgoff_t end = wbc->range_end >> PAGE_SHIFT;
+	pgoff_t start = wbc->range_cyclic ? mapping->writeback_index :
+	    wbc->range_start >> PAGE_SHIFT;
+	pgoff_t end = zpl_wbc_end(wbc);
 	struct folio_batch fbatch;
 	int err = 0;
+	boolean_t done = B_FALSE;
 	unsigned int nfolios;
 
 	folio_batch_init(&fbatch);
@@ -591,7 +608,7 @@ zpl_write_cache_pages(struct address_space *mapping,
 	 */
 	tag_pages_for_writeback(mapping, start, end);
 
-	while ((nfolios = filemap_get_folios_tag(mapping, &start, end,
+	while (!done && (nfolios = filemap_get_folios_tag(mapping, &start, end,
 	    PAGECACHE_TAG_TOWRITE, &fbatch)) != 0) {
 		struct folio *folio;
 
@@ -606,18 +623,35 @@ zpl_write_cache_pages(struct address_space *mapping,
 				continue;
 			}
 
-			while (folio_test_writeback(folio))
-				zpl_folio_wait_writeback(folio);
+			if (folio_test_writeback(folio)) {
+				if (wbc->sync_mode == WB_SYNC_NONE) {
+					folio_unlock(folio);
+					continue;
+				}
+
+				while (folio_test_writeback(folio))
+					zpl_folio_wait_writeback(folio);
+			}
 
 			ferr = zpl_writeback_page(&folio->page, wbc, data);
 			if (err == 0 && ferr != 0)
 				err = ferr;
 
 			wbc->nr_to_write -= folio_nr_pages(folio);
+			if (wbc->sync_mode != WB_SYNC_ALL &&
+			    (ferr != 0 || wbc->nr_to_write <= 0)) {
+				if (wbc->range_cyclic)
+					zpl_wbc_advance(mapping, folio);
+				done = B_TRUE;
+				break;
+			}
 		}
 
 		folio_batch_release(&fbatch);
 	}
+
+	if (!done && wbc->range_cyclic)
+		mapping->writeback_index = 0;
 
 	return (err);
 }
