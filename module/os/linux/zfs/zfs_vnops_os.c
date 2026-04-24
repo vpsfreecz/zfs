@@ -4192,12 +4192,14 @@ zfs_folio_writeback_revalidate(struct inode *ip, znode_t *zp,
     struct folio *folio, struct address_space *mapping, loff_t *foffp,
     size_t *flenp)
 {
-	if (unlikely(mapping != folio_mapping(folio) ||
-	    !folio_test_dirty(folio)))
+	if (unlikely(mapping != folio_mapping(folio)))
 		return (ZFS_PUTFOLIO_RELOCK_ABORT);
 
 	if (folio_test_writeback(folio))
 		return (ZFS_PUTFOLIO_RELOCK_WAIT_WRITEBACK);
+
+	if (!folio_test_dirty(folio))
+		return (ZFS_PUTFOLIO_RELOCK_ABORT);
 
 	if (!zfs_folio_writeback_span(ip, zp, folio, foffp, flenp))
 		return (ZFS_PUTFOLIO_RELOCK_CLEAN);
