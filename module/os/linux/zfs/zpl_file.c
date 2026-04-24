@@ -767,8 +767,10 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 	 * completion.
 	 */
 	result = zpl_enter_verify_zp(zfsvfs, zp, FTAG);
-	if (result != 0)
+	if (result != 0) {
+		wbc->sync_mode = sync_mode;
 		return (first_pass_error != 0 ? first_pass_error : result);
+	}
 
 	if (zfsvfs->z_log != NULL) {
 		/*
@@ -789,11 +791,15 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 	 * to the DMU, but it may not be on disk. We have little choice
 	 * but to escape.
 	 */
-	if (result != 0)
+	if (result != 0) {
+		wbc->sync_mode = sync_mode;
 		return (result);
+	}
 
-	if (first_pass_error != 0)
+	if (first_pass_error != 0) {
+		wbc->sync_mode = sync_mode;
 		return (first_pass_error);
+	}
 
 	/*
 	 * We need to call write_cache_pages() again (we can't just
