@@ -561,6 +561,16 @@ zpl_writeback_folio(struct folio *folio, struct writeback_control *wbc,
 #endif
 
 #if defined(HAVE_FILEMAP_GET_FOLIOS_TAG)
+static inline void
+zpl_folio_wait_writeback(struct folio *folio)
+{
+#ifdef HAVE_PAGEMAP_FOLIO_WAIT_BIT
+	folio_wait_bit(folio, PG_writeback);
+#else
+	wait_on_page_bit(&folio->page, PG_writeback);
+#endif
+}
+
 static inline int
 zpl_write_cache_pages(struct address_space *mapping,
     struct writeback_control *wbc, void *data)
@@ -597,7 +607,7 @@ zpl_write_cache_pages(struct address_space *mapping,
 			}
 
 			while (folio_test_writeback(folio))
-				folio_wait_bit(folio, PG_writeback);
+				zpl_folio_wait_writeback(folio);
 
 			ferr = zpl_writeback_page(&folio->page, wbc, data);
 			if (err == 0 && ferr != 0)
