@@ -208,6 +208,12 @@ extern int zpl_dedupe_file_range(struct file *src_file, loff_t src_off,
 #define	zpl_inode_set_mtime_to_ts(ip, ts)	(ip->i_mtime = ts)
 #endif
 
+static inline struct page *
+zpl_folio_head_page(struct folio *folio)
+{
+	return (folio_page(folio, 0));
+}
+
 /*
  * Segment-only page-cache mutators may preserve existing validity for the
  * whole cache unit, but they must not create it unless they cover the whole
@@ -226,7 +232,7 @@ static inline void
 zpl_folio_range_write_done(struct folio *folio, boolean_t was_uptodate,
     size_t off, size_t len)
 {
-	ClearPageError(&folio->page);
+	ClearPageError(zpl_folio_head_page(folio));
 	if (was_uptodate || zpl_folio_range_is_full(folio, off, len))
 		folio_mark_uptodate(folio);
 	else

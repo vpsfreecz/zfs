@@ -444,7 +444,7 @@ zpl_mmap(struct file *filp, struct vm_area_struct *vma)
 static inline int
 zpl_read_folio_common(struct folio *folio)
 {
-	struct page *pp = &folio->page;
+	struct page *pp = zpl_folio_head_page(folio);
 	struct address_space *mapping = folio_mapping(folio);
 	struct inode *ip = mapping->host;
 	pgoff_t index = folio_pos(folio) >> PAGE_SHIFT;
@@ -585,7 +585,7 @@ zpl_folio_wait_writeback(struct folio *folio)
 #ifdef HAVE_PAGEMAP_FOLIO_WAIT_BIT
 	folio_wait_bit(folio, PG_writeback);
 #else
-	wait_on_page_bit(&folio->page, PG_writeback);
+	wait_on_page_bit(zpl_folio_head_page(folio), PG_writeback);
 #endif
 }
 
@@ -681,7 +681,8 @@ zpl_write_cache_pages(struct address_space *mapping,
 				}
 			}
 
-			ferr = zpl_writeback_page(&folio->page, wbc, data);
+			ferr = zpl_writeback_page(zpl_folio_head_page(folio),
+			    wbc, data);
 			if (err == 0 && ferr != 0)
 				err = ferr;
 
@@ -837,7 +838,7 @@ zpl_writepage(struct page *pp, struct writeback_control *wbc)
 		.for_sync = (wbc->sync_mode == WB_SYNC_ALL),
 	};
 
-	return (zpl_writeback_page(&folio->page, wbc, &zdata));
+	return (zpl_writeback_page(zpl_folio_head_page(folio), wbc, &zdata));
 }
 #endif
 static int

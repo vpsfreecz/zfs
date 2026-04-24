@@ -35,7 +35,7 @@ zfs_readahead_page(struct readahead_control *ractl)
 {
 	struct folio *folio = __readahead_folio(ractl);
 
-	return (folio != NULL ? &folio->page : NULL);
+	return (folio != NULL ? folio_page(folio, 0) : NULL);
 }
 #define	readahead_page(ractl) zfs_readahead_page(ractl)
 #endif

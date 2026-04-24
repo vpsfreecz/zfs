@@ -363,7 +363,7 @@ static int
 zfs_fill_mapped_folio_range(struct inode *ip, struct folio *folio,
     u_offset_t file_off, size_t folio_off, size_t len, int flags)
 {
-	struct page *pp = &folio->page;
+	struct page *pp = zpl_folio_head_page(folio);
 	znode_t *zp = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
 	boolean_t was_uptodate = folio_test_uptodate(folio);
@@ -508,7 +508,7 @@ update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 			kunmap(fpp);
 
 			if (error) {
-				SetPageError(&folio->page);
+				SetPageError(zpl_folio_head_page(folio));
 				folio_clear_uptodate(folio);
 			} else {
 				zpl_folio_range_write_done(folio,
@@ -4022,7 +4022,7 @@ top:
 static inline void
 zfs_folio_writeback_done(struct folio *folio, int err)
 {
-	struct page *pp = &folio->page;
+	struct page *pp = zpl_folio_head_page(folio);
 
 	if (err != 0) {
 		struct address_space *mapping = folio_mapping(folio);
@@ -4069,7 +4069,7 @@ zfs_folio_account_relock_skip(struct writeback_control *wbc,
 #ifdef HAVE_FOLIO_REDIRTY_FOR_WRITEPAGE
 	(void) folio_redirty_for_writepage(wbc, folio);
 #else
-	(void) redirty_page_for_writepage(wbc, &folio->page);
+	(void) redirty_page_for_writepage(wbc, zpl_folio_head_page(folio));
 	wbc->pages_skipped += folio_nr_pages(folio) - 1;
 #endif
 	return (B_TRUE);
@@ -4078,7 +4078,7 @@ zfs_folio_account_relock_skip(struct writeback_control *wbc,
 static inline void
 zfs_folio_clean_writeback_skip(struct folio *folio)
 {
-	struct page *pp = &folio->page;
+	struct page *pp = zpl_folio_head_page(folio);
 
 	ASSERT(PageLocked(pp));
 	ASSERT(!folio_test_writeback(folio));
@@ -4188,7 +4188,7 @@ int
 zfs_putfolio(struct inode *ip, struct folio *folio,
     struct writeback_control *wbc, boolean_t for_sync, boolean_t *countedp)
 {
-	struct page *pp = &folio->page;
+	struct page *pp = zpl_folio_head_page(folio);
 	znode_t		*zp = ITOZ(ip);
 	zfsvfs_t	*zfsvfs = ITOZSB(ip);
 	loff_t		pgoff;
@@ -4607,7 +4607,7 @@ static int
 zfs_fill_folio_range(struct inode *ip, struct folio *folio, u_offset_t io_off,
     size_t io_len)
 {
-	struct page *pp = &folio->page;
+	struct page *pp = zpl_folio_head_page(folio);
 	znode_t *zp = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
 	size_t folio_len = folio_size(folio);
@@ -4649,7 +4649,7 @@ int
 zfs_getfolio(struct inode *ip, struct folio *folio,
     struct address_space *mapping, pgoff_t index)
 {
-	struct page *pp = &folio->page;
+	struct page *pp = zpl_folio_head_page(folio);
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
 	znode_t *zp = ITOZ(ip);
 	int error;
