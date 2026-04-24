@@ -3994,7 +3994,11 @@ zfs_folio_account_relock_skip(struct writeback_control *wbc,
 		return (B_TRUE);
 	}
 
+#ifdef HAVE_FOLIO_REDIRTY_FOR_WRITEPAGE
+	(void) folio_redirty_for_writepage(wbc, folio);
+#else
 	(void) redirty_page_for_writepage(wbc, &folio->page);
+#endif
 	return (B_TRUE);
 }
 
