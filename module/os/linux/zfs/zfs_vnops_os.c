@@ -3988,6 +3988,7 @@ zfs_folio_writeback_done(struct folio *folio, int err)
 
 typedef enum zfs_putfolio_relock_state {
 	ZFS_PUTFOLIO_RELOCK_ABORT = 0,
+	ZFS_PUTFOLIO_RELOCK_CLEAN,
 	ZFS_PUTFOLIO_RELOCK_WAIT_WRITEBACK,
 	ZFS_PUTFOLIO_RELOCK_WRITE
 } zfs_putfolio_relock_state_t;
@@ -4026,7 +4027,7 @@ zfs_folio_writeback_revalidate(struct inode *ip, znode_t *zp,
 		return (ZFS_PUTFOLIO_RELOCK_ABORT);
 
 	if (!zfs_folio_writeback_span(ip, zp, folio, foffp, flenp))
-		return (ZFS_PUTFOLIO_RELOCK_ABORT);
+		return (ZFS_PUTFOLIO_RELOCK_CLEAN);
 
 	if (folio_test_writeback(folio))
 		return (ZFS_PUTFOLIO_RELOCK_WAIT_WRITEBACK);
@@ -4108,6 +4109,7 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	}
 
 	if (!zfs_folio_writeback_span(ip, zp, folio, &pgoff, &pglen)) {
+		(void) clear_page_dirty_for_io(pp);
 		unlock_page(pp);
 		zfs_exit(zfsvfs, FTAG);
 		return (0);
@@ -4147,6 +4149,14 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	switch (zfs_folio_writeback_revalidate(ip, zp, folio,
 	    mapping, &pgoff, &pglen)) {
 	case ZFS_PUTFOLIO_RELOCK_ABORT:
+		unlock_page(pp);
+		zfs_rangelock_exit(lr);
+		zfs_exit(zfsvfs, FTAG);
+		return (0);
+
+	case ZFS_PUTFOLIO_RELOCK_CLEAN:
+		(void) clear_page_dirty_for_io(pp);
+		wbc->pages_skipped -= folio_nr_pages(folio);
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 		zfs_exit(zfsvfs, FTAG);
