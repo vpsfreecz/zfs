@@ -30,7 +30,8 @@
 #include <linux/mm_compat.h>
 #include <linux/pagemap.h>
 
-#ifndef HAVE_PAGEMAP_READAHEAD_PAGE
+#if !defined(HAVE_PAGEMAP_READAHEAD_PAGE) && \
+    defined(HAVE_PAGEMAP_READAHEAD_FOLIO)
 static inline struct page *
 zfs_readahead_page(struct readahead_control *ractl)
 {
