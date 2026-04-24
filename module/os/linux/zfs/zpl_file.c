@@ -451,7 +451,6 @@ zpl_read_folio_common(struct folio *folio)
 	fstrans_cookie_t cookie;
 	int error;
 
-	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
 	ASSERT(PageLocked(pp));
 
 	cookie = spl_fstrans_mark();
@@ -469,8 +468,6 @@ zpl_read_folio_common(struct folio *folio)
 static inline int
 zpl_readpage_common(struct page *pp)
 {
-	ASSERT3U(page_size(pp), ==, PAGE_SIZE);
-
 	return (zpl_read_folio_common(page_folio(pp)));
 }
 
@@ -532,8 +529,6 @@ zpl_writeback_folio_common(struct folio *folio,
 	fstrans_cookie_t cookie;
 	int ret;
 
-	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
-
 	cookie = spl_fstrans_mark();
 	ret = zfs_putfolio(mapping->host, folio, wbc, for_sync);
 	spl_fstrans_unmark(cookie);
@@ -552,18 +547,72 @@ zpl_writeback_page(struct page *pp, struct writeback_control *wbc, void *data)
 	return (zpl_writeback_folio_common(page_folio(pp), wbc, *for_sync));
 }
 
-#ifdef HAVE_WRITE_CACHE_PAGES
-#ifdef HAVE_WRITEPAGE_T_FOLIO
+#if defined(HAVE_WRITE_CACHE_PAGES)
+#if !defined(HAVE_FILEMAP_GET_FOLIOS_TAG) && defined(HAVE_WRITEPAGE_T_FOLIO)
 static int
 zpl_writeback_folio(struct folio *folio, struct writeback_control *wbc,
     void *data)
 {
 	boolean_t *for_sync = data;
 
-	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
 	return (zpl_writeback_folio_common(folio, wbc, *for_sync));
 }
 #endif
+#endif
+
+#if defined(HAVE_FILEMAP_GET_FOLIOS_TAG)
+static inline int
+zpl_write_cache_pages(struct address_space *mapping,
+    struct writeback_control *wbc, void *data)
+{
+	pgoff_t start = wbc->range_start >> PAGE_SHIFT;
+	pgoff_t end = wbc->range_end >> PAGE_SHIFT;
+	struct folio_batch fbatch;
+	int err = 0;
+	unsigned int nfolios;
+
+	folio_batch_init(&fbatch);
+
+	/*
+	 * Tag dirty cache units, then write the tagged folios ourselves.  This
+	 * keeps dirty/writeback preparation under the same ZFS-owned contract
+	 * as zfs_putfolio(), instead of layering write_cache_pages()
+	 * preparation on top of ZFS' private relock and redirty sequence.
+	 */
+	tag_pages_for_writeback(mapping, start, end);
+
+	while ((nfolios = filemap_get_folios_tag(mapping, &start, end,
+	    PAGECACHE_TAG_TOWRITE, &fbatch)) != 0) {
+		struct folio *folio;
+
+		while ((folio = folio_batch_next(&fbatch)) != NULL) {
+			int ferr;
+
+			folio_lock(folio);
+
+			if (folio->mapping != mapping ||
+			    !folio_test_dirty(folio)) {
+				folio_unlock(folio);
+				continue;
+			}
+
+			while (folio_test_writeback(folio))
+				folio_wait_bit(folio, PG_writeback);
+
+			ferr = zpl_writeback_page(&folio->page, wbc, data);
+			if (err == 0 && ferr != 0)
+				err = ferr;
+
+			wbc->nr_to_write -= folio_nr_pages(folio);
+		}
+
+		folio_batch_release(&fbatch);
+	}
+
+	return (err);
+}
+
+#elif defined(HAVE_WRITE_CACHE_PAGES)
 
 static inline int
 zpl_write_cache_pages(struct address_space *mapping,
@@ -583,72 +632,7 @@ static inline int
 zpl_write_cache_pages(struct address_space *mapping,
     struct writeback_control *wbc, void *data)
 {
-	pgoff_t start = wbc->range_start >> PAGE_SHIFT;
-	pgoff_t end = wbc->range_end >> PAGE_SHIFT;
-
-	struct folio_batch fbatch;
-	folio_batch_init(&fbatch);
-
-	/*
-	 * This atomically (-ish) tags all DIRTY pages in the range with
-	 * TOWRITE, allowing users to continue dirtying or undirtying pages
-	 * while we get on with writeback, without us treading on each other.
-	 */
-	tag_pages_for_writeback(mapping, start, end);
-
-	int err = 0;
-	unsigned int npages;
-
-	/*
-	 * Grab references to the TOWRITE pages just flagged. This may not get
-	 * all of them, so we do it in a loop until there are none left.
-	 */
-	while ((npages = filemap_get_folios_tag(mapping, &start, end,
-	    PAGECACHE_TAG_TOWRITE, &fbatch)) != 0) {
-
-		/* Loop over each page and write it out. */
-		struct folio *folio;
-		while ((folio = folio_batch_next(&fbatch)) != NULL) {
-			folio_lock(folio);
-
-			/*
-			 * If the folio has been remapped, or is no longer
-			 * dirty, then there's nothing to do.
-			 */
-			if (folio->mapping != mapping ||
-			    !folio_test_dirty(folio)) {
-				folio_unlock(folio);
-				continue;
-			}
-
-			/*
-			 * If writeback is already in progress, wait for it to
-			 * finish. We continue after this even if the page
-			 * ends up clean; zfs_putpage() will skip it if no
-			 * further work is required.
-			 */
-			while (folio_test_writeback(folio))
-				folio_wait_bit(folio, PG_writeback);
-
-			/*
-			 * Write it out and collect any error. zpl_writeback_page()
-			 * will clear the TOWRITE and DIRTY flags, and return
-			 * with the page unlocked.
-			 */
-			int ferr = zpl_writeback_page(&folio->page, wbc,
-			    data);
-			if (err == 0 && ferr != 0)
-				err = ferr;
-
-			/* Housekeeping for the caller. */
-			wbc->nr_to_write -= folio_nr_pages(folio);
-		}
-
-		/* Release any remaining references on the batch. */
-		folio_batch_release(&fbatch);
-	}
-
-	return (err);
+	return (SET_ERROR(ENOTSUP));
 }
 #endif
 
@@ -905,7 +889,7 @@ out_unmark:
 static long
 zpl_fallocate(struct file *filp, int mode, loff_t offset, loff_t len)
 {
-	return zpl_fallocate_common(filp, mode, offset, len);
+	return (zpl_fallocate_common(filp, mode, offset, len));
 }
 
 static int

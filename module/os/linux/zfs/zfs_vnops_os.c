@@ -73,6 +73,11 @@
 #include <sys/sa_impl.h>
 #include <linux/mm_compat.h>
 
+#ifndef nth_page
+/* Linux 6.18 removed nth_page(); compound folio subpages are contiguous. */
+#define	nth_page(p, n)	((p) + (n))
+#endif
+
 /*
  * Programming rules.
  *
@@ -245,8 +250,6 @@ zfs_folio_revalidate(struct inode *ip, struct folio *folio,
 	u_offset_t io_off;
 	size_t io_len = folio_size(folio);
 
-	ASSERT3U(io_len, ==, PAGE_SIZE);
-
 	if (mapping != NULL && (fmapping != mapping ||
 	    fmapping->host != ip || (folio_pos(folio) >> PAGE_SHIFT) != index))
 		return (B_FALSE);
@@ -262,6 +265,81 @@ zfs_folio_revalidate(struct inode *ip, struct folio *folio,
 	*io_offp = io_off;
 	*io_lenp = io_len;
 	return (B_TRUE);
+}
+
+static int
+zfs_read_folio_range(objset_t *os, uint64_t object, u_offset_t file_off,
+    struct folio *folio, size_t folio_off, size_t len, int flags)
+{
+	size_t copied = 0;
+
+	ASSERT3U(folio_off + len, <=, folio_size(folio));
+
+	while (copied < len) {
+		size_t cur = folio_off + copied;
+		size_t page_index = cur >> PAGE_SHIFT;
+		size_t page_off = cur & (PAGE_SIZE - 1);
+		size_t nbytes = MIN(len - copied, PAGE_SIZE - page_off);
+		struct page *pp = nth_page(&folio->page, page_index);
+		void *va = kmap(pp);
+		int error;
+
+		error = dmu_read(os, object, file_off + copied, nbytes,
+		    (char *)va + page_off, flags);
+		kunmap(pp);
+		if (error != 0)
+			return (error);
+
+		copied += nbytes;
+	}
+
+	return (0);
+}
+
+static void
+zfs_write_folio_range(objset_t *os, uint64_t object, u_offset_t file_off,
+    struct folio *folio, size_t folio_off, size_t len, dmu_tx_t *tx)
+{
+	size_t copied = 0;
+
+	ASSERT3U(folio_off + len, <=, folio_size(folio));
+
+	while (copied < len) {
+		size_t cur = folio_off + copied;
+		size_t page_index = cur >> PAGE_SHIFT;
+		size_t page_off = cur & (PAGE_SIZE - 1);
+		size_t nbytes = MIN(len - copied, PAGE_SIZE - page_off);
+		struct page *pp = nth_page(&folio->page, page_index);
+		void *va = kmap(pp);
+
+		dmu_write(os, object, file_off + copied, nbytes,
+		    (char *)va + page_off, tx);
+		kunmap(pp);
+
+		copied += nbytes;
+	}
+}
+
+static void
+zfs_zero_folio_range(struct folio *folio, size_t off, size_t len)
+{
+	size_t cleared = 0;
+
+	ASSERT3U(off + len, <=, folio_size(folio));
+
+	while (cleared < len) {
+		size_t cur = off + cleared;
+		size_t page_index = cur >> PAGE_SHIFT;
+		size_t page_off = cur & (PAGE_SIZE - 1);
+		size_t nbytes = MIN(len - cleared, PAGE_SIZE - page_off);
+		struct page *pp = nth_page(&folio->page, page_index);
+		void *va = kmap(pp);
+
+		memset((char *)va + page_off, 0, nbytes);
+		kunmap(pp);
+
+		cleared += nbytes;
+	}
 }
 
 /*
@@ -287,6 +365,7 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 		zn_lock_cached_data(zp);
 		pp = find_lock_page(mp, start >> PAGE_SHIFT);
 		if (pp != NULL) {
+			struct folio *folio = page_folio(pp);
 			void *pb;
 
 			/*
@@ -294,8 +373,8 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 			 * where the page will be unlocked and not up to date.
 			 * In this case we must try and fill the page.
 			 */
-			if (unlikely(!PageUptodate(pp))) {
-				error = zfs_fill_folio(ip, page_folio(pp));
+			if (unlikely(!PageUptodate(&folio->page))) {
+				error = zfs_fill_folio(ip, folio);
 				if (error) {
 					unlock_page(pp);
 					put_page(pp);
@@ -304,7 +383,8 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 				}
 			}
 
-			ASSERT(PageUptodate(pp) || PageDirty(pp));
+			ASSERT(PageUptodate(&folio->page) ||
+			    PageDirty(&folio->page));
 
 			if (zn_writably_mapped(zp))
 				flush_dcache_page(pp);
@@ -353,11 +433,14 @@ update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 		struct page *pp = find_lock_page(mp, start >> PAGE_SHIFT);
 		if (pp) {
 			struct folio *folio = page_folio(pp);
-			boolean_t was_uptodate = PageUptodate(pp);
+			loff_t fpos = folio_pos(folio);
+			boolean_t was_uptodate = PageUptodate(&folio->page);
 			size_t folio_len = folio_size(folio);
+			size_t folio_off;
 
-			ASSERT3U(folio_len, ==, PAGE_SIZE);
-			ASSERT3U(off + nbytes, <=, folio_len);
+			ASSERT3S(start, >=, fpos);
+			folio_off = (size_t)(start - fpos) + off;
+			ASSERT3U(folio_off + nbytes, <=, folio_len);
 
 			if (zn_writably_mapped(zp))
 				flush_dcache_page(pp);
@@ -368,11 +451,11 @@ update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 			kunmap(pp);
 
 			if (error) {
-				SetPageError(pp);
-				ClearPageUptodate(pp);
+				SetPageError(&folio->page);
+				ClearPageUptodate(&folio->page);
 			} else {
 				zpl_folio_range_write_done(folio,
-				    was_uptodate, off, nbytes);
+				    was_uptodate, folio_off, nbytes);
 
 				if (zn_writably_mapped(zp))
 					flush_dcache_page(pp);
@@ -448,14 +531,15 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 
 		struct page *pp = find_lock_page(mp, start >> PAGE_SHIFT);
 		if (pp) {
+			struct folio *folio = page_folio(pp);
 
 			/*
 			 * If filemap_fault() retries there exists a window
 			 * where the page will be unlocked and not up to date.
 			 * In this case we must try and fill the page.
 			 */
-			if (unlikely(!PageUptodate(pp))) {
-				error = zfs_fill_folio(ip, page_folio(pp));
+			if (unlikely(!PageUptodate(&folio->page))) {
+				error = zfs_fill_folio(ip, folio);
 				if (error) {
 					unlock_page(pp);
 					put_page(pp);
@@ -463,7 +547,8 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 				}
 			}
 
-			ASSERT(PageUptodate(pp) || PageDirty(pp));
+			ASSERT(PageUptodate(&folio->page) ||
+			    PageDirty(&folio->page));
 
 			unlock_page(pp);
 
@@ -3866,13 +3951,12 @@ top:
 	return (error);
 }
 
-/* Finish order-0 pagecache writeback through a folio-shaped helper. */
+/* Finish page-cache folio writeback through a common helper. */
 static inline void
 zfs_folio_writeback_done(struct folio *folio, int err)
 {
 	struct page *pp = &folio->page;
 
-	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
 	if (err != 0) {
 		struct address_space *mapping = page_mapping(pp);
 
@@ -3910,14 +3994,12 @@ typedef enum zfs_putfolio_relock_state {
 
 static boolean_t
 zfs_folio_writeback_span(struct inode *ip, znode_t *zp, struct folio *folio,
-    loff_t *foffp, unsigned int *flenp)
+    loff_t *foffp, size_t *flenp)
 {
 	loff_t eof = i_size_read(ip);
 	loff_t foff = folio_pos(folio);
 	size_t fsize = folio_size(folio);
-	unsigned int flen;
-
-	ASSERT3U(fsize, ==, PAGE_SIZE);
+	size_t flen;
 
 	if (eof > zp->z_size)
 		eof = zp->z_size;
@@ -3937,12 +4019,8 @@ zfs_folio_writeback_span(struct inode *ip, znode_t *zp, struct folio *folio,
 static zfs_putfolio_relock_state_t
 zfs_folio_writeback_revalidate(struct inode *ip, znode_t *zp,
     struct folio *folio, struct address_space *mapping, loff_t *foffp,
-    unsigned int *flenp)
+    size_t *flenp)
 {
-	struct page *pp = &folio->page;
-
-	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
-
 	if (unlikely(mapping != folio_mapping(folio) ||
 	    !folio_test_dirty(folio)))
 		return (ZFS_PUTFOLIO_RELOCK_ABORT);
@@ -3987,11 +4065,11 @@ zfs_putfolio_commit_cb(void *arg, int err)
 }
 
 /*
- * Push an order-0 folio out to disk. Once the cache unit is on stable
+ * Push a page-cache folio out to disk. Once the cache unit is on stable
  * storage the registered commit callback will be run as notification of
  * completion.
  *
- *	IN:	ip	    - order-0 folio mapped for inode.
+ *	IN:	ip	    - folio mapped for inode.
  *		folio - folio to push (locked)
  *		wbc   - writeback control data
  *		for_sync - does the caller intend to wait synchronously for the
@@ -4011,9 +4089,8 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	znode_t		*zp = ITOZ(ip);
 	zfsvfs_t	*zfsvfs = ITOZSB(ip);
 	loff_t		pgoff;
-	unsigned int	pglen;
+	size_t		pglen;
 	dmu_tx_t	*tx;
-	caddr_t		va;
 	int		err = 0;
 	uint64_t	mtime[2], ctime[2];
 	inode_timespec_t tmp_ts;
@@ -4025,7 +4102,6 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 		return (err);
 
 	ASSERT(PageLocked(pp));
-	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
 
 	if (!zfs_folio_writeback_span(ip, zp, folio, &pgoff, &pglen)) {
 		unlock_page(pp);
@@ -4141,10 +4217,8 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 		return (for_sync ? err : 0);
 	}
 
-	va = kmap(pp);
-	ASSERT3U(pglen, <=, PAGE_SIZE);
-	dmu_write(zfsvfs->z_os, zp->z_id, pgoff, pglen, va, tx);
-	kunmap(pp);
+	zfs_write_folio_range(zfsvfs->z_os, zp->z_id, pgoff, folio,
+	    pgoff - folio_pos(folio), pglen, tx);
 
 	SA_ADD_BULK_ATTR(bulk, cnt, SA_ZPL_MTIME(zfsvfs), NULL, &mtime, 16);
 	SA_ADD_BULK_ATTR(bulk, cnt, SA_ZPL_CTIME(zfsvfs), NULL, &ctime, 16);
@@ -4374,16 +4448,12 @@ zfs_fill_folio_range(struct inode *ip, struct folio *folio, u_offset_t io_off,
 	znode_t *zp = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
 	size_t folio_len = folio_size(folio);
-	void *va = kmap(pp);
-
-	ASSERT3U(folio_len, ==, PAGE_SIZE);
 	ASSERT3U(io_len, <=, folio_len);
 
-	int error = dmu_read(zfsvfs->z_os, zp->z_id, io_off,
-	    io_len, va, DMU_READ_PREFETCH);
+	int error = zfs_read_folio_range(zfsvfs->z_os, zp->z_id, io_off,
+	    folio, 0, io_len, DMU_READ_PREFETCH);
 	if (io_len != folio_len)
-		memset((char *)va + io_len, 0, folio_len - io_len);
-	kunmap(pp);
+		zfs_zero_folio_range(folio, io_len, folio_len - io_len);
 
 	if (error) {
 		/* convert checksum errors into IO errors */
@@ -4407,8 +4477,6 @@ zfs_fill_folio(struct inode *ip, struct folio *folio)
 	size_t io_len;
 	struct page *pp = &folio->page;
 
-	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
-
 	if (unlikely(!zfs_folio_revalidate(ip, folio, NULL, 0, &io_off,
 	    &io_len))) {
 		ClearPageUptodate(pp);
@@ -4423,7 +4491,7 @@ zfs_fill_folio(struct inode *ip, struct folio *folio)
  * unit.
  *
  *	IN:	ip	    - inode of file to get data from.
- *		folio - order-0 folio to read
+ *		folio - folio to read
  *
  *	RETURN:	0 on success, error code on failure.
  *
@@ -4440,8 +4508,6 @@ zfs_getfolio(struct inode *ip, struct folio *folio,
 	int error;
 	u_offset_t io_off;
 	size_t io_len;
-
-	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
 
 	if (unlikely(!zfs_folio_revalidate(ip, folio, mapping, index, &io_off,
 	    &io_len))) {
@@ -4599,10 +4665,11 @@ zfs_space_impl(znode_t *zp, int cmd, flock64_t *bfp, int flag,
 	/*
 	 * Permissions aren't checked on Solaris because on this OS
 	 * zfs_space() can only be called with an opened file handle.
-	 * On Linux we can reach this path both from VFS entry points that already
-	 * know the caller's mount idmap and from internal callers like replay.
-	 * Keep the access check on the same mount idmap as the VFS walk when one
-	 * exists, and fall back to init_idmap for internal paths.
+	 * On Linux we can reach this path both from VFS entry points
+	 * that already know the caller's mount idmap and from internal
+	 * callers like replay.  Keep the access check on the same mount
+	 * idmap as the VFS walk when one exists, and fall back to
+	 * init_idmap for internal paths.
 	 */
 	if ((error = zfs_zaccess(zp, ACE_WRITE_DATA, 0, B_FALSE, cr,
 	    mnt_ns))) {

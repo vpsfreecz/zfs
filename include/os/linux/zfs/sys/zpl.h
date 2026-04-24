@@ -228,7 +228,6 @@ zpl_folio_range_write_done(struct folio *folio, boolean_t was_uptodate,
 {
 	struct page *pp = &folio->page;
 
-	ASSERT3U(folio_size(folio), ==, PAGE_SIZE);
 	ClearPageError(pp);
 	if (was_uptodate || zpl_folio_range_is_full(folio, off, len))
 		SetPageUptodate(pp);

@@ -36,6 +36,37 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_WRITE_CACHE_PAGES], [
 	])
 ])
 
+AC_DEFUN([ZFS_AC_KERNEL_SRC_FILEMAP_GET_FOLIOS_TAG], [
+	dnl #
+	dnl # filemap_get_folios_tag() lets OpenZFS own the folio writeback
+	dnl # iteration contract instead of delegating preparation to
+	dnl # write_cache_pages().  This is available on the folio kernels where
+	dnl # the mixed writeback contract matters.
+	dnl #
+	ZFS_LINUX_TEST_SRC([filemap_get_folios_tag], [
+		#include <linux/pagemap.h>
+	], [
+		struct address_space *mapping = NULL;
+		struct folio_batch fbatch;
+		pgoff_t start = 0;
+		pgoff_t end = 0;
+
+		(void) filemap_get_folios_tag(mapping, &start, end,
+		    PAGECACHE_TAG_TOWRITE, &fbatch);
+	])
+])
+
+AC_DEFUN([ZFS_AC_KERNEL_FILEMAP_GET_FOLIOS_TAG], [
+	AC_MSG_CHECKING([whether filemap_get_folios_tag() is available])
+	ZFS_LINUX_TEST_RESULT([filemap_get_folios_tag], [
+		AC_MSG_RESULT(yes)
+		AC_DEFINE(HAVE_FILEMAP_GET_FOLIOS_TAG, 1,
+		    [filemap_get_folios_tag() is available])
+	],[
+		AC_MSG_RESULT(no)
+	])
+])
+
 AC_DEFUN([ZFS_AC_KERNEL_WRITE_CACHE_PAGES], [
 	AC_MSG_CHECKING([whether write_cache_pages() is available])
 	ZFS_LINUX_TEST_RESULT([write_cache_pages], [
@@ -50,9 +81,11 @@ AC_DEFUN([ZFS_AC_KERNEL_WRITE_CACHE_PAGES], [
 AC_DEFUN([ZFS_AC_KERNEL_SRC_WRITEBACK], [
 	ZFS_AC_KERNEL_SRC_WRITEPAGE_T
 	ZFS_AC_KERNEL_SRC_WRITE_CACHE_PAGES
+	ZFS_AC_KERNEL_SRC_FILEMAP_GET_FOLIOS_TAG
 ])
 
 AC_DEFUN([ZFS_AC_KERNEL_WRITEBACK], [
 	ZFS_AC_KERNEL_WRITEPAGE_T
 	ZFS_AC_KERNEL_WRITE_CACHE_PAGES
+	ZFS_AC_KERNEL_FILEMAP_GET_FOLIOS_TAG
 ])
