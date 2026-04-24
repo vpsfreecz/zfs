@@ -658,6 +658,7 @@ zpl_write_cache_pages(struct address_space *mapping,
 			int ferr;
 			zpl_writeback_data_t *zdata = data;
 
+		folio_retry:
 			folio_lock(folio);
 
 			if (folio_mapping(folio) != mapping ||
@@ -672,13 +673,9 @@ zpl_write_cache_pages(struct address_space *mapping,
 					continue;
 				}
 
-				while (folio_test_writeback(folio))
-					zpl_folio_wait_writeback(folio);
-
-				if (!folio_test_dirty(folio)) {
-					folio_unlock(folio);
-					continue;
-				}
+				folio_unlock(folio);
+				zpl_folio_wait_writeback(folio);
+				goto folio_retry;
 			}
 
 			ferr = zpl_writeback_page(zpl_folio_head_page(folio),
