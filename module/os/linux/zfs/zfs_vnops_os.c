@@ -4275,6 +4275,7 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	size_t locked_len;
 	boolean_t skip_accounted = B_FALSE;
 	boolean_t relock_account = B_TRUE;
+	boolean_t have_page_ref = B_FALSE;
 
 	ASSERT(PageLocked(pp));
 	if (countedp != NULL)
@@ -4321,6 +4322,11 @@ zfs_putfolio(struct inode *ip, struct folio *folio,
 	mapping = folio_mapping(folio);
 
 range_retry:
+	if (!have_page_ref) {
+		get_page(pp);
+		have_page_ref = B_TRUE;
+	}
+
 	if (!skip_accounted && (relock_account || folio_test_dirty(folio)))
 		skip_accounted = zfs_folio_account_relock_skip(wbc, folio);
 	relock_account = B_TRUE;
@@ -4344,6 +4350,7 @@ range_retry:
 			wbc->pages_skipped -= folio_nr_pages(folio);
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
+		put_page(pp);
 		zfs_exit(zfsvfs, FTAG);
 		return (0);
 
@@ -4355,6 +4362,7 @@ range_retry:
 			wbc->pages_skipped -= folio_nr_pages(folio);
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
+		put_page(pp);
 		zfs_exit(zfsvfs, FTAG);
 		return (0);
 
@@ -4367,6 +4375,7 @@ range_retry:
 		zfs_rangelock_exit(lr);
 
 		if (wbc->sync_mode == WB_SYNC_NONE) {
+			put_page(pp);
 			zfs_exit(zfsvfs, FTAG);
 			return (0);
 		}
@@ -4405,6 +4414,7 @@ range_retry:
 		mapping_set_error(mapping, -EDQUOT);
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
+		put_page(pp);
 		zfs_exit(zfsvfs, FTAG);
 
 		return (for_sync ? EDQUOT : 0);
@@ -4416,6 +4426,7 @@ range_retry:
 			wbc->pages_skipped -= folio_nr_pages(folio);
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
+		put_page(pp);
 		zfs_exit(zfsvfs, FTAG);
 		return (0);
 	}
@@ -4430,6 +4441,8 @@ range_retry:
 		*countedp = B_TRUE;
 	folio_start_writeback(folio);
 	unlock_page(pp);
+	put_page(pp);
+	have_page_ref = B_FALSE;
 
 	tx = dmu_tx_create(zfsvfs->z_os);
 	dmu_tx_hold_write(tx, zp->z_id, pgoff, pglen);
