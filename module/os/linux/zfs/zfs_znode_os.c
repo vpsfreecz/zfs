@@ -487,15 +487,27 @@ zfs_inode_destroy(struct inode *ip)
 }
 
 static void
+zfs_inode_set_file_ops(struct inode *ip)
+{
+	ip->i_op = &zpl_inode_operations;
+	ip->i_fop = &zpl_file_operations;
+	ip->i_mapping->a_ops = &zpl_address_space_operations;
+
+#if defined(HAVE_MAPPING_SET_LARGE_FOLIOS)
+#if defined(HAVE_FILEMAP_GET_FOLIOS_TAG)
+	mapping_set_large_folios(ip->i_mapping);
+#endif
+#endif
+}
+
+static void
 zfs_inode_set_ops(zfsvfs_t *zfsvfs, struct inode *ip)
 {
 	uint64_t rdev = 0;
 
 	switch (ip->i_mode & S_IFMT) {
 	case S_IFREG:
-		ip->i_op = &zpl_inode_operations;
-		ip->i_fop = &zpl_file_operations;
-		ip->i_mapping->a_ops = &zpl_address_space_operations;
+		zfs_inode_set_file_ops(ip);
 		break;
 
 	case S_IFDIR:
@@ -528,9 +540,7 @@ zfs_inode_set_ops(zfsvfs_t *zfsvfs, struct inode *ip)
 
 		/* Assume the inode is a file and attempt to continue */
 		ip->i_mode = S_IFREG | 0644;
-		ip->i_op = &zpl_inode_operations;
-		ip->i_fop = &zpl_file_operations;
-		ip->i_mapping->a_ops = &zpl_address_space_operations;
+		zfs_inode_set_file_ops(ip);
 		break;
 	}
 }
