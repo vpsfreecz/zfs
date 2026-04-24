@@ -31,6 +31,35 @@
 #include <linux/mm.h>
 #include <linux/pagemap.h>
 
+/*
+ * Linux 5.16 introduced struct folio and the common folio helpers.  Older
+ * kernels still drive the ZPL through page-sized page-cache entries, so model
+ * a folio as a wrapper over the existing struct page and map the helpers back
+ * to their page equivalents.
+ */
+#ifndef HAVE_MM_STRUCT_FOLIO
+struct folio {
+	struct page page;
+};
+
+#define	page_folio(p)		((struct folio *)(p))
+#define	folio_page(f, n)	nth_page(&(f)->page, (n))
+#define	folio_mapping(f)	page_mapping(&(f)->page)
+#define	folio_pos(f)		page_offset(&(f)->page)
+#define	folio_size(f)		PAGE_SIZE
+#define	folio_nr_pages(f)	1
+#define	folio_lock(f)		lock_page(&(f)->page)
+#define	folio_unlock(f)		unlock_page(&(f)->page)
+#define	folio_test_uptodate(f)	PageUptodate(&(f)->page)
+#define	folio_mark_uptodate(f)	SetPageUptodate(&(f)->page)
+#define	folio_clear_uptodate(f)	ClearPageUptodate(&(f)->page)
+#define	folio_test_dirty(f)	PageDirty(&(f)->page)
+#define	folio_test_writeback(f)	PageWriteback(&(f)->page)
+#define	folio_clear_dirty_for_io(f)	clear_page_dirty_for_io(&(f)->page)
+#define	folio_start_writeback(f)	set_page_writeback(&(f)->page)
+#define	folio_end_writeback(f)	end_page_writeback(&(f)->page)
+#endif
+
 /* 5.4 introduced page_size(). Older kernels can use a trivial macro instead */
 #ifndef HAVE_MM_PAGE_SIZE
 #define	page_size(p) ((unsigned long)(PAGE_SIZE << compound_order(p)))

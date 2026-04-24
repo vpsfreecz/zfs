@@ -36,6 +36,26 @@ AC_DEFUN([ZFS_AC_KERNEL_MM_PAGE_MAPPING], [
 ])
 
 
+AC_DEFUN([ZFS_AC_KERNEL_SRC_MM_STRUCT_FOLIO], [
+	ZFS_LINUX_TEST_SRC([struct_folio], [
+		#include <linux/mm.h>
+	], [
+		size_t size = sizeof (struct folio);
+		(void) size;
+	])
+])
+AC_DEFUN([ZFS_AC_KERNEL_MM_STRUCT_FOLIO], [
+	AC_MSG_CHECKING([whether struct folio is available])
+	ZFS_LINUX_TEST_RESULT([struct_folio], [
+		AC_MSG_RESULT(yes)
+		AC_DEFINE(HAVE_MM_STRUCT_FOLIO, 1,
+		    [struct folio is available])
+	],[
+		AC_MSG_RESULT(no)
+	])
+])
+
+
 AC_DEFUN([ZFS_AC_KERNEL_SRC_MM_MAPPING_SET_LARGE_FOLIOS], [
 	ZFS_LINUX_TEST_SRC([mapping_set_large_folios], [
 		#include <linux/pagemap.h>
