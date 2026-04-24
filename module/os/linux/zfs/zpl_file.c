@@ -623,8 +623,14 @@ zpl_write_cache_pages(struct address_space *mapping,
 	if (tag == PAGECACHE_TAG_TOWRITE)
 		tag_pages_for_writeback(mapping, start, end);
 
-	while (!done && (nfolios = filemap_get_folios_tag(mapping, &start, end,
-	    tag, &fbatch)) != 0) {
+	while (!done) {
+		cond_resched();
+
+		nfolios = filemap_get_folios_tag(mapping, &start, end,
+		    tag, &fbatch);
+		if (nfolios == 0)
+			break;
+
 		struct folio *folio;
 
 		while ((folio = folio_batch_next(&fbatch)) != NULL) {
