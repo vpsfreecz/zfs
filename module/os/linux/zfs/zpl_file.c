@@ -47,9 +47,7 @@
 #include <linux/pagemap_compat.h>
 #include <linux/mm_compat.h>
 #include <linux/fadvise.h>
-#ifdef HAVE_VFS_FILEMAP_DIRTY_FOLIO
 #include <linux/writeback.h>
-#endif
 
 /*
  * When using fallocate(2) to preallocate space, inflate the requested
