@@ -603,10 +603,22 @@ zpl_wbc_end(struct writeback_control *wbc)
 	return (wbc->range_end >> PAGE_SHIFT);
 }
 
+static inline pgoff_t
+zpl_wbc_index(struct folio *folio)
+{
+	return (folio_pos(folio) >> PAGE_SHIFT);
+}
+
 static inline void
 zpl_wbc_advance(struct address_space *mapping, struct folio *folio)
 {
 	mapping->writeback_index = folio_next_index(folio);
+}
+
+static inline void
+zpl_wbc_retry(struct address_space *mapping, struct folio *folio)
+{
+	mapping->writeback_index = zpl_wbc_index(folio);
 }
 
 static inline unsigned int
@@ -684,11 +696,21 @@ zpl_write_cache_pages(struct address_space *mapping,
 			if (err == 0 && ferr != 0)
 				err = ferr;
 
-			if (zdata->counted)
+			boolean_t counted = zdata->counted;
+			if (counted)
 				wbc->nr_to_write -= folio_nr_pages(folio);
 			if (!for_sync && (ferr != 0 || wbc->nr_to_write <= 0)) {
-				if (wbc->range_cyclic)
-					zpl_wbc_advance(mapping, folio);
+				if (wbc->range_cyclic) {
+					/*
+					 * Only completed writeback advances the
+					 * cyclic cursor.  If this folio was not
+					 * accepted, retry it on the next pass.
+					 */
+					if (counted)
+						zpl_wbc_advance(mapping, folio);
+					else
+						zpl_wbc_retry(mapping, folio);
+				}
 				done = B_TRUE;
 				break;
 			}
