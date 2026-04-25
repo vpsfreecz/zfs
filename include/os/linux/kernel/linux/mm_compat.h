@@ -68,8 +68,8 @@ struct folio {
 	folio_nr_pages(f))
 #endif
 #ifndef HAVE_PAGEMAP_FOLIO_CONTAINS
-#define	folio_contains(f, i)	((i) >= (folio_pos(f) >> PAGE_SHIFT) && \
-	(i) < folio_next_index(f))
+#define	folio_contains(f, i)	((i) - (folio_pos(f) >> PAGE_SHIFT) < \
+	folio_nr_pages(f))
 #endif
 #ifndef HAVE_PAGEMAP_FOLIO_FILE_PAGE
 #define	folio_file_page(f, i) \
