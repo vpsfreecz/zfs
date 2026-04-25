@@ -235,7 +235,8 @@ zpl_folio_range_is_full(struct folio *folio, size_t off, size_t len)
 {
 	size_t fsize = folio_size(folio);
 
-	ASSERT3U(off + len, <=, fsize);
+	ASSERT3U(off, <=, fsize);
+	ASSERT3U(len, <=, fsize - off);
 	return (off == 0 && len == fsize);
 }
 
