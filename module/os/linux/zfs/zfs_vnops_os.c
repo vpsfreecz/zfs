@@ -261,6 +261,7 @@ zfs_folio_revalidate(struct inode *ip, struct folio *folio,
 {
 	struct address_space *fmapping = folio_mapping(folio);
 	loff_t i_size;
+	u_offset_t io_limit;
 	u_offset_t io_off;
 	size_t io_len = folio_size(folio);
 
@@ -270,12 +271,16 @@ zfs_folio_revalidate(struct inode *ip, struct folio *folio,
 		return (B_FALSE);
 
 	i_size = i_size_read(ip);
-	io_off = folio_pos(folio);
-	if (unlikely(io_off >= i_size))
+	if (unlikely(i_size <= 0))
 		return (B_FALSE);
 
-	if (io_off + io_len > i_size)
-		io_len = i_size - io_off;
+	io_limit = (u_offset_t)i_size;
+	io_off = folio_pos(folio);
+	if (unlikely(io_off >= io_limit))
+		return (B_FALSE);
+
+	if (io_len > io_limit - io_off)
+		io_len = (size_t)(io_limit - io_off);
 
 	*io_offp = io_off;
 	*io_lenp = io_len;
@@ -4157,12 +4162,17 @@ static boolean_t
 zfs_folio_writeback_span(struct inode *ip, znode_t *zp, struct folio *folio,
     loff_t *foffp, size_t *flenp)
 {
-	loff_t eof = i_size_read(ip);
-	loff_t foff = folio_pos(folio);
+	loff_t isize = i_size_read(ip);
+	u_offset_t eof;
+	u_offset_t foff = folio_pos(folio);
 	size_t fsize = folio_size(folio);
 	uint64_t remaining;
 	size_t flen;
 
+	if (unlikely(isize <= 0 || zp->z_size == 0))
+		return (B_FALSE);
+
+	eof = (u_offset_t)isize;
 	if (eof > zp->z_size)
 		eof = zp->z_size;
 
@@ -4172,7 +4182,7 @@ zfs_folio_writeback_span(struct inode *ip, znode_t *zp, struct folio *folio,
 	remaining = eof - foff;
 	flen = MIN((uint64_t)fsize, remaining);
 
-	*foffp = foff;
+	*foffp = (loff_t)foff;
 	*flenp = flen;
 	return (B_TRUE);
 }
@@ -4182,7 +4192,7 @@ zfs_folio_writeback_revalidate(struct inode *ip, znode_t *zp,
     struct folio *folio, struct address_space *mapping, loff_t *foffp,
     size_t *flenp)
 {
-	if (unlikely(mapping != folio_mapping(folio)))
+	if (unlikely(mapping == NULL || mapping != folio_mapping(folio)))
 		return (ZFS_PUTFOLIO_RELOCK_ABORT);
 
 	if (folio_test_writeback(folio))
