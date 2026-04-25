@@ -4360,7 +4360,7 @@ range_retry:
 		unlock_page(pp);
 		zfs_rangelock_exit(lr);
 
-		if (wbc->sync_mode == WB_SYNC_NONE) {
+		if (!for_sync && wbc->sync_mode == WB_SYNC_NONE) {
 			put_page(pp);
 			zfs_exit(zfsvfs, FTAG);
 			return (0);

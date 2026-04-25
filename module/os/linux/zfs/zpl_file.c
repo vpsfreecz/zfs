@@ -610,9 +610,10 @@ zpl_wbc_advance(struct address_space *mapping, struct folio *folio)
 }
 
 static inline unsigned int
-zpl_wbc_tag(struct writeback_control *wbc)
+zpl_wbc_tag(struct writeback_control *wbc, boolean_t for_sync)
 {
-	if (wbc->sync_mode != WB_SYNC_NONE || wbc->tagged_writepages)
+	if (for_sync || wbc->sync_mode != WB_SYNC_NONE ||
+	    wbc->tagged_writepages)
 		return (PAGECACHE_TAG_TOWRITE);
 
 	return (PAGECACHE_TAG_DIRTY);
@@ -622,10 +623,13 @@ static inline int
 zpl_write_cache_pages(struct address_space *mapping,
     struct writeback_control *wbc, void *data)
 {
+	zpl_writeback_data_t *zdata = data;
+	boolean_t for_sync = (zdata != NULL && zdata->for_sync) ||
+	    wbc->sync_mode != WB_SYNC_NONE;
 	pgoff_t start = wbc->range_cyclic ? mapping->writeback_index :
 	    wbc->range_start >> PAGE_SHIFT;
 	pgoff_t end = zpl_wbc_end(wbc);
-	unsigned int tag = zpl_wbc_tag(wbc);
+	unsigned int tag = zpl_wbc_tag(wbc, for_sync);
 	struct folio_batch fbatch;
 	int err = 0;
 	boolean_t done = B_FALSE;
@@ -654,7 +658,6 @@ zpl_write_cache_pages(struct address_space *mapping,
 		for (i = 0; i < nfolios; i++) {
 			struct folio *folio = fbatch.folios[i];
 			int ferr;
-			zpl_writeback_data_t *zdata = data;
 
 		folio_retry:
 			folio_lock(folio);
@@ -666,7 +669,7 @@ zpl_write_cache_pages(struct address_space *mapping,
 			}
 
 			if (folio_test_writeback(folio)) {
-				if (wbc->sync_mode == WB_SYNC_NONE) {
+				if (!for_sync) {
 					folio_unlock(folio);
 					continue;
 				}
@@ -683,8 +686,7 @@ zpl_write_cache_pages(struct address_space *mapping,
 
 			if (zdata->counted)
 				wbc->nr_to_write -= folio_nr_pages(folio);
-			if (wbc->sync_mode == WB_SYNC_NONE &&
-			    (ferr != 0 || wbc->nr_to_write <= 0)) {
+			if (!for_sync && (ferr != 0 || wbc->nr_to_write <= 0)) {
 				if (wbc->range_cyclic)
 					zpl_wbc_advance(mapping, folio);
 				done = B_TRUE;
