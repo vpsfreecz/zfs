@@ -73,7 +73,7 @@ struct folio {
 #endif
 #ifndef HAVE_PAGEMAP_FOLIO_FILE_PAGE
 #define	folio_file_page(f, i) \
-	folio_page(f, (i) - (folio_pos(f) >> PAGE_SHIFT))
+	folio_page(f, (i) & (folio_nr_pages(f) - 1))
 #endif
 #endif
 
