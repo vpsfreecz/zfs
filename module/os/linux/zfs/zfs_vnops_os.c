@@ -505,7 +505,6 @@ update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 			struct page *fpp;
 			loff_t fpos = folio_pos(folio);
 			boolean_t was_uptodate = folio_test_uptodate(folio);
-			size_t folio_len = folio_size(folio);
 			size_t folio_off;
 
 			if (unlikely(!zfs_folio_matches_mapping_index(folio,
