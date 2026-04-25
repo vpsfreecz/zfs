@@ -4690,9 +4690,6 @@ zfs_fill_folio_range(struct inode *ip, struct folio *folio, u_offset_t io_off,
 
 	int error = zfs_read_folio_range(zfsvfs->z_os, zp->z_id, io_off,
 	    folio, 0, io_len, DMU_READ_PREFETCH);
-	if (io_len != folio_len)
-		zfs_zero_folio_range(folio, io_len, folio_len - io_len);
-
 	if (error) {
 		/* convert checksum errors into IO errors */
 		if (error == ECKSUM)
@@ -4701,6 +4698,8 @@ zfs_fill_folio_range(struct inode *ip, struct folio *folio, u_offset_t io_off,
 		SetPageError(pp);
 		folio_clear_uptodate(folio);
 	} else {
+		if (io_len != folio_len)
+			zfs_zero_folio_range(folio, io_len, folio_len - io_len);
 		ClearPageError(pp);
 		folio_mark_uptodate(folio);
 	}
