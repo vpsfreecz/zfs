@@ -62,6 +62,19 @@ struct folio {
 #define	folio_clear_dirty_for_io(f)	clear_page_dirty_for_io(&(f)->page)
 #define	folio_start_writeback(f)	set_page_writeback(&(f)->page)
 #define	folio_end_writeback(f)	end_page_writeback(&(f)->page)
+#else
+#ifndef HAVE_PAGEMAP_FOLIO_NEXT_INDEX
+#define	folio_next_index(f)	((folio_pos(f) >> PAGE_SHIFT) + \
+	folio_nr_pages(f))
+#endif
+#ifndef HAVE_PAGEMAP_FOLIO_CONTAINS
+#define	folio_contains(f, i)	((i) >= (folio_pos(f) >> PAGE_SHIFT) && \
+	(i) < folio_next_index(f))
+#endif
+#ifndef HAVE_PAGEMAP_FOLIO_FILE_PAGE
+#define	folio_file_page(f, i) \
+	folio_page(f, (i) - (folio_pos(f) >> PAGE_SHIFT))
+#endif
 #endif
 
 /* 5.4 introduced page_size(). Older kernels can use a trivial macro instead */
