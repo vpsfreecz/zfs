@@ -231,12 +231,19 @@ zpl_folio_wait_writeback(struct folio *folio)
  * unit.
  */
 static inline boolean_t
+zpl_folio_range_valid(struct folio *folio, size_t off, size_t len)
+{
+	size_t fsize = folio_size(folio);
+
+	return (off <= fsize && len <= fsize - off);
+}
+
+static inline boolean_t
 zpl_folio_range_is_full(struct folio *folio, size_t off, size_t len)
 {
 	size_t fsize = folio_size(folio);
 
-	ASSERT3U(off, <=, fsize);
-	ASSERT3U(len, <=, fsize - off);
+	ASSERT(zpl_folio_range_valid(folio, off, len));
 	return (off == 0 && len == fsize);
 }
 

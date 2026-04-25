@@ -293,7 +293,7 @@ zfs_read_folio_range(objset_t *os, uint64_t object, u_offset_t file_off,
 {
 	size_t copied = 0;
 
-	ASSERT3U(folio_off + len, <=, folio_size(folio));
+	ASSERT(zpl_folio_range_valid(folio, folio_off, len));
 
 	while (copied < len) {
 		size_t cur = folio_off + copied;
@@ -322,7 +322,7 @@ zfs_write_folio_range(objset_t *os, uint64_t object, u_offset_t file_off,
 {
 	size_t copied = 0;
 
-	ASSERT3U(folio_off + len, <=, folio_size(folio));
+	ASSERT(zpl_folio_range_valid(folio, folio_off, len));
 
 	while (copied < len) {
 		size_t cur = folio_off + copied;
@@ -345,7 +345,7 @@ zfs_zero_folio_range(struct folio *folio, size_t off, size_t len)
 {
 	size_t cleared = 0;
 
-	ASSERT3U(off + len, <=, folio_size(folio));
+	ASSERT(zpl_folio_range_valid(folio, off, len));
 
 	while (cleared < len) {
 		size_t cur = off + cleared;
@@ -372,7 +372,7 @@ zfs_fill_mapped_folio_range(struct inode *ip, struct folio *folio,
 	boolean_t was_uptodate = folio_test_uptodate(folio);
 	int error;
 
-	ASSERT3U(folio_off + len, <=, folio_size(folio));
+	ASSERT(zpl_folio_range_valid(folio, folio_off, len));
 
 	error = zfs_read_folio_range(zfsvfs->z_os, zp->z_id, file_off,
 	    folio, folio_off, len, flags);
@@ -431,7 +431,7 @@ zfs_read_mapped_range(znode_t *zp, uint64_t start, uint64_t len, void *buf,
 			fpp = zfs_folio_page_for_index(folio, index);
 			ASSERT3S(start, >=, fpos);
 			folio_off = (size_t)(start - fpos) + off;
-			ASSERT3U(folio_off + nbytes, <=, folio_size(folio));
+			ASSERT(zpl_folio_range_valid(folio, folio_off, nbytes));
 
 			/*
 			 * If filemap_fault() retries there exists a window
@@ -520,7 +520,7 @@ update_pages(znode_t *zp, int64_t start, uint64_t len, objset_t *os)
 			fpp = zfs_folio_page_for_index(folio, index);
 			ASSERT3S(start, >=, fpos);
 			folio_off = (size_t)(start - fpos) + off;
-			ASSERT3U(folio_off + nbytes, <=, folio_len);
+			ASSERT(zpl_folio_range_valid(folio, folio_off, nbytes));
 
 			if (zn_writably_mapped(zp))
 				flush_dcache_page(fpp);
@@ -628,7 +628,7 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 			fpp = zfs_folio_page_for_index(folio, index);
 			ASSERT3S(start, >=, fpos);
 			folio_off = (size_t)(start - fpos) + off;
-			ASSERT3U(folio_off + bytes, <=, folio_size(folio));
+			ASSERT(zpl_folio_range_valid(folio, folio_off, bytes));
 
 			/*
 			 * If filemap_fault() retries there exists a window
