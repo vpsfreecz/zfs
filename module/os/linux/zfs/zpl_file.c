@@ -641,14 +641,17 @@ zpl_write_cache_pages(struct address_space *mapping,
 	pgoff_t start = wbc->range_cyclic ? mapping->writeback_index :
 	    wbc->range_start >> PAGE_SHIFT;
 	pgoff_t end = zpl_wbc_end(wbc);
+	pgoff_t cyclic_start = start;
 	unsigned int tag = zpl_wbc_tag(wbc, for_sync);
 	struct folio_batch fbatch;
 	int err = 0;
 	boolean_t done = B_FALSE;
+	boolean_t wrapped = B_FALSE;
 	unsigned int nfolios;
 
 	folio_batch_init(&fbatch);
 
+scan_range:
 	/*
 	 * Match writeback_iter(): data-integrity or explicitly tagged writeback
 	 * snapshots dirty folios to TOWRITE to avoid livelock, while background
@@ -717,6 +720,13 @@ zpl_write_cache_pages(struct address_space *mapping,
 		}
 
 		folio_batch_release(&fbatch);
+	}
+
+	if (!done && wbc->range_cyclic && !wrapped && cyclic_start > 0) {
+		wrapped = B_TRUE;
+		start = 0;
+		end = cyclic_start - 1;
+		goto scan_range;
 	}
 
 	if (!done && wbc->range_cyclic)
