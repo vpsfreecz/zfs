@@ -619,7 +619,7 @@ zpl_wbc_advance(struct address_space *mapping, struct folio *folio)
 static inline unsigned int
 zpl_wbc_tag(struct writeback_control *wbc)
 {
-	if (wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages)
+	if (wbc->sync_mode != WB_SYNC_NONE || wbc->tagged_writepages)
 		return (PAGECACHE_TAG_TOWRITE);
 
 	return (PAGECACHE_TAG_DIRTY);
@@ -690,7 +690,7 @@ zpl_write_cache_pages(struct address_space *mapping,
 
 			if (zdata->counted)
 				wbc->nr_to_write -= folio_nr_pages(folio);
-			if (wbc->sync_mode != WB_SYNC_ALL &&
+			if (wbc->sync_mode == WB_SYNC_NONE &&
 			    (ferr != 0 || wbc->nr_to_write <= 0)) {
 				if (wbc->range_cyclic)
 					zpl_wbc_advance(mapping, folio);
@@ -757,7 +757,7 @@ zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
 	 * and then we commit it all in one go.
 	 */
 	zpl_writeback_data_t zdata = {
-		.for_sync = (sync_mode == WB_SYNC_ALL),
+		.for_sync = (sync_mode != WB_SYNC_NONE),
 	};
 	wbc->sync_mode = WB_SYNC_NONE;
 	first_pass_error = zpl_write_cache_pages(mapping, wbc, &zdata);
@@ -837,7 +837,7 @@ zpl_writepage(struct page *pp, struct writeback_control *wbc)
 		wbc->sync_mode = WB_SYNC_ALL;
 
 	zpl_writeback_data_t zdata = {
-		.for_sync = (wbc->sync_mode == WB_SYNC_ALL),
+		.for_sync = (wbc->sync_mode != WB_SYNC_NONE),
 	};
 
 	return (zpl_writeback_page(zpl_folio_head_page(folio), wbc, &zdata));
