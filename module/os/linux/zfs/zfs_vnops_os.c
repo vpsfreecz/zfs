@@ -242,18 +242,14 @@ zfs_folio_index(struct folio *folio)
 static boolean_t
 zfs_folio_contains_index(struct folio *folio, pgoff_t index)
 {
-	pgoff_t fidx = zfs_folio_index(folio);
-
-	return (index >= fidx && index - fidx < folio_nr_pages(folio));
+	return (folio_contains(folio, index));
 }
 
 static struct page *
 zfs_folio_page_for_index(struct folio *folio, pgoff_t index)
 {
-	pgoff_t fidx = zfs_folio_index(folio);
-
 	ASSERT(zfs_folio_contains_index(folio, index));
-	return (folio_page(folio, index - fidx));
+	return (folio_file_page(folio, index));
 }
 
 static boolean_t
