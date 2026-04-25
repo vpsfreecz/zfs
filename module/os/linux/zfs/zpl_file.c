@@ -445,13 +445,19 @@ zpl_read_folio_common(struct folio *folio)
 {
 	struct page *pp = zpl_folio_head_page(folio);
 	struct address_space *mapping = folio_mapping(folio);
-	struct inode *ip = mapping->host;
+	struct inode *ip;
 	pgoff_t index = folio_pos(folio) >> PAGE_SHIFT;
 	fstrans_cookie_t cookie;
 	int error;
 
 	ASSERT(PageLocked(pp));
 
+	if (unlikely(mapping == NULL)) {
+		unlock_page(pp);
+		return (AOP_TRUNCATED_PAGE);
+	}
+
+	ip = mapping->host;
 	cookie = spl_fstrans_mark();
 	error = zfs_getfolio(ip, folio, mapping, index);
 	spl_fstrans_unmark(cookie);
