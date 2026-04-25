@@ -35,9 +35,15 @@
 static inline struct page *
 zfs_readahead_page(struct readahead_control *ractl)
 {
-	struct folio *folio = __readahead_folio(ractl);
+	struct folio *folio = readahead_folio(ractl);
+	struct page *page;
 
-	return (folio != NULL ? folio_page(folio, 0) : NULL);
+	if (folio == NULL)
+		return (NULL);
+
+	page = folio_page(folio, 0);
+	get_page(page);
+	return (page);
 }
 #define	readahead_page(ractl) zfs_readahead_page(ractl)
 #endif
