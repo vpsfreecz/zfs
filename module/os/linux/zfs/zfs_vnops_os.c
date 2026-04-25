@@ -233,12 +233,6 @@ zfs_close(struct inode *ip, int flag, cred_t *cr)
 
 #if defined(_KERNEL)
 
-static pgoff_t
-zfs_folio_index(struct folio *folio)
-{
-	return ((pgoff_t)(folio_pos(folio) >> PAGE_SHIFT));
-}
-
 static boolean_t
 zfs_folio_contains_index(struct folio *folio, pgoff_t index)
 {

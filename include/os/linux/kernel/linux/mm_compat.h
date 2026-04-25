@@ -48,6 +48,8 @@ struct folio {
 #define	folio_pos(f)		page_offset(&(f)->page)
 #define	folio_size(f)		PAGE_SIZE
 #define	folio_nr_pages(f)	1
+#define	folio_next_index(f)	((folio_pos(f) >> PAGE_SHIFT) + \
+	folio_nr_pages(f))
 #define	folio_contains(f, i)	((i) == (folio_pos(f) >> PAGE_SHIFT))
 #define	folio_file_page(f, i)	(&(f)->page)
 #define	folio_lock(f)		lock_page(&(f)->page)
