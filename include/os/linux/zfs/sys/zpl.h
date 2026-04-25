@@ -218,9 +218,7 @@ zpl_folio_head_page(struct folio *folio)
 static inline void
 zpl_folio_wait_writeback(struct folio *folio)
 {
-#ifdef HAVE_PAGEMAP_FOLIO_WAIT_WRITEBACK
-	folio_wait_writeback(folio);
-#elif defined(HAVE_PAGEMAP_FOLIO_WAIT_BIT)
+#ifdef HAVE_PAGEMAP_FOLIO_WAIT_BIT
 	folio_wait_bit(folio, PG_writeback);
 #else
 	wait_on_page_bit(zpl_folio_head_page(folio), PG_writeback);
