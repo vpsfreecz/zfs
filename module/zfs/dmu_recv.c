@@ -3415,8 +3415,6 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 	err = receive_payload_read_size_valid(size);
 	if (err != 0)
 		return (err);
-	if (drr->drr_payloadlen != size)
-		return (SET_ERROR(EINVAL));
 
 	plan->rprp_size = size;
 	return (0);
