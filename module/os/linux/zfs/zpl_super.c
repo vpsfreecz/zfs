@@ -527,6 +527,7 @@ enum zpl_fs_param {
 	ZPL_FSPARAM_NBMAND,
 	ZPL_FSPARAM_NONBMAND,
 	ZPL_FSPARAM_MNTPOINT,
+	ZPL_FSPARAM_IGNORE,
 };
 
 static const struct fs_parameter_spec zpl_fs_parameters[] = {
@@ -549,6 +550,44 @@ static const struct fs_parameter_spec zpl_fs_parameters[] = {
 	fsparam_flag(MNTOPT_NBMAND, ZPL_FSPARAM_NBMAND),
 	fsparam_flag(MNTOPT_NONBMAND, ZPL_FSPARAM_NONBMAND),
 	fsparam_string_empty(MNTOPT_MNTPOINT, ZPL_FSPARAM_MNTPOINT),
+	/* Accepted by libzfs/userland but already handled outside ZPL. */
+	fsparam_flag(MNTOPT_DEFAULTS, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_AUTO, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_NOAUTO, ZPL_FSPARAM_IGNORE),
+	fsparam_string(MNTOPT_CONTEXT, ZPL_FSPARAM_IGNORE),
+	fsparam_string(MNTOPT_FSCONTEXT, ZPL_FSPARAM_IGNORE),
+	fsparam_string(MNTOPT_DEFCONTEXT, ZPL_FSPARAM_IGNORE),
+	fsparam_string(MNTOPT_ROOTCONTEXT, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_DIRATIME, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_NODIRATIME, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_DIRSYNC, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_GROUP, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_IVERSION, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_NOIVERSION, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_OWNER, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_USER, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_USERS, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_NETDEV, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_NOFAIL, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_STRICTATIME, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_NOSTRICTATIME, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_LAZYTIME, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_SYNC, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_ASYNC, ZPL_FSPARAM_IGNORE),
+	fsparam_string_empty(MNTOPT_COMMENT, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_ZFSUTIL, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_ACL, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_NOACL, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_POSIXACL, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_SUB, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_NOSUB, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_QUIET, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_LOUD, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_BIND, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_RBIND, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_CASESENSITIVE, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_CASEINSENSITIVE, ZPL_FSPARAM_IGNORE),
+	fsparam_flag(MNTOPT_CASEMIXED, ZPL_FSPARAM_IGNORE),
 	{}
 };
 
@@ -672,6 +711,9 @@ zpl_fs_context_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	case ZPL_FSPARAM_MNTPOINT:
 		error = zfsvfs_apply_option(vfsp, ZFS_MNTOPT_MNTPOINT,
 		    param->string);
+		break;
+	case ZPL_FSPARAM_IGNORE:
+		error = 0;
 		break;
 	default:
 		return (-EINVAL);
