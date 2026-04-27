@@ -1054,7 +1054,6 @@ recv_impl(const char *snapname, nvlist_t *recvdprops, nvlist_t *localprops,
 	char fsname[MAXPATHLEN];
 	char *atp;
 	int error;
-	boolean_t payload = B_FALSE;
 
 	ASSERT3S(g_refcount, >, 0);
 	VERIFY3S(g_fd, !=, -1);
@@ -1095,134 +1094,74 @@ recv_impl(const char *snapname, nvlist_t *recvdprops, nvlist_t *localprops,
 			return (error);
 	} else {
 		drr = *begin_record;
-		payload = (begin_record->drr_payloadlen != 0);
 	}
 
 	/*
-	 * All receives with a payload should use the new interface.
+	 * Use the nvlist receive interface for all streams.  The legacy
+	 * ZFS_IOC_RECV path passes only struct drr_begin through zfs_cmd_t,
+	 * while the nvlist path carries the full BEGIN record and is already
+	 * required for payload, resumable, raw, and healing receives.
 	 */
-	if (resumable || heal || raw || wkeydata != NULL || payload) {
-		nvlist_t *outnvl = NULL;
-		nvlist_t *innvl = fnvlist_alloc();
+	nvlist_t *outnvl = NULL;
+	nvlist_t *innvl = fnvlist_alloc();
 
-		fnvlist_add_string(innvl, "snapname", snapname);
+	fnvlist_add_string(innvl, "snapname", snapname);
 
-		if (recvdprops != NULL)
-			fnvlist_add_nvlist(innvl, "props", recvdprops);
+	if (recvdprops != NULL)
+		fnvlist_add_nvlist(innvl, "props", recvdprops);
 
-		if (localprops != NULL)
-			fnvlist_add_nvlist(innvl, "localprops", localprops);
+	if (localprops != NULL)
+		fnvlist_add_nvlist(innvl, "localprops", localprops);
 
-		if (wkeydata != NULL) {
-			/*
-			 * wkeydata must be placed in the special
-			 * ZPOOL_HIDDEN_ARGS nvlist so that it
-			 * will not be printed to the zpool history.
-			 */
-			nvlist_t *hidden_args = fnvlist_alloc();
-			fnvlist_add_uint8_array(hidden_args, "wkeydata",
-			    wkeydata, wkeylen);
-			fnvlist_add_nvlist(innvl, ZPOOL_HIDDEN_ARGS,
-			    hidden_args);
-			nvlist_free(hidden_args);
-		}
-
-		if (origin != NULL && strlen(origin))
-			fnvlist_add_string(innvl, "origin", origin);
-
-		fnvlist_add_byte_array(innvl, "begin_record",
-		    (uchar_t *)&drr, sizeof (drr));
-
-		fnvlist_add_int32(innvl, "input_fd", input_fd);
-
-		if (force)
-			fnvlist_add_boolean(innvl, "force");
-
-		if (resumable)
-			fnvlist_add_boolean(innvl, "resumable");
-
-		if (heal)
-			fnvlist_add_boolean(innvl, "heal");
-
-		error = lzc_ioctl(ZFS_IOC_RECV_NEW, fsname, innvl, &outnvl);
-
-		if (error == 0 && read_bytes != NULL)
-			error = nvlist_lookup_uint64(outnvl, "read_bytes",
-			    read_bytes);
-
-		if (error == 0 && errflags != NULL)
-			error = nvlist_lookup_uint64(outnvl, "error_flags",
-			    errflags);
-
-		if (error == 0 && errors != NULL) {
-			nvlist_t *nvl;
-			error = nvlist_lookup_nvlist(outnvl, "errors", &nvl);
-			if (error == 0)
-				*errors = fnvlist_dup(nvl);
-		}
-
-		fnvlist_free(innvl);
-		fnvlist_free(outnvl);
-	} else {
-		zfs_cmd_t zc = {"\0"};
-		char *rp_packed = NULL;
-		char *lp_packed = NULL;
-		size_t size;
-
-		ASSERT3S(g_refcount, >, 0);
-
-		(void) strlcpy(zc.zc_name, fsname, sizeof (zc.zc_name));
-		(void) strlcpy(zc.zc_value, snapname, sizeof (zc.zc_value));
-
-		if (recvdprops != NULL) {
-			rp_packed = fnvlist_pack(recvdprops, &size);
-			zc.zc_nvlist_src = (uint64_t)(uintptr_t)rp_packed;
-			zc.zc_nvlist_src_size = size;
-		}
-
-		if (localprops != NULL) {
-			lp_packed = fnvlist_pack(localprops, &size);
-			zc.zc_nvlist_conf = (uint64_t)(uintptr_t)lp_packed;
-			zc.zc_nvlist_conf_size = size;
-		}
-
-		if (origin != NULL)
-			(void) strlcpy(zc.zc_string, origin,
-			    sizeof (zc.zc_string));
-
-		ASSERT3S(drr.drr_type, ==, DRR_BEGIN);
-		zc.zc_begin_record = drr.drr_u.drr_begin;
-		zc.zc_guid = force;
-		zc.zc_cookie = input_fd;
-		zc.zc_cleanup_fd = -1;
-		zc.zc_action_handle = 0;
-
-		zc.zc_nvlist_dst_size = 128 * 1024;
-		zc.zc_nvlist_dst = (uint64_t)(uintptr_t)
-		    malloc(zc.zc_nvlist_dst_size);
-
-		error = lzc_ioctl_fd(g_fd, ZFS_IOC_RECV, &zc);
-		if (error != 0) {
-			error = errno;
-		} else {
-			if (read_bytes != NULL)
-				*read_bytes = zc.zc_cookie;
-
-			if (errflags != NULL)
-				*errflags = zc.zc_obj;
-
-			if (errors != NULL)
-				VERIFY0(nvlist_unpack(
-				    (void *)(uintptr_t)zc.zc_nvlist_dst,
-				    zc.zc_nvlist_dst_size, errors, KM_SLEEP));
-		}
-
-		if (rp_packed != NULL)
-			fnvlist_pack_free(rp_packed, size);
-		if (lp_packed != NULL)
-			fnvlist_pack_free(lp_packed, size);
-		free((void *)(uintptr_t)zc.zc_nvlist_dst);
+	if (wkeydata != NULL) {
+		/*
+		 * wkeydata must be placed in the special
+		 * ZPOOL_HIDDEN_ARGS nvlist so that it
+		 * will not be printed to the zpool history.
+		 */
+		nvlist_t *hidden_args = fnvlist_alloc();
+		fnvlist_add_uint8_array(hidden_args, "wkeydata",
+		    wkeydata, wkeylen);
+		fnvlist_add_nvlist(innvl, ZPOOL_HIDDEN_ARGS, hidden_args);
+		nvlist_free(hidden_args);
 	}
+
+	if (origin != NULL && strlen(origin))
+		fnvlist_add_string(innvl, "origin", origin);
+
+	fnvlist_add_byte_array(innvl, "begin_record", (uchar_t *)&drr,
+	    sizeof (drr));
+
+	fnvlist_add_int32(innvl, "input_fd", input_fd);
+
+	if (force)
+		fnvlist_add_boolean(innvl, "force");
+
+	if (resumable)
+		fnvlist_add_boolean(innvl, "resumable");
+
+	if (heal)
+		fnvlist_add_boolean(innvl, "heal");
+
+	error = lzc_ioctl(ZFS_IOC_RECV_NEW, fsname, innvl, &outnvl);
+
+	if (error == 0 && read_bytes != NULL)
+		error = nvlist_lookup_uint64(outnvl, "read_bytes",
+		    read_bytes);
+
+	if (error == 0 && errflags != NULL)
+		error = nvlist_lookup_uint64(outnvl, "error_flags",
+		    errflags);
+
+	if (error == 0 && errors != NULL) {
+		nvlist_t *nvl;
+		error = nvlist_lookup_nvlist(outnvl, "errors", &nvl);
+		if (error == 0)
+			*errors = fnvlist_dup(nvl);
+	}
+
+	fnvlist_free(innvl);
+	fnvlist_free(outnvl);
 
 	return (error);
 }
