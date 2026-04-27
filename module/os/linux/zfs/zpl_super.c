@@ -54,7 +54,9 @@ zpl_inode_alloc(struct super_block *sb)
 {
 	struct inode *ip;
 
-	VERIFY3S(zfs_inode_alloc(sb, &ip), ==, 0);
+	if (zfs_inode_alloc(sb, &ip) != 0)
+		return (NULL);
+
 	inode_set_iversion(ip, 1);
 
 	return (ip);

@@ -251,6 +251,33 @@ zfs_znode_hold_cache_destructor(void *buf, void *arg)
 	mutex_destroy(&zh->zh_lock);
 }
 
+static znode_t *
+zfs_znode_cache_alloc_for_inode(struct super_block *sb)
+{
+	znode_t *zp;
+
+#ifdef HAVE_ALLOC_INODE_SB
+	if (znode_cache->skc_linux_cache != NULL) {
+		zp = alloc_inode_sb(sb, znode_cache->skc_linux_cache,
+		    GFP_KERNEL);
+		if (zp == NULL)
+			return (NULL);
+
+		/*
+		 * alloc_inode_sb() allocates from the raw Linux slab and
+		 * bypasses spl_kmem_cache_alloc(), so run the ZFS constructor
+		 * explicitly to initialize the embedded VFS inode.
+		 */
+		VERIFY0(zfs_znode_cache_constructor(zp, NULL, KM_SLEEP));
+		return (zp);
+	}
+#else
+	(void) sb;
+#endif
+
+	return (kmem_cache_alloc(znode_cache, KM_SLEEP));
+}
+
 void
 zfs_znode_init(void)
 {
@@ -441,11 +468,10 @@ zfs_inode_alloc(struct super_block *sb, struct inode **ip)
 {
 	znode_t *zp;
 
-#ifdef HAVE_ALLOC_INODE_SB
-	zp = alloc_inode_sb(sb, znode_cache->skc_linux_cache, GFP_KERNEL);
-#else
-	zp = kmem_cache_alloc(znode_cache, KM_SLEEP);
-#endif
+	zp = zfs_znode_cache_alloc_for_inode(sb);
+	if (zp == NULL)
+		return (SET_ERROR(ENOMEM));
+
 	*ip = ZTOI(zp);
 
 	return (0);
