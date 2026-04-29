@@ -366,7 +366,6 @@ static int
 zfs_fill_mapped_folio_range(struct inode *ip, struct folio *folio,
     u_offset_t file_off, size_t folio_off, size_t len, int flags)
 {
-	struct page *pp = zpl_folio_head_page(folio);
 	znode_t *zp = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
 	boolean_t was_uptodate = folio_test_uptodate(folio);
@@ -381,7 +380,7 @@ zfs_fill_mapped_folio_range(struct inode *ip, struct folio *folio,
 		if (error == ECKSUM)
 			error = SET_ERROR(EIO);
 
-		SetPageError(pp);
+		SetPageError(zpl_folio_head_page(folio));
 		folio_clear_uptodate(folio);
 	} else {
 		zpl_folio_range_write_done(folio, was_uptodate, folio_off, len);
@@ -4685,7 +4684,6 @@ static int
 zfs_fill_folio_range(struct inode *ip, struct folio *folio, u_offset_t io_off,
     size_t io_len)
 {
-	struct page *pp = zpl_folio_head_page(folio);
 	znode_t *zp = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ITOZSB(ip);
 	size_t folio_len = folio_size(folio);
@@ -4698,12 +4696,12 @@ zfs_fill_folio_range(struct inode *ip, struct folio *folio, u_offset_t io_off,
 		if (error == ECKSUM)
 			error = SET_ERROR(EIO);
 
-		SetPageError(pp);
+		SetPageError(zpl_folio_head_page(folio));
 		folio_clear_uptodate(folio);
 	} else {
 		if (io_len != folio_len)
 			zfs_zero_folio_range(folio, io_len, folio_len - io_len);
-		ClearPageError(pp);
+		ClearPageError(zpl_folio_head_page(folio));
 		folio_mark_uptodate(folio);
 	}
 

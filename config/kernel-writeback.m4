@@ -45,6 +45,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_FILEMAP_GET_FOLIOS_TAG], [
 	dnl #
 	ZFS_LINUX_TEST_SRC([filemap_get_folios_tag], [
 		#include <linux/pagemap.h>
+		#include <linux/writeback.h>
 	], [
 		struct address_space *mapping = NULL;
 		struct folio_batch fbatch;
