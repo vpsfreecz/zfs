@@ -1563,12 +1563,12 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len,
 
 	if (zfla != NULL) {
 		/*
-		 * dmu_free_long_range() can commit earlier chunks before a later
-		 * chunk fails.  Log each committed free chunk in its own tx so ZIL
-		 * replay follows actual progress instead of relying only on the
-		 * follow-on zfs_freesp() TX_TRUNCATE record.  During replay the
-		 * callback still tracks committed progress even though per-chunk ZIL
-		 * logging is suppressed.
+		 * dmu_free_long_range() can commit early chunks before a
+		 * later failure. Log each committed free chunk in its own tx
+		 * so ZIL replay follows actual progress instead of relying
+		 * only on the follow-on zfs_freesp() TX_TRUNCATE record.
+		 * During replay the callback still tracks progress, although
+		 * per-chunk ZIL logging is suppressed.
 		 */
 		error = dmu_free_long_range_cb(zfsvfs->z_os, zp->z_id, off,
 		    len, zfs_log_free_chunk, zfla);
@@ -1685,9 +1685,9 @@ zfs_trunc(znode_t *zp, uint64_t end, zilog_t *zilog, boolean_t *progressp)
 #endif
 
 	/*
-	 * dmu_free_long_range() frees from the tail backwards.  If it returns an
-	 * error after committing earlier chunks, the callback above records the
-	 * lowest committed offset so we can safely shrink only to that boundary.
+	 * dmu_free_long_range() frees from the tail backwards. If it returns
+	 * an error after committing earlier chunks, the callback records the
+	 * lowest committed offset, so we shrink only to that boundary.
 	 */
 	error = dmu_free_long_range_cb(zfsvfs->z_os, zp->z_id, end,
 	    DMU_OBJECT_END, zfs_log_free_chunk, &zfla);
@@ -1772,9 +1772,9 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	boolean_t sync_required = zfs_freesp_sync_required(zp);
 
 	/*
-	 * Replay validates signed free/truncate ranges before calling back in to
-	 * zfs_freesp().  Live callers should reject the same negative/overflowed
-	 * ranges instead of letting them wrap through the uint64_t interface.
+	 * Replay validates signed free/truncate ranges before calling back to
+	 * zfs_freesp(). Live callers should reject the same negative or
+	 * overflowed ranges instead of wrapping through uint64_t.
 	 */
 	if (off > MAXOFFSET_T || len > MAXOFFSET_T ||
 	    (len != 0 && off > MAXOFFSET_T - len))
@@ -1801,12 +1801,12 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	if (log && !zfsvfs->z_replay)
 		chunklog_zilog = zilog;
 	/*
-	 * ATTR_SIZE paths call zfs_freesp() with log == FALSE because successful
-	 * truncates are logged by their enclosing setattr transaction.  If a sync
-	 * truncate hits a chunked-free error after committing some tail progress,
-	 * that outer TX_SETATTR never materializes.  Keep a progress-only zilog
-	 * handle so zfs_trunc_commit_progress() can still log and commit the exact
-	 * size we made durable before returning the error.
+	 * ATTR_SIZE paths call zfs_freesp() with log == FALSE because
+	 * successful truncates are logged by their enclosing setattr tx. If a
+	 * sync truncate hits a chunked-free error after committing tail
+	 * progress, that outer TX_SETATTR never materializes. Keep a
+	 * progress-only zilog handle so zfs_trunc_commit_progress() can still
+	 * log and commit the exact size made durable before the error.
 	 */
 	if (len == 0 && !log && !zfsvfs->z_replay && sync_required)
 		progress_zilog = zilog;
@@ -1824,10 +1824,10 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 		sync_progress = zfla.zfla_progress;
 	}
 	/*
-	 * Once a sync file or sync-always dataset has queued TX_TRUNCATE records
-	 * for committed partial progress, force them out before reporting a later
-	 * error.  Otherwise a crash can lose frees that already escaped the long-
-	 * free helper.
+	 * Once a sync file or sync-always dataset has queued TX_TRUNCATE
+	 * records for committed partial progress, force them out before
+	 * reporting a later error. Otherwise a crash can lose frees that
+	 * already escaped the long-free helper.
 	 */
 	if (error != 0 && sync_progress) {
 		int syncerr = zfs_freesp_commit_sync_progress(zp,

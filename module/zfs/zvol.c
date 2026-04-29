@@ -292,10 +292,10 @@ zvol_update_volsize(uint64_t volsize, objset_t *os, boolean_t *size_changedp)
 
 	/*
 	 * Keep any newly exposed range zeroed before publishing a larger size.
-	 * A previous shrink can return after partial tail-free progress, leaving
-	 * hidden blocks beyond the current durable volsize.  Clearing the growth
-	 * range while it is still inaccessible prevents later expansions from
-	 * re-exposing stale data.
+	 * A previous shrink can return after partial tail-free progress,
+	 * leaving hidden blocks beyond the current durable volsize. Clearing
+	 * the growth range while it is still inaccessible prevents later
+	 * expansions from re-exposing stale data.
 	 */
 	if (volsize > old_volsize) {
 		error = dmu_free_long_range(os, ZVOL_OBJ, old_volsize,
@@ -324,11 +324,10 @@ zvol_update_volsize(uint64_t volsize, objset_t *os, boolean_t *size_changedp)
 		*size_changedp = B_TRUE;
 
 		/*
-		 * The on-disk size property is already durable once the ZAP tx
-		 * above commits and syncs.  Tail frees happen afterwards and can
-		 * fail after the new size is live, so tell the caller when it must
-		 * still shrink the running device even if this function returns an
-		 * error from the later free pass.
+		 * ZAP size is durable after commit/sync. Tail frees happen
+		 * afterwards and can fail after the new size is live, so tell
+		 * the caller when it must still shrink the running device even
+		 * if the later free pass returns an error.
 		 */
 		if (volsize < old_volsize) {
 			error = dmu_free_long_range(os,
@@ -828,9 +827,9 @@ zvol_clone_range(zvol_state_t *zv_src, uint64_t *inoffp, zvol_state_t *zv_dst,
 	zfs_rangelock_exit(inlr);
 	if (done > 0) {
 		/*
-		 * Once any chunk has committed we can no longer report the whole
-		 * operation as an all-or-nothing failure. Mirror the file clone
-		 * contract and return the committed prefix to the caller.
+		 * Once any chunk has committed we can no longer report the
+		 * whole operation as an all-or-nothing failure. Mirror the file
+		 * clone contract and return the committed prefix to the caller.
 		 */
 		error = 0;
 		if (zv_dst->zv_objset->os_sync == ZFS_SYNC_ALWAYS)
@@ -839,7 +838,8 @@ zvol_clone_range(zvol_state_t *zv_src, uint64_t *inoffp, zvol_state_t *zv_dst,
 		*inoffp += done;
 		*outoffp += done;
 		*lenp = done;
-	} else if (error == 0 && zv_dst->zv_objset->os_sync == ZFS_SYNC_ALWAYS) {
+	} else if (error == 0 &&
+	    zv_dst->zv_objset->os_sync == ZFS_SYNC_ALWAYS) {
 		error = zil_commit(zilog_dst, ZVOL_OBJ);
 	}
 out:

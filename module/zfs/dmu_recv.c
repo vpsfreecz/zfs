@@ -1819,10 +1819,10 @@ do_corrective_recv(struct receive_writer_arg *rwa, struct drr_write *drrw,
 			return (err);
 		}
 		/*
-		 * Encrypted dnode rewrites can legitimately report no_crypt when
-		 * there are no encryptable bonus-buffer regions in the block.  In
-		 * that case zio_do_crypt_abd() still returns the authenticated copy
-		 * in eabd, which is the buffer we want to rewrite.
+		 * Encrypted dnode rewrites can report no_crypt when no
+		 * encryptable bonus-buffer regions are in the block. In that
+		 * case zio_do_crypt_abd() still returns the authenticated copy
+		 * in eabd, which we want to rewrite.
 		 */
 		/* Swap in the newly encrypted data into the abd */
 		abd_free(abd);
@@ -2704,12 +2704,13 @@ flush_write_batch_impl(struct receive_writer_arg *rwa)
 		 * verify that we are resuming from the correct location.
 		 *
 		 * Use the batched WRITE record's own stream position here.
-		 * flush_write_batch_impl() can run after a later non-WRITE has already
-		 * advanced rwa->bytes_read, and mixing that later byte position with
-		 * this WRITE record's object/offset would over-advance resume state.
+		 * flush_write_batch_impl() can run after a later non-WRITE
+		 * has already advanced rwa->bytes_read, and mixing that later
+		 * byte position with this WRITE record's object/offset would
+		 * over-advance resume state.
 		 */
-		save_resume_state_impl(rwa, drrw->drr_object, drrw->drr_offset,
-		    rrd->bytes_read, tx);
+		save_resume_state_impl(rwa, drrw->drr_object,
+		    drrw->drr_offset, rrd->bytes_read, tx);
 
 		list_remove(&rwa->write_batch, rrd);
 		kmem_free(rrd, sizeof (*rrd));
@@ -2839,10 +2840,23 @@ receive_process_write_record(struct receive_writer_arg *rwa,
 }
 
 static boolean_t
+receive_compression_supported(uint8_t compressiontype)
+{
+	if (compressiontype >= ZIO_COMPRESS_FUNCTIONS)
+		return (B_FALSE);
+
+	return (compressiontype == ZIO_COMPRESS_OFF ||
+	    zio_compress_table[compressiontype].ci_decompress != NULL);
+}
+
+static boolean_t
 receive_write_metadata_valid(const struct drr_write *drrw, boolean_t raw)
 {
-	uint8_t allowed_flags = DRR_CHECKSUM_DEDUP | (raw ? DRR_RAW_BYTESWAP : 0);
+	uint8_t allowed_flags = DRR_CHECKSUM_DEDUP;
 	boolean_t dedup_cksum;
+
+	if (raw)
+		allowed_flags |= DRR_RAW_BYTESWAP;
 
 	if (!DMU_OT_IS_VALID(drrw->drr_type) ||
 	    drrw->drr_checksumtype >= ZIO_CHECKSUM_FUNCTIONS ||
@@ -2954,10 +2968,7 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 
 	if (rwa->raw) {
 		if (!DMU_OT_IS_VALID(spill_type) ||
-		    drrs->drr_compressiontype >= ZIO_COMPRESS_FUNCTIONS ||
-		    (drrs->drr_compressiontype != ZIO_COMPRESS_OFF &&
-		    zio_compress_table[drrs->drr_compressiontype].ci_decompress ==
-		    NULL) ||
+		    !receive_compression_supported(drrs->drr_compressiontype) ||
 		    drrs->drr_compressed_size == 0 ||
 		    drrs->drr_compressed_size > drrs->drr_length)
 			return (SET_ERROR(EINVAL));
@@ -3338,19 +3349,15 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 			return (SET_ERROR(EINVAL));
 
 		if (drc->drc_raw) {
-			if (drrw->drr_compressiontype >= ZIO_COMPRESS_FUNCTIONS ||
-			    (drrw->drr_compressiontype != ZIO_COMPRESS_OFF &&
-			    zio_compress_table[drrw->drr_compressiontype].ci_decompress ==
-			    NULL) ||
+			if (!receive_compression_supported(
+			    drrw->drr_compressiontype) ||
 			    drrw->drr_compressed_size == 0 ||
 			    drrw->drr_logical_size < drrw->drr_compressed_size)
 				return (SET_ERROR(EINVAL));
 			size = drrw->drr_compressed_size;
 		} else if (DRR_WRITE_COMPRESSED(drrw)) {
-			if (drrw->drr_compressiontype >= ZIO_COMPRESS_FUNCTIONS ||
-			    (drrw->drr_compressiontype != ZIO_COMPRESS_OFF &&
-			    zio_compress_table[drrw->drr_compressiontype].ci_decompress ==
-			    NULL) ||
+			if (!receive_compression_supported(
+			    drrw->drr_compressiontype) ||
 			    drrw->drr_compressed_size == 0 ||
 			    drrw->drr_logical_size < drrw->drr_compressed_size)
 				return (SET_ERROR(EINVAL));
@@ -3378,17 +3385,15 @@ receive_build_payload_read_plan(dmu_recv_cookie_t *drc,
 	{
 		const struct drr_spill *drrs = &drr->drr_u.drr_spill;
 
-			if (drrs->drr_length < SPA_MINBLOCKSIZE ||
-			    drrs->drr_length > max_blksz ||
-			    P2PHASE(drrs->drr_length, SPA_MINBLOCKSIZE) != 0) {
+		if (drrs->drr_length < SPA_MINBLOCKSIZE ||
+		    drrs->drr_length > max_blksz ||
+		    P2PHASE(drrs->drr_length, SPA_MINBLOCKSIZE) != 0) {
 			return (SET_ERROR(EINVAL));
 		}
 
 		if (drc->drc_raw) {
-			if (drrs->drr_compressiontype >= ZIO_COMPRESS_FUNCTIONS ||
-			    (drrs->drr_compressiontype != ZIO_COMPRESS_OFF &&
-			    zio_compress_table[drrs->drr_compressiontype].ci_decompress ==
-			    NULL) ||
+			if (!receive_compression_supported(
+			    drrs->drr_compressiontype) ||
 			    drrs->drr_compressed_size == 0 ||
 			    drrs->drr_compressed_size > drrs->drr_length)
 				return (SET_ERROR(EINVAL));
@@ -4347,8 +4352,8 @@ dmu_recv_end_sync(void *arg, dmu_tx_t *tx)
 		dmu_buf_will_dirty(ds->ds_dbuf, tx);
 		dsl_dataset_phys(ds)->ds_flags &= ~DS_FLAG_INCONSISTENT;
 		if (dsl_dataset_has_resume_receive_state(ds)) {
-			recv_resume_state_clear(dp->dp_meta_objset, ds->ds_object,
-			    tx);
+			recv_resume_state_clear(dp->dp_meta_objset,
+			    ds->ds_object, tx);
 		}
 		newsnapobj =
 		    dsl_dataset_phys(drc->drc_ds)->ds_prev_snap_obj;

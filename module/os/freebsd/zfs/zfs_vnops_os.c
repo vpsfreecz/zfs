@@ -6267,9 +6267,9 @@ zfs_freebsd_copy_file_range(struct vop_copy_file_range_args *ap)
 	int error;
 	uint64_t len = *ap->a_lenp;
 	/*
-	 * VOP_COPY_FILE_RANGE doesn't thread per-descriptor sync flags through to
-	 * the filesystem entry point, so use the znode's synchronous-open count as
-	 * the narrowest durability signal we have here.
+	 * VOP_COPY_FILE_RANGE cannot pass per-descriptor sync flags to the
+	 * filesystem entry point, so use the znode's synchronous-open count as
+	 * the narrowest durability signal here.
 	 */
 	boolean_t commit = (VTOZ(outvp)->z_sync_cnt != 0);
 

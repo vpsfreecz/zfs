@@ -752,8 +752,8 @@ zil_clone_range_record_valid(const zilog_t *zilog, const lr_t *lrc)
 
 	/*
 	 * Encrypted ZIL clone records only authenticate lr_nbps and lr_bps.
-	 * The claim/free paths parse them without decryption, so semantic checks
-	 * involving lr_length and lr_blksz belong only to decrypted replay.
+	 * The claim/free paths parse them without decryption, so checks
+	 * involving lr_length/lr_blksz belong only to decrypted replay.
 	 */
 	if (zilog->zl_os->os_encrypted)
 		return (B_TRUE);
@@ -4652,9 +4652,9 @@ zil_suspend(const char *osname, void **cookiep)
 		dsl_dataset_remove_key_mapping(dmu_objset_ds(os));
 
 	/*
-	 * Callers only keep the cookie on success. On failure we must drop the
-	 * temporary suspend hold ourselves or zil_suspend(fs, &cookie) leaves the
-	 * dataset suspended and long-held with no resume path back to the caller.
+	 * Callers only keep the cookie on success. On failure, drop the
+	 * temporary suspend hold here or zil_suspend(fs, &cookie) leaves the
+	 * dataset long-held with no caller resume path.
 	 */
 	if (error != 0 || cookiep == NULL) {
 		zil_resume(os);

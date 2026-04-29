@@ -1676,10 +1676,10 @@ spa_keystore_change_key(const char *dsname, dsl_crypto_params_t *dcp)
 		goto out;
 
 	/*
-	 * Recompute encrypted zvol minors after recursive key-root/key-residency
-	 * changes. This mirrors the explicit create/remove refreshes in the
-	 * load-key and unload-key paths. Remove synchronously before recreating
-	 * so the recreate pass cannot lose to a still-pending async removal.
+	 * Recompute encrypted zvol minors after recursive key changes. This
+	 * mirrors the explicit create/remove refreshes in load-key and
+	 * unload-key paths. Remove synchronously before recreating so the
+	 * recreate pass cannot lose to a still-pending async removal.
 	 */
 	zvol_remove_minors(spa, dsname, B_FALSE);
 	zvol_create_minors_recursive(dsname);
@@ -2109,9 +2109,9 @@ dsl_crypto_recv_raw_objset_check(dsl_dataset_t *ds, dsl_dataset_t *fromds,
 	mdn = DMU_META_DNODE(os);
 
 	/*
-	 * Older errata streams can be missing IVset guids entirely. By default
-	 * reject those streams so raw receive preserves the source snapshot's
-	 * IVset identity exactly. The errata override explicitly relaxes both the
+	 * Older errata streams can be missing IVset guids. By default reject
+	 * those streams so raw receive preserves the source snapshot's IVset
+	 * identity exactly. The errata override explicitly relaxes both the
 	 * source and destination IVset-guid checks.
 	 */
 	if (!zfs_disable_ivset_guid_check) {
