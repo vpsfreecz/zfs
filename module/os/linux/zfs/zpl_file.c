@@ -56,7 +56,10 @@
  */
 static unsigned int zfs_fallocate_reserve_percent = 110;
 
-#define	ZPL_ZERO_RANGE_BUFSIZE	(1 << 20)
+/*
+ * Keep ZERO_RANGE writes below SPL's large-allocation warning threshold.
+ */
+#define	ZPL_ZERO_RANGE_BUFSIZE	(64 * 1024)
 
 static inline zidmap_t *zpl_file_idmap(struct file *filp);
 
