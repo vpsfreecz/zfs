@@ -187,6 +187,14 @@ zpl_permission(struct inode *ip, int mask)
 	if (mask & MAY_NOT_BLOCK)
 		return (-ECHILD);
 
+	if (zfsvfs->z_acl_type != ZFS_ACLTYPE_NFSV4) {
+#if defined(HAVE_IOPS_PERMISSION_USERNS) || defined(HAVE_IOPS_PERMISSION_IDMAP)
+		return (generic_permission(user_ns, ip, mask));
+#else
+		return (generic_permission(ip, mask));
+#endif
+	}
+
 	if (mask & MAY_READ)
 		mode |= S_IRUSR;
 	if (mask & (MAY_WRITE | MAY_APPEND))
