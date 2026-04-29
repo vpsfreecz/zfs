@@ -490,18 +490,20 @@ zpl_readpage(struct file *filp, struct page *pp)
 }
 #endif
 
-static int
-zpl_readpage_filler(void *data, struct page *pp)
-{
-	return (zpl_read_folio_common(page_folio(pp)));
-}
-
 /*
  * Populate a set of pages with data for the Linux page cache.  This
  * function will only be called for read ahead and never for demand
  * paging.  For simplicity, the code relies on read_cache_pages() to
  * correctly lock each page for IO and call zpl_readpage().
  */
+#if defined(HAVE_VFS_READPAGES) || !defined(HAVE_PAGEMAP_READAHEAD_FOLIO)
+static int
+zpl_readpage_filler(void *data, struct page *pp)
+{
+	return (zpl_read_folio_common(page_folio(pp)));
+}
+#endif
+
 #ifdef HAVE_VFS_READPAGES
 static int
 zpl_readpages(struct file *filp, struct address_space *mapping,
