@@ -2807,9 +2807,9 @@ dbuf_get_readable_diowrite_bp_locked(dmu_buf_impl_t *db,
 		return (&dr->dt.dl.dr_overridden_by);
 
 	/*
-	 * Once syncing context starts carrying this Direct I/O block forward, the
-	 * dirty record remains the authoritative payload carrier until
-	 * dbuf_write_ready() republishes that BP into db_blkptr.
+	 * Once syncing context carries this Direct I/O block forward, the dirty
+	 * record remains authoritative until dbuf_write_ready() republishes it
+	 * into db_blkptr.
 	 */
 	if (db->db_data_pending == dr && db->db_blkptr != NULL &&
 	    !BP_EQUAL(db->db_blkptr, &dr->dt.dl.dr_overridden_by))

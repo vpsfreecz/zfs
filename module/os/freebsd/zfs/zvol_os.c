@@ -614,11 +614,11 @@ zvol_strategy_impl(zv_request_t *zvr)
 	boolean_t doread = B_FALSE;
 	boolean_t is_dumpified;
 	boolean_t commit;
-	zvol_log_truncate_arg_t zlta;
+	zvol_log_truncate_arg_t zlta = { 0 };
 
 	bp = zvr->bio;
 	zv = zvr->zv;
-	zlta = (zvol_log_truncate_arg_t){ .zlta_zv = zv };
+	zlta.zlta_zv = zv;
 	if (zv == NULL) {
 		error = SET_ERROR(ENXIO);
 		goto out;
@@ -689,9 +689,9 @@ zvol_strategy_impl(zv_request_t *zvr)
 		 * corresponding free chunk so replay coverage follows committed
 		 * progress instead of a separate post-free logging transaction.
 		 *
-		 * On failure we cannot recover the exact chunked-free progress here,
-		 * but we also must not claim the whole BIO completed if the request
-		 * still returns an error.
+		 * On failure we cannot recover the exact chunked-free progress
+		 * here, but we also must not claim the whole BIO completed if
+		 * the request still returns an error.
 		 */
 		if (error == 0)
 			resid = 0;
@@ -750,11 +750,11 @@ unlock:
 	}
 
 	/*
-	 * Sync writes can expose a completed prefix via bio_completed, and sync
-	 * deletes now log each committed free chunk inline.  Once either kind of
-	 * progress has been reported or logged, we must still commit it even when a
-	 * later chunk fails, otherwise a crash can lose work that already escaped
-	 * the request loop.
+	 * Sync writes can expose a completed prefix via bio_completed. Sync
+	 * deletes now log each committed free chunk inline. Once either kind
+	 * of progress has been reported or logged, we must still commit it
+	 * even when a later chunk fails. Otherwise a crash can lose work that
+	 * already escaped the request loop.
 	 */
 	if (commit) {
 		if (bp->bio_cmd == BIO_WRITE && bp->bio_completed != 0) {

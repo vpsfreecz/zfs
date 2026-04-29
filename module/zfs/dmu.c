@@ -1119,7 +1119,8 @@ dmu_free_long_range_impl(objset_t *os, dnode_t *dn, uint64_t offset,
 		    uint64_t, txg);
 		dnode_free_range(dn, chunk_begin, chunk_len, tx);
 		if (tx_func != NULL)
-			tx_func(tx_arg, os, dn->dn_object, chunk_begin, chunk_len, tx);
+			tx_func(tx_arg, os, dn->dn_object, chunk_begin,
+			    chunk_len, tx);
 		if (replay_zilog != NULL && chunk_len == length)
 			VERIFY(zil_replaying(replay_zilog, tx));
 

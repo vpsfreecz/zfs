@@ -375,10 +375,9 @@ zvol_write(zv_request_t *zvr)
 	task_io_account_write(nwritten);
 
 	/*
-	 * Once later-chunk failures become visible to the block layer via a
-	 * completed prefix, sync/FUA writes must also commit that prefix even when
-	 * the request as a whole still returns an error. Otherwise a crash can
-	 * lose bytes we already acknowledged.
+	 * Once later-chunk failures become visible through a completed prefix,
+	 * sync/FUA writes must commit that prefix even when the request still
+	 * returns an error. Otherwise a crash can lose acknowledged bytes.
 	 */
 	if (sync && nwritten != 0) {
 		int commit_error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
@@ -481,9 +480,9 @@ zvol_discard(zv_request_t *zvr)
 
 	/*
 	 * Once we have queued per-chunk TX_TRUNCATE records that match live
-	 * committed progress, sync requests still need to force them out even if a
-	 * later chunk fails. Otherwise a crash before txg sync can lose already-
-	 * committed synchronous frees from replay coverage.
+	 * committed progress, sync requests still need to force them out even
+	 * if a later chunk fails. Otherwise a crash before txg sync can lose
+	 * synchronous frees from replay coverage.
 	 */
 	if (sync && zlta.zlta_logged) {
 		log_error = zil_commit(zv->zv_zilog, ZVOL_OBJ);
@@ -1327,11 +1326,11 @@ zvol_queue_limits_init(zvol_queue_limits_t *limits, zvol_state_t *zv,
 
 			chunks = MIN(zvol_blk_mq_blocks_per_thread, UINT16_MAX);
 
-			/*
-			 * Queue limits store max_segments in a 16-bit field.
-			 * Compute the PAGE_SIZE segment count in 64 bits, round up
-			 * sub-page requests, and clamp oversized blk-mq tunings.
-			 */
+				/*
+				 * max_segments is 16-bit. Count PAGE_SIZE
+				 * segments in 64 bits, round up sub-page
+				 * requests, and clamp oversized blk-mq tunings.
+				 */
 			bytes = zv->zv_volblocksize * chunks;
 			max_segments = DIV_ROUND_UP(bytes, PAGE_SIZE);
 			if (max_segments > UINT16_MAX)

@@ -917,6 +917,8 @@ do_dump(dmu_send_cookie_t *dscp, struct send_range *range)
 		blkptr_t *bp = &srdp->bp;
 		spa_t *spa =
 		    dmu_objset_spa(dscp->dsc_os);
+		uint64_t offset = range->start_blkid * srdp->datablksz;
+		boolean_t split_large_blocks;
 
 		ASSERT3U(srdp->datablksz, ==, BP_GET_LSIZE(bp));
 		ASSERT3U(range->start_blkid + 1, ==, range->end_blkid);
@@ -927,17 +929,18 @@ do_dump(dmu_send_cookie_t *dscp, struct send_range *range)
 			    srdp->datablksz, bp);
 			return (err);
 		}
+
+		split_large_blocks =
+		    srdp->datablksz > SPA_OLD_MAXBLOCKSIZE &&
+		    !(dscp->dsc_featureflags &
+		    DMU_BACKUP_FEATURE_LARGE_BLOCKS);
+
 		ASSERT(range->object > dscp->dsc_resume_object ||
 		    (range->object == dscp->dsc_resume_object &&
 		    (range->start_blkid == DMU_SPILL_BLKID ||
-		    range->start_blkid * srdp->datablksz >=
-		    dscp->dsc_resume_offset ||
-		    (srdp->datablksz > SPA_OLD_MAXBLOCKSIZE &&
-		    !(dscp->dsc_featureflags & DMU_BACKUP_FEATURE_LARGE_BLOCKS) &&
-		    range->start_blkid * srdp->datablksz <
-		    dscp->dsc_resume_offset &&
-		    dscp->dsc_resume_offset -
-		    range->start_blkid * srdp->datablksz < srdp->datablksz))));
+		    offset >= dscp->dsc_resume_offset ||
+		    (split_large_blocks && offset < dscp->dsc_resume_offset &&
+		    dscp->dsc_resume_offset - offset < srdp->datablksz))));
 		/* it's a level-0 block of a regular object */
 
 		mutex_enter(&srdp->lock);
@@ -981,26 +984,22 @@ do_dump(dmu_send_cookie_t *dscp, struct send_range *range)
 			return (err);
 		}
 
-		uint64_t offset = range->start_blkid * srdp->datablksz;
-		boolean_t split_large_blocks =
-		    srdp->datablksz > SPA_OLD_MAXBLOCKSIZE &&
-		    !(dscp->dsc_featureflags & DMU_BACKUP_FEATURE_LARGE_BLOCKS);
 		uint64_t resume_skip = 0;
 
 		/*
-		 * Resume tokens are saved at WRITE-record granularity.  When a
+		 * Resume tokens are saved at WRITE-record granularity. When a
 		 * legacy send splits a large on-disk block into old-max-sized
-		 * WRITE records, the saved resume offset can legitimately land in
-		 * the middle of that underlying block.  traverse_dataset_resume()
-		 * still restarts from the containing L0 blkid, so skip the prefix
-		 * of the block that was already emitted before the interruption.
+		 * WRITE records, the saved resume offset can legitimately land
+		 * in the middle of that underlying block. Resume still restarts
+		 * from the containing L0 blkid, so skip the emitted prefix.
 		 */
-		if (split_large_blocks && range->object == dscp->dsc_resume_object &&
+		if (split_large_blocks &&
+		    range->object == dscp->dsc_resume_object &&
 		    offset < dscp->dsc_resume_offset &&
 		    dscp->dsc_resume_offset - offset < srdp->datablksz) {
 			resume_skip = dscp->dsc_resume_offset - offset;
 			ASSERT3U(resume_skip, <, srdp->datablksz);
-			ASSERT3U(P2PHASE(resume_skip, SPA_OLD_MAXBLOCKSIZE), ==, 0);
+			ASSERT0(P2PHASE(resume_skip, SPA_OLD_MAXBLOCKSIZE));
 		}
 
 		/*
