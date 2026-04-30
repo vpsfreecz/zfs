@@ -22,4 +22,3 @@ AC_DEFUN([ZFS_AC_KERNEL_INODE_FREE], [
 		AC_MSG_RESULT(no)
        ])
 ])
-
