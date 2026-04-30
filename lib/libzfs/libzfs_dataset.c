@@ -3087,9 +3087,6 @@ zfs_prop_get(zfs_handle_t *zhp, zfs_prop_t prop, char *propbuf, size_t proplen,
 		zcp_check(zhp, prop, val, NULL);
 		break;
 
-		/* case ZFS_PROP_UIDMAP: TODO retrieve property */
-		/* case ZFS_PROP_GIDMAP: */
-
 	default:
 		switch (zfs_prop_get_type(prop)) {
 		case PROP_TYPE_NUMBER:
