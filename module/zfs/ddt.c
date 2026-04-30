@@ -2624,6 +2624,8 @@ prune_candidates_sync(void *arg, dmu_tx_t *tx)
 	ddt_prune_entry_t *dpe;
 
 	spa_config_enter(dpi->dpi_spa, SCL_ZIO, FTAG, RW_READER);
+	VERIFY(!dpi->dpi_spa->spa_ddt_prune_scl_zio);
+	dpi->dpi_spa->spa_ddt_prune_scl_zio = B_TRUE;
 
 	/* Process the prune candidates collected so far */
 	while ((dpe = list_remove_head(&dpi->dpi_candidates)) != NULL) {
@@ -2661,6 +2663,7 @@ prune_candidates_sync(void *arg, dmu_tx_t *tx)
 		kmem_free(dpe, sizeof (*dpe));
 	}
 
+	dpi->dpi_spa->spa_ddt_prune_scl_zio = B_FALSE;
 	spa_config_exit(dpi->dpi_spa, SCL_ZIO, FTAG);
 	dpi->dpi_txg_syncs++;
 }
@@ -2838,7 +2841,8 @@ ddt_prune_unique_entries(spa_t *spa, zpool_ddt_prune_unit_t unit,
 	} else if (unit == ZPOOL_DDT_PRUNE_AGE) {
 		cutoff = gethrestime_sec() - amount;
 	} else {
-		return (EINVAL);
+		spa->spa_active_ddt_prune = B_FALSE;
+		return (SET_ERROR(EINVAL));
 	}
 
 	if (cutoff > 0 && !spa_shutting_down(spa) && !issig()) {
