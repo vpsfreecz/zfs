@@ -173,23 +173,57 @@ zfs_io_flags(struct kiocb *kiocb)
 }
 
 /*
- * If relatime is enabled, call file_accessed() if zfs_relatime_need_update()
- * is true.  This is needed since datasets with inherited "relatime" property
- * aren't necessarily mounted with the MNT_RELATIME flag (e.g. after
- * `zfs set relatime=...`), which is what relatime test in VFS by
- * relatime_need_update() is based on.
+ * Enforce ZFS atime/relatime properties directly.  VFS atime decisions are
+ * derived from mount flags, but ZFS can change relatime while mounted.
  */
 static inline void
 zpl_file_accessed(struct file *filp)
 {
 	struct inode *ip = filp->f_mapping->host;
+	struct vfsmount *mnt = filp->f_path.mnt;
+	inode_timespec_t atime, now;
 
-	if (!IS_NOATIME(ip) && ITOZSB(ip)->z_relatime) {
-		if (zfs_relatime_need_update(ip))
-			file_accessed(filp);
-	} else {
-		file_accessed(filp);
-	}
+	/*
+	 * ZFS atime/relatime properties can change after mount. Enforce them
+	 * here instead of delegating to VFS mount flags cached at mount time.
+	 */
+	if (filp->f_flags & O_NOATIME)
+		return;
+
+	if (ip->i_flags & S_NOATIME)
+		return;
+
+#ifdef HAVE_IDMAP_MNT_API
+	if (HAS_UNMAPPED_ID(zpl_file_idmap(filp), ip))
+		return;
+#endif
+
+	if (IS_NOATIME(ip))
+		return;
+
+	if ((ip->i_sb->s_flags & SB_NODIRATIME) && S_ISDIR(ip->i_mode))
+		return;
+
+	if (mnt->mnt_flags & MNT_NOATIME)
+		return;
+
+	if ((mnt->mnt_flags & MNT_NODIRATIME) && S_ISDIR(ip->i_mode))
+		return;
+
+	if (ITOZSB(ip)->z_relatime && !zfs_relatime_need_update(ip))
+		return;
+
+	now = current_time(ip);
+	atime = zpl_inode_get_atime(ip);
+	if (timespec64_equal(&atime, &now))
+		return;
+
+	if (!sb_start_write_trylock(ip->i_sb))
+		return;
+
+	(void) inode_update_time(ip, S_ATIME);
+
+	sb_end_write(ip->i_sb);
 }
 
 static ssize_t
