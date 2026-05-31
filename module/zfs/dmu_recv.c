@@ -3127,8 +3127,6 @@ receive_read_record(dmu_recv_cookie_t *drc)
 	}
 	case DRR_SPILL:
 	{
-		struct drr_spill *drrs =
-		    &drc->drc_rrd->header.drr_u.drr_spill;
 		receive_payload_read_plan_t plan;
 		abd_t *abd;
 
