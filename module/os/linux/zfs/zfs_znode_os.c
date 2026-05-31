@@ -1601,13 +1601,12 @@ zfs_zero_partial_page(znode_t *zp, uint64_t start, uint64_t len)
 }
 
 static void
-zfs_free_range_invalidate(znode_t *zp, uint64_t off, uint64_t len)
+zfs_free_range_invalidate_locked(znode_t *zp, uint64_t off, uint64_t len)
 {
 	struct address_space *mapping = ZTOI(zp)->i_mapping;
 	loff_t first_page, last_page, page_len;
 	loff_t first_page_offset, last_page_offset;
 
-	filemap_invalidate_lock(mapping);
 	if (zn_has_cached_data(zp, off, off + len - 1)) {
 		/* first possible full page in hole */
 		first_page = (off + PAGE_SIZE - 1) >> PAGE_SHIFT;
@@ -1642,7 +1641,6 @@ zfs_free_range_invalidate(znode_t *zp, uint64_t off, uint64_t len)
 				    page_len);
 		}
 	}
-	filemap_invalidate_unlock(mapping);
 }
 
 static void
@@ -1668,12 +1666,17 @@ static int
 zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 {
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	struct address_space *mapping = ZTOI(zp)->i_mapping;
 	zfs_locked_range_t *lr;
 	int error;
 
 	/*
-	 * Lock the range being freed.
+	 * Take the Linux invalidate window before the ZFS range lock.  A mmap
+	 * fault can hold invalidate_lock_shared while calling zfs_getpage(),
+	 * which then needs a range reader lock.  Taking these locks in the
+	 * opposite order can deadlock against hole punching.
 	 */
+	filemap_invalidate_lock(mapping);
 	lr = zfs_rangelock_enter(&zp->z_rangelock, off, len, RL_WRITER);
 
 	/*
@@ -1681,19 +1684,24 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 	 */
 	if (off >= zp->z_size) {
 		zfs_rangelock_exit(lr);
+		filemap_invalidate_unlock(mapping);
 		return (0);
 	}
 
 	if (off + len > zp->z_size)
 		len = zp->z_size - off;
 
+	/*
+	 * Repair the page cache while the invalidate and range locks are both
+	 * held.  The range lock continues to block refaults until the backing
+	 * blocks have been freed, so the invalidate lock does not have to cover
+	 * the potentially long DMU free.
+	 */
+	zfs_free_range_invalidate_locked(zp, off, len);
+	filemap_invalidate_unlock(mapping);
+
 	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, off, len);
 
-	/*
-	 * Zero partial page cache entries.  Keep the Linux invalidate barrier
-	 * around the page-cache invalidate and repair window.
-	 */
-	zfs_free_range_invalidate(zp, off, len);
 	zfs_rangelock_exit(lr);
 
 	return (error);
