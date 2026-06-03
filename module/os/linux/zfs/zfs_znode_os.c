@@ -1693,15 +1693,15 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 
 	/*
 	 * Repair the page cache while the invalidate and range locks are both
-	 * held.  The range lock continues to block refaults until the backing
-	 * blocks have been freed, so the invalidate lock does not have to cover
-	 * the potentially long DMU free.
+	 * held.  Keep the invalidate window across the backing block free as
+	 * well.  Otherwise mmap faults can grab invalidate_lock_shared after the
+	 * cache repair, block on the ZFS range reader lock, and strand the
+	 * puncher behind txg progress while it still holds the range writer.
 	 */
 	zfs_free_range_invalidate_locked(zp, off, len);
-	filemap_invalidate_unlock(mapping);
-
 	error = dmu_free_long_range(zfsvfs->z_os, zp->z_id, off, len);
 
+	filemap_invalidate_unlock(mapping);
 	zfs_rangelock_exit(lr);
 
 	return (error);
