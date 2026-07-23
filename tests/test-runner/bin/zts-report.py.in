@@ -162,7 +162,6 @@ known = {
     'privilege/setup': ['SKIP', na_reason],
     'rootpool/setup': ['SKIP', na_reason],
     'rsend/rsend_008_pos': ['SKIP', 6066],
-    'vdev_zaps/vdev_zaps_007_pos': ['FAIL', known_reason],
 }
 
 if sys.platform.startswith('freebsd'):
