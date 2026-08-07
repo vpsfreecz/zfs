@@ -291,6 +291,75 @@ run_tests(void)
 	fnvlist_free(nvl);
 }
 
+static void
+test_packed_values(void)
+{
+	const char *values[] = { "first", "packed-nvpair-end-marker" };
+	const uint64_t number = 0x1122334455667788ULL;
+	nvlist_t *input = fnvlist_alloc();
+	int encodings[] = { NV_ENCODE_NATIVE, NV_ENCODE_XDR };
+
+	fnvlist_add_uint64(input, "number", number);
+	fnvlist_add_string_array(input, "strings", values, 2);
+	for (size_t e = 0; e < sizeof (encodings) / sizeof (encodings[0]);
+	    e++) {
+		char *packed = NULL;
+		size_t size = 0;
+		nvlist_t *decoded = NULL;
+		char **strings;
+		uint_t count;
+		uint64_t actual;
+		int err = nvlist_pack(input, &packed, &size, encodings[e], 0);
+
+		if (err == 0)
+			err = nvlist_unpack(packed, size, &decoded, 0);
+		if (err != 0 ||
+		    nvlist_lookup_uint64(decoded, "number", &actual) != 0 ||
+		    actual != number ||
+		    nvlist_lookup_string_array(decoded, "strings", &strings,
+		    &count) != 0 || count != 2 ||
+		    strcmp(strings[0], values[0]) != 0 ||
+		    strcmp(strings[1], values[1]) != 0) {
+			(void) printf("packed nvlist round trip failed: %d\n",
+			    encodings[e]);
+			unexpected_failures = B_TRUE;
+		}
+		nvlist_free(decoded);
+		decoded = NULL;
+
+		if (err == 0 && encodings[e] == NV_ENCODE_NATIVE) {
+			size_t offset;
+			size_t marker_len = strlen(values[1]);
+
+			/* Native lists end with a zero int32. */
+			for (offset = 0; offset + marker_len < size; offset++) {
+				if (memcmp(packed + offset, values[1],
+				    marker_len) == 0)
+					break;
+			}
+			if (offset + marker_len >=
+			    size - sizeof (int32_t)) {
+				(void) printf("native marker missing\n");
+				unexpected_failures = B_TRUE;
+			} else {
+				/* Remove the terminator and padding. */
+				offset += marker_len;
+				memset(packed + offset, 'x',
+				    size - sizeof (int32_t) - offset);
+				if (nvlist_unpack(packed, size,
+				    &decoded, 0) == 0) {
+					(void) printf(
+					    "unterminated string accepted\n");
+					unexpected_failures = B_TRUE;
+				}
+				nvlist_free(decoded);
+			}
+		}
+		free(packed);
+	}
+	fnvlist_free(input);
+}
+
 int
 main(int argc, const char *argv[])
 {
@@ -304,6 +373,7 @@ main(int argc, const char *argv[])
 	pool = argv[1];
 
 	run_tests();
+	test_packed_values();
 
 	libzfs_core_fini();
 	return (unexpected_failures);
