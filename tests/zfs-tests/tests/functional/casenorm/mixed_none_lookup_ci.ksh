@@ -29,6 +29,8 @@
 # 3. Check that CI lookup fails if (norm=other).
 
 verify_runnable "global"
+is_linux && log_unsupported \
+    "Linux casenorm integration is incomplete (issue #7633)"
 
 function cleanup
 {

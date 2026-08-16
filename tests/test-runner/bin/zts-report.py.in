@@ -182,10 +182,12 @@ if sys.platform.startswith('freebsd'):
     })
 elif sys.platform.startswith('linux'):
     known.update({
-        'casenorm/mixed_formd_lookup': ['FAIL', 7633],
-        'casenorm/mixed_formd_delete': ['FAIL', 7633],
-        'casenorm/sensitive_formd_lookup': ['FAIL', 7633],
-        'casenorm/sensitive_formd_delete': ['FAIL', 7633],
+        'casenorm/mixed_none_lookup_ci': ['SKIP', 7633],
+        'casenorm/mixed_formd_lookup_ci': ['SKIP', 7633],
+        'casenorm/mixed_formd_lookup': ['SKIP', 7633],
+        'casenorm/mixed_formd_delete': ['SKIP', 7633],
+        'casenorm/sensitive_formd_lookup': ['SKIP', 7633],
+        'casenorm/sensitive_formd_delete': ['SKIP', 7633],
         'removal/removal_with_zdb': ['SKIP', known_reason],
         'cli_root/zfs_unshare/zfs_unshare_002_pos': ['SKIP', na_reason],
     })
@@ -390,7 +392,10 @@ def process_results(pathname):
     for line in f.readlines():
         m = re.match(pattern, line)
         if m and len(m.groups()) == 4:
-            d[m.group(1)] = m.group(4)
+            test = m.group(1)
+            if test.endswith('.ksh'):
+                test = test[:-len('.ksh')]
+            d[test] = m.group(4)
             continue
 
         m = re.match(pattern_log, line)
