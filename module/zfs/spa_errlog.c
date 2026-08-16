@@ -378,8 +378,8 @@ check_filesystem(spa_t *spa, uint64_t head_ds, zbookmark_err_phys_t *zep,
 
 	dsl_dataset_rele_flags(ds, DS_HOLD_FLAG_DECRYPT, FTAG);
 
-	/* Check only snapshots created from this file system. */
-	while (snap_obj != 0 && zep->zb_birth < snap_obj_txg &&
+	/* A snapshot includes blocks born in its creation TXG. */
+	while (snap_obj != 0 && zep->zb_birth <= snap_obj_txg &&
 	    snap_obj_txg <= txg_to_consider) {
 
 		error = dsl_dataset_hold_obj_flags(dp, snap_obj,
