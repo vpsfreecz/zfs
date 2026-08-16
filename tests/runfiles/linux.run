@@ -196,6 +196,7 @@ tags = ['functional', 'procfs']
 
 [tests/functional/projectquota:Linux]
 tests = ['projectid_001_pos', 'projectid_002_pos', 'projectid_003_pos',
+    'projectid_004_pos',
     'projectquota_001_pos', 'projectquota_002_pos', 'projectquota_003_pos',
     'projectquota_004_neg', 'projectquota_005_pos', 'projectquota_006_pos',
     'projectquota_007_pos', 'projectquota_008_pos', 'projectquota_009_pos',
