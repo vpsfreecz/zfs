@@ -185,20 +185,19 @@ elif sys.platform.startswith('linux'):
         # We would prefer to do this with /sys/modules -- see the discussion at
         # get_version() -- but there isn't a way to get the descriptions from
         # there, so we fall back on modinfo
-        command = ["/sbin/modinfo", request, "-0"]
+        command = ["modinfo", request, "-0"]
 
         info = ''
 
         try:
 
             info = subprocess.run(command, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL,
                                   check=True, universal_newlines=True)
             raw_output = info.stdout.split('\0')
 
-        except subprocess.CalledProcessError:
-            print("Error: Descriptions not available",
-                  "(can't access kernel module)")
-            sys.exit(1)
+        except (OSError, subprocess.CalledProcessError):
+            return {}
 
         for line in raw_output:
 
