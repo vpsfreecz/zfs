@@ -64,11 +64,14 @@ function fill_quota
         log_fail "Returned error code: $zret. Expected: $EDQUOT."
 
 	typeset -i file_size=`ls -lsk $MNTPT/$TESTFILE1 | awk '{ print $1 }'`
+	typeset -i dirty_data_max=$(get_tunable DIRTY_DATA_MAX)
 	typeset -i limit=0
 	(( file_size = file_size * 1024 ))
-	(( limit = QUOTA_VALUE + TOLERANCE ))
+	# Configured quotas use committed usage, so dirty data can cross the
+	# boundary before the next transaction group commits it.
+	(( limit = QUOTA_VALUE + dirty_data_max + TOLERANCE ))
 	(( file_size > limit )) && \
-	    log_fail "File was created larger than the quota value, aborting!!!"
+	    log_fail "File exceeded the committed-usage quota overrun bound"
 	return 0
 }
 

@@ -78,9 +78,12 @@ for ds in $datasets; do
 	typeset mntpnt
 	mntpnt=$(get_prop mountpoint $subfs)
 	log_must mkfile $avail $mntpnt/$TESTFILE
+	log_must sync_pool $TESTPOOL
 
-	typeset -i exceed
-	((exceed = avail + 1))
+	# Referenced bytes already consume the same space as a refreservation.
+	typeset -i referenced exceed
+	referenced=$(get_prop referenced $subfs)
+	((exceed = referenced + avail + 1))
 	log_mustnot zfs set refreservation=$exceed $subfs
 	log_mustnot mkfile $avail $mntpnt/$TESTFILE
 

@@ -71,8 +71,20 @@ while ((i < 3)); do
 done
 
 #
-# Verify out of the limitation of 'quota'
+# Configured quotas admit in-flight allocation until committed usage reaches
+# the limit.  Commit one over-limit allocation, then reject new allocation.
 #
-log_mustnot mkfile 7M $mntpnt/$TESTFILE
+log_must mkfile 7M $mntpnt/$TESTFILE
+log_must sync_pool $TESTPOOL
+log_mustnot mkfile 1M $mntpnt/$TESTFILE.2
+
+typeset -i used quota referenced refquota
+used=$(get_prop used $fs)
+quota=$(get_prop quota $fs)
+referenced=$(get_prop referenced $fs)
+refquota=$(get_prop refquota $fs)
+if ((used < quota || referenced >= refquota)); then
+	log_fail "ERROR: child snapshots did not cross only parent quota"
+fi
 
 log_pass "refquotas are not limited by sub-filesystem snapshots"

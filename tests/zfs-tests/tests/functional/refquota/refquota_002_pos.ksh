@@ -62,30 +62,33 @@ log_must zfs set quota=15M $fs
 log_must zfs set refquota=25M $fs
 
 mntpnt=$(get_prop mountpoint $fs)
-log_mustnot mkfile 20M $mntpnt/$TESTFILE
-typeset -i used quota
+log_must mkfile 20M $mntpnt/$TESTFILE
+log_must sync_pool $TESTPOOL
+log_mustnot mkfile 1M $mntpnt/$TESTFILE.2
+typeset -i used quota refquota
 used=$(get_prop used $fs)
 quota=$(get_prop quota $fs)
-((used = used / (1024 * 1024)))
-((quota = quota / (1024 * 1024)))
-if [[ $used -ne $quota ]]; then
-	log_fail "ERROR: $used -ne $quota Quotas are not limited by quota"
+refquota=$(get_prop refquota $fs)
+if ((used < quota || used >= refquota)); then
+	log_fail "ERROR: used $used did not cross only quota $quota"
 fi
 
 #
 # Switch the value of them and try again
 #
-log_must rm $mntpnt/$TESTFILE
+log_must rm -f $mntpnt/$TESTFILE $mntpnt/$TESTFILE.2
+log_must sync_pool $TESTPOOL
 log_must zfs set quota=25M $fs
 log_must zfs set refquota=15M $fs
 
-log_mustnot mkfile 20M $mntpnt/$TESTFILE
+log_must mkfile 20M $mntpnt/$TESTFILE
+log_must sync_pool $TESTPOOL
+log_mustnot mkfile 1M $mntpnt/$TESTFILE.2
 used=$(get_prop used $fs)
+quota=$(get_prop quota $fs)
 refquota=$(get_prop refquota $fs)
-((used = used / (1024 * 1024)))
-((refquota = refquota / (1024 * 1024)))
-if [[ $used -ne $refquota ]]; then
-	log_fail "ERROR: $used -ne $refquota Quotas are not limited by refquota"
+if ((used < refquota || used >= quota)); then
+	log_fail "ERROR: used $used did not cross only refquota $refquota"
 fi
 
 log_pass "Quotas are enforced using the minimum of the two properties"

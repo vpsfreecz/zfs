@@ -60,17 +60,32 @@ log_onexit cleanup
 fs=$TESTPOOL/$TESTFS ; subfs=$fs/subfs
 log_must zfs create $subfs
 log_must zfs set quota=25M $fs
+typeset -i used quota
 
 log_must zfs set reserv=10M $subfs
 log_must zfs set refreserv=20M $subfs
 mntpnt=$(get_prop mountpoint $fs)
-log_mustnot mkfile 15M $mntpnt/$TESTFILE
+log_must mkfile 15M $mntpnt/$TESTFILE
+log_must sync_pool $TESTPOOL
+log_mustnot mkfile 1M $mntpnt/$TESTFILE.2
+used=$(get_prop used $fs)
+quota=$(get_prop quota $fs)
+if ((used < quota)); then
+	log_fail "ERROR: refreservation overrun was not committed"
+fi
 
-log_must rm -f $mntpnt/$TESTFILE
+log_must rm -f $mntpnt/$TESTFILE $mntpnt/$TESTFILE.2
+log_must sync_pool $TESTPOOL
 
 log_must zfs set reserv=20M $subfs
 log_must zfs set refreserv=10M $subfs
-log_mustnot mkfile 15M $mntpnt/$TESTFILE
+log_must mkfile 15M $mntpnt/$TESTFILE
+log_must sync_pool $TESTPOOL
+log_mustnot mkfile 1M $mntpnt/$TESTFILE.2
+used=$(get_prop used $fs)
+if ((used < quota)); then
+	log_fail "ERROR: reservation overrun was not committed"
+fi
 
 log_pass "Reservations are enforced using the maximum of " \
 	"'reserv' and 'refreserv'"

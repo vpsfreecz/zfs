@@ -39,7 +39,7 @@
 # STRATEGY:
 #	1. Setting quota and refquota for parent. refquota < quota
 #	2. Verify sub-filesystem will not be limited by refquota
-#	3. Verify sub-filesystem will only be limited by quota
+#	3. Verify sub-filesystem is limited after committed usage crosses quota
 #
 
 verify_runnable "both"
@@ -62,23 +62,22 @@ log_must zfs create $fs/subfs
 
 mntpnt=$(get_prop mountpoint $fs/subfs)
 log_must mkfile 20M $mntpnt/$TESTFILE
+log_must sync_pool $TESTPOOL
 
 typeset -i used quota refquota
 used=$(get_prop used $fs)
 refquota=$(get_prop refquota $fs)
-((used = used / (1024 * 1024)))
-((refquota = refquota / (1024 * 1024)))
-if [[ $used -lt $refquota ]]; then
+if ((used < refquota)); then
 	log_fail "ERROR: $used < $refquota subfs quotas are limited by refquota"
 fi
 
-log_mustnot mkfile 20M $mntpnt/$TESTFILE.2
+log_must mkfile 20M $mntpnt/$TESTFILE.2
+log_must sync_pool $TESTPOOL
+log_mustnot mkfile 1M $mntpnt/$TESTFILE.3
 used=$(get_prop used $fs)
 quota=$(get_prop quota $fs)
-((used = used / (1024 * 1024)))
-((quota = quota / (1024 * 1024)))
-if [[ $used -gt $quota ]]; then
-	log_fail "ERROR: $used > $quota subfs quotas aren't limited by quota"
+if ((used < quota)); then
+	log_fail "ERROR: $used < $quota parent quota overrun was not committed"
 fi
 
 log_pass "Sub-filesystem quotas are not enforced by property 'refquota'"

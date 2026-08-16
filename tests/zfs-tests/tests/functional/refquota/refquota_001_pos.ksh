@@ -64,10 +64,11 @@ log_must zfs create $sub
 log_must zfs set refquota=10M $fs
 mntpnt=$(get_prop mountpoint $fs)
 
-log_mustnot mkfile 11M $mntpnt/file
-log_must mkfile 9M $mntpnt/file
-log_must zfs snapshot $fs@snap
-log_mustnot mkfile 2M $mntpnt/file2
+# Configured quotas admit in-flight allocation until committed usage reaches
+# the limit.  Commit one over-limit allocation, then reject new allocation.
+log_must mkfile 11M $mntpnt/file
+log_must sync_pool $TESTPOOL
+log_mustnot mkfile 1M $mntpnt/file2
 
 mntpnt=$(get_prop mountpoint $sub)
 log_must mkfile 10M $mntpnt/file

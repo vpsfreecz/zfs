@@ -1273,12 +1273,13 @@ dsl_dir_tempreserve_impl(dsl_dir_t *dd, uint64_t asize, boolean_t netfree,
 	uint64_t quota;
 	struct tempreserve *tr;
 	int retval;
-	uint64_t ext_quota;
+	boolean_t pool_limited;
 	uint64_t ref_rsrv;
 
 top_of_function:
 	txg = tx->tx_txg;
 	retval = EDQUOT;
+	pool_limited = B_FALSE;
 	ref_rsrv = 0;
 
 	ASSERT3U(txg, !=, 0);
@@ -1339,6 +1340,7 @@ top_of_function:
 		    (netfree) ?
 		    ZFS_SPACE_CHECK_RESERVED : ZFS_SPACE_CHECK_NORMAL);
 
+		pool_limited = (avail <= quota);
 		if (avail < quota) {
 			quota = avail;
 			retval = SET_ERROR(ENOSPC);
@@ -1346,25 +1348,24 @@ top_of_function:
 	}
 
 	/*
-	 * If they are requesting more space, and our current estimate
-	 * is over quota, they get to try again unless the actual
-	 * on-disk is over quota and there are no pending changes
-	 * or deferred frees (which may free up space for us).
+	 * Committed usage owns configured quota admission, but physical pool
+	 * capacity must include pending writes or sync can exhaust its reserve.
 	 */
-	ext_quota = quota >> 5;
-	if (quota == UINT64_MAX)
-		ext_quota = 0;
-
 	if (used_on_disk >= quota) {
 		if (retval == ENOSPC && (used_on_disk - quota) <
 		    dsl_pool_deferred_space(dd->dd_pool)) {
 			retval = SET_ERROR(ERESTART);
 		}
-		/* Quota exceeded */
+		dprintf_dd(dd, "failing: used=%lluK inflight = %lluK "
+		    "quota=%lluK tr=%lluK\n",
+		    (u_longlong_t)used_on_disk>>10,
+		    (u_longlong_t)est_inflight>>10,
+		    (u_longlong_t)quota>>10, (u_longlong_t)asize>>10);
 		mutex_exit(&dd->dd_lock);
 		DMU_TX_STAT_BUMP(dmu_tx_quota);
 		return (retval);
-	} else if (used_on_disk + est_inflight >= quota + ext_quota) {
+	} else if (pool_limited &&
+	    used_on_disk + est_inflight >= quota + (quota >> 5)) {
 		dprintf_dd(dd, "failing: used=%lluK inflight = %lluK "
 		    "quota=%lluK tr=%lluK\n",
 		    (u_longlong_t)used_on_disk>>10,
