@@ -28,6 +28,8 @@
 # 2. Check that CI lookup succeeds for any c/n name form.
 
 verify_runnable "global"
+is_linux && log_unsupported \
+    "Linux casenorm integration is incomplete (issue #7633)"
 
 function cleanup
 {

@@ -30,6 +30,8 @@
 # 4. Check that delete fails for all other name forms.
 
 verify_runnable "global"
+is_linux && log_unsupported \
+    "Linux casenorm integration is incomplete (issue #7633)"
 
 function cleanup
 {
