@@ -81,9 +81,10 @@ function do_vol_test
 	typeset type=$1
 	typeset copies=$2
 	typeset mntp=$3
+	typeset testvol="${TESTVOL1}_${type}_${copies}"
 
-	vol=$TESTPOOL/$TESTVOL1
-	vol_b_path=$ZVOL_DEVDIR/$TESTPOOL/$TESTVOL1
+	vol=$TESTPOOL/$testvol
+	vol_b_path=$ZVOL_DEVDIR/$TESTPOOL/$testvol
 
 	log_must zfs create -V $VOLSIZE -o compression=off -o copies=$copies \
 	    $vol
