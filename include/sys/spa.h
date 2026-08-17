@@ -1016,6 +1016,8 @@ extern int spa_vdev_exit(spa_t *spa, vdev_t *vd, uint64_t txg, int error);
 
 /* Pool vdev state change lock */
 extern void spa_vdev_state_enter(spa_t *spa, int oplock);
+extern int spa_vdev_state_exit_break_on_suspend(spa_t *spa, vdev_t *vd,
+    int error);
 extern int spa_vdev_state_exit(spa_t *spa, vdev_t *vd, int error);
 
 /* Log state */

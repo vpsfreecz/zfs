@@ -1425,10 +1425,12 @@ spa_vdev_state_enter(spa_t *spa, int oplocks)
 	spa->spa_vdev_locks = locks;
 }
 
-int
-spa_vdev_state_exit(spa_t *spa, vdev_t *vd, int error)
+static int
+spa_vdev_state_exit_impl(spa_t *spa, vdev_t *vd, int error,
+    txg_wait_flag_t flags)
 {
 	boolean_t config_changed = B_FALSE;
+	int sync_error = 0;
 	vdev_t *vdev_top;
 
 	if (vd == NULL || vd == spa->spa_root_vdev) {
@@ -1460,19 +1462,34 @@ spa_vdev_state_exit(spa_t *spa, vdev_t *vd, int error)
 	 * are synchronous.  This is important for things like zpool offline:
 	 * when the command completes, you expect no further I/O from ZFS.
 	 */
-	if (vd != NULL)
-		txg_wait_synced(spa->spa_dsl_pool, 0);
+	if (vd != NULL) {
+		sync_error = txg_wait_synced_flags(spa->spa_dsl_pool, 0,
+		    flags);
+	}
 
 	/*
-	 * If the config changed, update the config cache.
+	 * If the config changed and reached stable storage, update the config
+	 * cache.
 	 */
-	if (config_changed) {
+	if (config_changed && sync_error == 0) {
 		mutex_enter(&spa_namespace_lock);
 		spa_write_cachefile(spa, B_FALSE, B_TRUE, B_FALSE);
 		mutex_exit(&spa_namespace_lock);
 	}
 
-	return (error);
+	return (error != 0 ? error : sync_error);
+}
+
+int
+spa_vdev_state_exit(spa_t *spa, vdev_t *vd, int error)
+{
+	return (spa_vdev_state_exit_impl(spa, vd, error, TXG_WAIT_NONE));
+}
+
+int
+spa_vdev_state_exit_break_on_suspend(spa_t *spa, vdev_t *vd, int error)
+{
+	return (spa_vdev_state_exit_impl(spa, vd, error, TXG_WAIT_SUSPEND));
 }
 
 /*
