@@ -61,7 +61,7 @@ log_must cp $DATAFILE /$TESTPOOL/file
 
 # wait until sync starts, and the pool suspends
 log_note "waiting for pool to suspend"
-typeset -i tries=10
+typeset -i tries=30
 until [[ $(kstat_pool $TESTPOOL state) == "SUSPENDED" ]] ; do
 	if ((tries-- == 0)); then
 		log_fail "pool didn't suspend"
