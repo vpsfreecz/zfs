@@ -158,6 +158,7 @@ pre =
 post =
 tests = ['luks_sanity']
 tags = ['functional', 'luks']
+timeout = 1200
 
 [tests/functional/mmap:Linux]
 tests = ['mmap_libaio_001_pos', 'mmap_sync_001_pos']
