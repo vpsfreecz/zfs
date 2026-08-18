@@ -60,7 +60,7 @@ if is_linux; then
 	mounts=$(umount --fake -av -t zfs 2>&1 | awk '/successfully umounted/ {print $1}')
 	# Fallback to /proc/mounts for umount(8) (util-linux-ng 2.17.2)
 	if [[ -z $mounts ]]; then
-		mounts=$(awk '/zfs/ { print $2 }' /proc/mounts)
+		mounts=$(awk '$3 == "zfs" { print $2 }' /proc/mounts)
 	fi
 elif is_freebsd; then
 	# Umountall and umount not supported on FreeBSD
