@@ -1703,6 +1703,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/mmp/mmp_degraded_import.ksh \
 	functional/mmp/mmp_exported_import.ksh \
 	functional/mmp/mmp_hostid.ksh \
+	functional/mmp/zgenhostid_csprng.ksh \
 	functional/mmp/mmp_inactive_import.ksh \
 	functional/mmp/mmp_interval.ksh \
 	functional/mmp/mmp_on_off.ksh \
