@@ -128,7 +128,8 @@ log_must dd if=/dev/urandom of=/$TESTPOOL/$TESTFS/small_file \
     oflag=sync bs=512 count=1
 
 # TX_CREATE, TX_MKDIR, TX_REMOVE, TX_RMDIR
-log_must cp -R /usr/share/dict /$TESTPOOL/$TESTFS
+log_must cp -R "$STF_SUITE/tests/functional/slog" \
+    /$TESTPOOL/$TESTFS/dict
 log_must rm -rf /$TESTPOOL/$TESTFS/dict
 
 # TX_SETATTR
