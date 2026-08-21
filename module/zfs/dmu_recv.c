@@ -1034,8 +1034,7 @@ dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
 				if (!redact_check(drba, origin)) {
 					dsl_dataset_rele_flags(origin, dsflags,
 					    FTAG);
-					dsl_dataset_rele_flags(ds, dsflags,
-					    FTAG);
+					dsl_dataset_rele(ds, FTAG);
 					return (SET_ERROR(EINVAL));
 				}
 			}
@@ -1043,7 +1042,7 @@ dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
 			error = recv_check_large_blocks(ds, featureflags);
 			if (error != 0) {
 				dsl_dataset_rele_flags(origin, dsflags, FTAG);
-				dsl_dataset_rele_flags(ds, dsflags, FTAG);
+				dsl_dataset_rele(ds, FTAG);
 				return (error);
 			}
 
