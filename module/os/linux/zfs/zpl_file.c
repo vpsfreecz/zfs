@@ -813,7 +813,8 @@ zpl_ioctl_getflags(struct file *filp, void __user *arg)
 #define	fchange(f0, f1, b0, b1) (!((f0) & (b0)) != !((f1) & (b1)))
 
 static int
-__zpl_ioctl_setflags(struct inode *ip, uint32_t ioctl_flags, xvattr_t *xva)
+__zpl_ioctl_setflags(zidmap_t *mnt_ns, struct inode *ip, uint32_t ioctl_flags,
+    xvattr_t *xva)
 {
 	uint64_t zfs_flags = ITOZ(ip)->z_pflags;
 	xoptattr_t *xoap;
@@ -834,7 +835,7 @@ __zpl_ioctl_setflags(struct inode *ip, uint32_t ioctl_flags, xvattr_t *xva)
 	    !ns_capable(ns, CAP_LINUX_IMMUTABLE))
 		return (-EPERM);
 
-	if (!zpl_inode_owner_or_capable(zfs_init_idmap, ip))
+	if (!zpl_inode_owner_or_capable(mnt_ns, ip))
 		return (-EACCES);
 
 	xva_init(xva);
@@ -910,6 +911,11 @@ static int
 zpl_ioctl_setflags(struct file *filp, void __user *arg)
 {
 	struct inode *ip = file_inode(filp);
+#ifdef HAVE_IOPS_CREATE_IDMAP
+	zidmap_t *mnt_ns = mnt_idmap(filp->f_path.mnt);
+#else
+	zidmap_t *mnt_ns = zfs_init_idmap;
+#endif
 	uint32_t flags;
 	cred_t *cr = CRED();
 	xvattr_t xva;
@@ -919,13 +925,13 @@ zpl_ioctl_setflags(struct file *filp, void __user *arg)
 	if (copy_from_user(&flags, arg, sizeof (flags)))
 		return (-EFAULT);
 
-	err = __zpl_ioctl_setflags(ip, flags, &xva);
+	err = __zpl_ioctl_setflags(mnt_ns, ip, flags, &xva);
 	if (err)
 		return (err);
 
 	crhold(cr);
 	cookie = spl_fstrans_mark();
-	err = -zfs_setattr(ITOZ(ip), (vattr_t *)&xva, 0, cr, zfs_init_idmap);
+	err = -zfs_setattr(ITOZ(ip), (vattr_t *)&xva, 0, cr, mnt_ns);
 	spl_fstrans_unmark(cookie);
 	crfree(cr);
 
