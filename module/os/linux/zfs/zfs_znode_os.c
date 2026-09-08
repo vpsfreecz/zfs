@@ -1694,8 +1694,8 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 	/*
 	 * Repair the page cache while the invalidate and range locks are both
 	 * held.  Keep the invalidate window across the backing block free as
-	 * well.  Otherwise mmap faults can grab invalidate_lock_shared after the
-	 * cache repair, block on the ZFS range reader lock, and strand the
+	 * well.  Otherwise mmap faults can grab invalidate_lock_shared after
+	 * the cache repair, block on the ZFS range reader lock, and strand the
 	 * puncher behind txg progress while it still holds the range writer.
 	 */
 	zfs_free_range_invalidate_locked(zp, off, len);

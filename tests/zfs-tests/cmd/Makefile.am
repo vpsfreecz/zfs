@@ -125,6 +125,8 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/edonr_test %D%/skein_test \
 %C%_blake3_test_LDADD = $(%C%_skein_test_LDADD)
 
 if BUILD_LINUX
+scripts_zfs_tests_bin_PROGRAMS += %D%/mmap_write_truncate
+%C%_mmap_write_truncate_LDADD = -lpthread
 scripts_zfs_tests_bin_PROGRAMS += %D%/getversion
 scripts_zfs_tests_bin_PROGRAMS += %D%/user_ns_exec
 scripts_zfs_tests_bin_PROGRAMS += %D%/renameat2

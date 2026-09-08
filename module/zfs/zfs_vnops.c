@@ -406,7 +406,7 @@ zfs_read(struct znode *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 	uint_t blksz = zp->z_blksz;
 	ssize_t chunk_size;
 	ssize_t n = MIN(zfs_uio_resid(uio), zp->z_size - zfs_uio_offset(uio));
-	ssize_t start_resid = n;
+	ssize_t start_resid = zfs_uio_resid(uio);
 	ssize_t dio_remaining_resid = 0;
 
 	dmu_flags_t dflags = DMU_READ_PREFETCH;
@@ -520,7 +520,7 @@ zfs_read(struct znode *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 	} else if (error && (uio->uio_extflg & UIO_DIRECT)) {
 		n += dio_remaining_resid;
 	}
-	int64_t nread = start_resid - n;
+	int64_t nread = start_resid - zfs_uio_resid(uio);
 
 	dataset_kstats_update_read_kstats(&zfsvfs->z_kstat, nread);
 out:
@@ -898,23 +898,6 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 			error = dmu_write_uio_dbuf(sa_get_db(zp->z_sa_hdl),
 			    uio, nbytes, tx, dflags);
 			zfs_uio_fault_disable(uio, B_FALSE);
-#ifdef __linux__
-			if (error == EFAULT) {
-				zfs_clear_setid_bits_if_necessary(zfsvfs, zp,
-				    cr, &clear_setid_bits_txg, tx);
-				dmu_tx_commit(tx);
-				/*
-				 * Account for partial writes before
-				 * continuing the loop.
-				 * Update needs to occur before the next
-				 * zfs_uio_prefaultpages, or prefaultpages may
-				 * error, and we may break the loop early.
-				 */
-				n -= tx_bytes - zfs_uio_resid(uio);
-				pfbytes -= tx_bytes - zfs_uio_resid(uio);
-				continue;
-			}
-#endif
 			/*
 			 * On FreeBSD, EFAULT should be propagated back to the
 			 * VFS, which will handle faulting and will retry.
@@ -1060,6 +1043,11 @@ zfs_write(znode_t *zp, zfs_uio_t *uio, int ioflag, cred_t *cr)
 	 */
 	if (uio->uio_extflg & UIO_DIRECT)
 		zfs_uio_free_dio_pages(uio, UIO_WRITE);
+
+#if defined(__linux__)
+	if (error == EFAULT && zfs_uio_resid(uio) != start_resid)
+		error = 0;
+#endif
 
 	/*
 	 * If we're in replay mode, or we made no progress, or the
