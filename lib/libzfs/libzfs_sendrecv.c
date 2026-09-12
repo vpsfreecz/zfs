@@ -1501,7 +1501,19 @@ again:
 			return (err);
 	}
 	if (needagain) {
-		assert(progress);
+		/*
+		 * Promotion can make a dataset depend on an origin below
+		 * itself. The origin then also waits for its parent. Do not
+		 * spin forever in non-debug builds (or abort in debug builds)
+		 * when this dependency graph cannot make forward progress.
+		 */
+		if (!progress) {
+			zfs_error_aux(rzhp->zfs_hdl, dgettext(TEXT_DOMAIN,
+			    "cyclic parent and clone origin dependencies"));
+			return (zfs_error(rzhp->zfs_hdl, EZFS_BADBACKUP,
+			    dgettext(TEXT_DOMAIN,
+			    "cannot order recursive send stream")));
+		}
 		goto again;
 	}
 
@@ -2526,7 +2538,9 @@ zfs_send_cb_impl(zfs_handle_t *zhp, const char *fromsnap, const char *tosnap,
 	return (err || sdd.err);
 
 stderr_out:
-	err = zfs_standard_error(zhp->zfs_hdl, err, errbuf);
+	/* A libzfs failure has already set and reported the error. */
+	if (err != -1)
+		err = zfs_standard_error(zhp->zfs_hdl, err, errbuf);
 err_out:
 	fsavl_destroy(fsavl);
 	fnvlist_free(fss);
