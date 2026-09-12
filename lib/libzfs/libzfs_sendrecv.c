@@ -2538,7 +2538,9 @@ zfs_send_cb_impl(zfs_handle_t *zhp, const char *fromsnap, const char *tosnap,
 	return (err || sdd.err);
 
 stderr_out:
-	err = zfs_standard_error(zhp->zfs_hdl, err, errbuf);
+	/* A libzfs failure has already set and reported the error. */
+	if (err != -1)
+		err = zfs_standard_error(zhp->zfs_hdl, err, errbuf);
 err_out:
 	fsavl_destroy(fsavl);
 	fnvlist_free(fss);
