@@ -812,6 +812,20 @@ i_validate_nvpair(nvpair_t *nvp)
 	 * verify string values and get the value size.
 	 */
 	size1 = nvp->nvp_size - NVP_VALOFF(nvp);
+
+	/*
+	 * A scalar string must have room for at least its terminating NUL,
+	 * and a non-empty string array for at least its pointer table.
+	 * i_get_value_size() reads a zero max_size as "unbounded", which is
+	 * only meaningful for callers that are sizing a value already in
+	 * memory.  Here the value area after the name is the pair's true
+	 * limit, so an empty area has to be rejected before the string
+	 * search could begin past the end of this nvpair's allocation.
+	 */
+	if (size1 == 0 && (type == DATA_TYPE_STRING ||
+	    (type == DATA_TYPE_STRING_ARRAY && NVP_NELEM(nvp) != 0)))
+		return (EFAULT);
+
 	size2 = i_get_value_size(type, NVP_VALUE(nvp), NVP_NELEM(nvp),
 	    size1);
 
