@@ -427,7 +427,7 @@ free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
 	 */
 	if (!free_indirects) {
 		db_lock_type_t dblt = dmu_buf_lock_parent(db, RW_READER, FTAG);
-		VERIFY_IMPLY(BP_GET_FILL(db->db_blkptr) > 0,
+		VERIFY(BP_GET_FILL(db->db_blkptr) == 0 ||
 		    db->db_dirtycnt > 0);
 		dmu_buf_unlock_parent(db, dblt, FTAG);
 	}
