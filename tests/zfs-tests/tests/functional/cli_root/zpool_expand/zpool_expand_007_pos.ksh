@@ -64,7 +64,8 @@ function cleanup
 	poolexists $TESTPOOL1 && destroy_pool $TESTPOOL1
 	poolexists $TESTPOOL2 && destroy_pool $TESTPOOL2
 	log_must restore_tunable TXG_TIMEOUT
-	rm -f $VDEV_A $VDEV_B $DONOR $CACHE $CACHE.boot $CACHE.boot2
+	rm -f $VDEV_A $VDEV_B $DONOR $CACHE $CACHE.boot $CACHE.boot2 \
+	    $CACHE.boot3
 }
 
 # The txg a config is chosen by.
@@ -154,5 +155,19 @@ log_must zpool import -c $CACHE.boot2 -o cachefile=$CACHE.boot2 $TESTPOOL1
 log_must check_state $TESTPOOL1 $VDEV_A "ONLINE"
 log_must check_state $TESTPOOL1 "" "ONLINE"
 log_must eval "zdb -l $VDEV_A | grep -q 'labels = 0 1 2 3'"
+
+# When this pool's head labels later become unreadable, the legitimate tail
+# pair must still be a valid fallback. Without this step a fix that simply
+# ignores all tails could make an otherwise healthy mirror lose one member.
+# Only overwrite the first two labels of this test-owned file vdev, leaving
+# its boot area and the trailing pair intact.
+log_must zpool sync $TESTPOOL1
+log_must cp $CACHE.boot2 $CACHE.boot3
+log_must zpool export $TESTPOOL1
+log_must dd if=/dev/zero of=$VDEV_A bs=$TAILSZ count=1 conv=notrunc
+log_must zpool import -c $CACHE.boot3 -o cachefile=$CACHE.boot3 $TESTPOOL1
+
+log_must check_state $TESTPOOL1 $VDEV_A "ONLINE"
+log_must check_state $TESTPOOL1 "" "ONLINE"
 
 log_pass "a vdev grown over an older pool's labels keeps its own identity"
