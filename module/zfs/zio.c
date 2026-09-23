@@ -2177,7 +2177,12 @@ zio_free_bp_init(zio_t *zio)
 
 	if (zio->io_child_type == ZIO_CHILD_LOGICAL) {
 		if (BP_GET_DEDUP(bp))
-			zio->io_pipeline = ZIO_DDT_FREE_PIPELINE;
+			/*
+			 * Keep the gang stages zio_create() added: if
+			 * zio_ddt_free() falls back to a plain free, they
+			 * free the gang members along with the header.
+			 */
+			zio->io_pipeline |= ZIO_DDT_FREE_PIPELINE;
 	}
 
 	ASSERT3P(zio->io_bp, ==, &zio->io_bp_copy);
@@ -4132,7 +4137,8 @@ zio_ddt_free(zio_t *zio)
 		 * table.  Clear the DEDUP bit so it is treated as a normal
 		 * block from here on.  BRT_FREE and DVA_FREE follow in the
 		 * pipeline and will handle any cloned references and the
-		 * actual block free respectively.
+		 * actual block free respectively, along with the gang stages
+		 * for a gang BP.
 		 */
 		BP_SET_DEDUP(bp, 0);
 	}
