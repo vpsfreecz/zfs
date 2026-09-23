@@ -137,6 +137,7 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/mmap_write_truncate
 %C%_mmap_write_truncate_LDADD = -lpthread
 scripts_zfs_tests_bin_PROGRAMS += %D%/getversion
 scripts_zfs_tests_bin_PROGRAMS += %D%/user_ns_exec
+scripts_zfs_tests_bin_PROGRAMS += %D%/mount_null_source
 scripts_zfs_tests_bin_PROGRAMS += %D%/renameat2
 scripts_zfs_tests_bin_PROGRAMS += %D%/statx
 scripts_zfs_tests_bin_PROGRAMS += %D%/xattrtest

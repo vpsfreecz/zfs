@@ -32,6 +32,7 @@
 /mmap_sync
 /mmap_write_truncate
 /mmapwrite
+/mount_null_source
 /nvlist_to_lua
 /randfree_file
 /randwritecomp

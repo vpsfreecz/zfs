@@ -878,6 +878,9 @@ zpl_get_tree(struct fs_context *fc)
 	if (vfs->vfs_unknown && !vfs->vfs_sloppy)
 		return (-SET_ERROR(EINVAL));
 
+	if (fc->source == NULL)
+		return (-SET_ERROR(EINVAL));
+
 	err = dmu_objset_hold(fc->source, FTAG, &os);
 	if (err)
 		return (-err);
