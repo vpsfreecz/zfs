@@ -29,7 +29,7 @@
 
 #
 # DESCRIPTION:
-# Test if the expected '/sys/module/zfs/<dir>/<attr>' are present
+# Test if the expected ZFS sysfs feature and property attributes are present.
 #
 
 verify_runnable "global"
@@ -38,12 +38,17 @@ if ! is_linux ; then
 	log_unsupported "sysfs is linux-only"
 fi
 
-claim="Expected '/sys/module/zfs/<dir>/<attr>' attributes are present"
+typeset sysfs="/sys/module/zfs"
+# Built-in ZFS keeps module parameters under /sys/module/zfs, but creates
+# its feature and property hierarchy under /sys/fs/zfs instead.
+[[ -d /sys/fs/zfs ]] && sysfs="/sys/fs/zfs"
 
-kernel_feature_attr="/sys/module/zfs/features.kernel/org.zfsonlinux:vdev_trim/supported"
-pool_feature_attr="/sys/module/zfs/features.pool/org.open-zfs:large_blocks/guid"
-pool_prop__attr="/sys/module/zfs/properties.pool/comment/values"
-ds_prop__attr="/sys/module/zfs/properties.dataset/recordsize/values"
+claim="Expected '$sysfs/<dir>/<attr>' attributes are present"
+
+kernel_feature_attr="$sysfs/features.kernel/org.zfsonlinux:vdev_trim/supported"
+pool_feature_attr="$sysfs/features.pool/org.open-zfs:large_blocks/guid"
+pool_prop__attr="$sysfs/properties.pool/comment/values"
+ds_prop__attr="$sysfs/properties.dataset/recordsize/values"
 
 log_assert $claim
 
@@ -53,8 +58,8 @@ log_must cat $pool_prop__attr
 log_must cat $ds_prop__attr
 
 # force a read of all the attributes for show func code coverage
-log_must grep -R "[a-z]" /sys/module/zfs/features.*
-log_must grep -R "[a-z]" /sys/module/zfs/properties.*
-log_mustnot grep -RE "[^[:print:]]" /sys/module/zfs/properties.*
+log_must grep -R "[a-z]" "$sysfs"/features.*
+log_must grep -R "[a-z]" "$sysfs"/properties.*
+log_mustnot grep -RE "[^[:print:]]" "$sysfs"/properties.*
 
 log_pass $claim
