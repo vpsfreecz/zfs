@@ -44,6 +44,7 @@
 
 DISK1=${DISKS%% *}
 
+initialize_small_chunks
 log_must zpool create -f $TESTPOOL $DISK1
 log_must zpool initialize $TESTPOOL
 

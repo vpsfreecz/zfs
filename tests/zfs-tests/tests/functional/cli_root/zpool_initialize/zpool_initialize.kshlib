@@ -18,6 +18,17 @@
 # Copyright (c) 2016 by Delphix. All rights reserved.
 #
 
+typeset original_initialize_chunk_size=''
+
+function initialize_small_chunks
+{
+	# Keep initialization active on fast devices while testing state changes,
+	# as in zpool_wait_initialize_cancel. Do not change the assertions or sleeps.
+	original_initialize_chunk_size=$(get_tunable INITIALIZE_CHUNK_SIZE) ||
+	    log_fail "Unable to read initialization chunk size"
+	log_must set_tunable64 INITIALIZE_CHUNK_SIZE 512
+}
+
 function initialize_prog_line # pool disk
 {
         typeset pool="$1"
@@ -39,6 +50,11 @@ function cleanup
 
 	if poolexists $TESTPOOL1; then
 		log_must zpool destroy -f $TESTPOOL1
+	fi
+
+	if [[ "$original_initialize_chunk_size" ]]; then
+		log_must set_tunable64 INITIALIZE_CHUNK_SIZE \
+		    $original_initialize_chunk_size
 	fi
 }
 log_onexit cleanup
